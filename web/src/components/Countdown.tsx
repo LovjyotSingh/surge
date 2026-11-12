@@ -19,19 +19,18 @@ function format(total: number): string {
 export default function Countdown({ target, onDone }: Props) {
   const [left, setLeft] = useState(() => remainingSeconds(target))
   const onDoneRef = useRef(onDone)
-  const firedRef = useRef(false)
+  const firedForRef = useRef<string | null>(null)
 
   useEffect(() => {
     onDoneRef.current = onDone
   })
 
   useEffect(() => {
-    firedRef.current = false
     const tick = () => {
       const next = remainingSeconds(target)
       setLeft(next)
-      if (next === 0 && !firedRef.current) {
-        firedRef.current = true
+      if (next === 0 && firedForRef.current !== target) {
+        firedForRef.current = target
         onDoneRef.current()
       }
     }
