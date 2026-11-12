@@ -67,7 +67,7 @@ public final class LoadTestMain {
             JsonNode integrity = api.integrity(cfg.eventId());
             LoadTestReport report = new LoadTestReport(startedAt, cfg.users(), cfg.eventId(),
                 integrity.get("totalSeats").asInt(), integrity.get("soldSeats").asInt(),
-                integrity.get("oversold").asInt(), succeeded, conflicts, rateLimited, errors,
+                integrity.get("oversold").asInt(), succeeded, holdLat.size() + checkoutLat.size(), conflicts, rateLimited, errors,
                 durationMs, LatencyStats.of(holdLat), LatencyStats.of(checkoutLat));
 
             ReportWriter.write(cfg.outDir(), report);

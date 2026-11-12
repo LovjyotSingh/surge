@@ -23,9 +23,22 @@ public final class Buyer implements Callable<BuyerOutcome> {
     private final double hotShare;
     private final int maxAttempts;
     private final RandomGenerator rnd;
+    private final Sleeper sleeper;
+
+    /** Sleeps for rate-limit back-off; a seam so tests need not wait in real time. */
+    @FunctionalInterface
+    interface Sleeper {
+        void sleep(long millis) throws InterruptedException;
+    }
 
     public Buyer(String userId, long eventId, List<Long> seatIds, BookingApi api, CountDownLatch startGate,
                  double hotShare, int maxAttempts, RandomGenerator rnd) {
+        this(userId, eventId, seatIds, api, startGate, hotShare, maxAttempts, rnd, Thread::sleep);
+    }
+
+    Buyer(String userId, long eventId, List<Long> seatIds, BookingApi api, CountDownLatch startGate,
+                 double hotShare, int maxAttempts, RandomGenerator rnd, Sleeper sleeper) {
+        this.sleeper = sleeper;
         this.userId = userId;
         this.eventId = eventId;
         this.seatIds = seatIds;
@@ -60,7 +73,7 @@ public final class Buyer implements Callable<BuyerOutcome> {
                         errors++;
                         break;
                     }
-                    Thread.sleep(retryAfterSeconds(r) * 1000L);
+                    sleeper.sleep(retryAfterSeconds(r) * 1000L);
                 } else if (status == 409 && problemType(r).endsWith("/seat-taken")) {
                     conflicts++;
                     attempts++;

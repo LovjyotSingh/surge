@@ -51,6 +51,7 @@ public final class ReportWriter {
             | Total seats | %d |
             | Sold | %d |
             | Buyers succeeded | %d |
+            | Requests | %d |
             | Conflicts | %d |
             | Rate limited | %d |
             | Errors | %d |
@@ -62,7 +63,7 @@ public final class ReportWriter {
             """.formatted(
                 HUMAN.format(r.startedAt()),
                 r.eventId(), r.users(), r.durationMs(), verdict,
-                r.totalSeats(), r.sold(), r.buyersSucceeded(), r.conflicts(), r.rateLimited(), r.errors(),
+                r.totalSeats(), r.sold(), r.buyersSucceeded(), r.requests(), r.conflicts(), r.rateLimited(), r.errors(),
                 r.hold().p50(), r.hold().p95(), r.hold().p99(), r.hold().max(),
                 r.checkout().p50(), r.checkout().p95(), r.checkout().p99(), r.checkout().max());
     }
