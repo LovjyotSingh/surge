@@ -1,26 +1,42 @@
 import { useState } from 'react'
 import { BrowserRouter, NavLink, Route, Routes } from 'react-router'
-import { getUserId, setUserId } from './demoUser'
+import { getUserId, randomUserId, setUserId } from './demoUser'
 import EventPage from './pages/EventPage'
 import EventsPage from './pages/EventsPage'
 import OpsPage from './pages/OpsPage'
 
-function randomUserId(): string {
-  return 'demo-' + Math.random().toString(36).slice(2, 6).padEnd(4, '0')
-}
+const VALID_ID = /^[A-Za-z0-9_-]{1,64}$/
 
 function UserPicker() {
-  const [id, setId] = useState(getUserId)
-  const update = (next: string) => {
-    setId(next)
-    if (next.trim()) setUserId(next.trim())
+  const [draft, setDraft] = useState(getUserId)
+  const valid = VALID_ID.test(draft)
+
+  const change = (next: string) => {
+    setDraft(next)
+    if (VALID_ID.test(next)) setUserId(next)
   }
+
   return (
     <div className="user-picker">
-      <input value={id} onChange={(e) => update(e.target.value)} aria-label="Demo user" />
-      <button type="button" onClick={() => update(randomUserId())}>
+      <input
+        value={draft}
+        maxLength={64}
+        onChange={(e) => change(e.target.value)}
+        onBlur={() => {
+          if (!valid) setDraft(getUserId())
+        }}
+        aria-label="Demo user"
+        aria-invalid={!valid}
+        aria-describedby={valid ? undefined : 'user-hint'}
+      />
+      <button type="button" onClick={() => change(randomUserId())}>
         Random
       </button>
+      {!valid && (
+        <span id="user-hint" className="hint">
+          Letters, digits, - and _ only
+        </span>
+      )}
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import type { EventSummary, IntegrityReport, LoadTestReport } from '../api/types'
 import { GENERIC_ERROR } from '../format'
@@ -11,6 +11,10 @@ export default function OpsPage() {
   const [integrity, setIntegrity] = useState<IntegrityReport | null>(null)
   const [report, setReport] = useState<Report>(undefined)
   const [opensIn, setOpensIn] = useState('60')
+  const [refresh, setRefresh] = useState(0)
+  const [resetting, setResetting] = useState(false)
+  const resettingRef = useRef(false)
+  const [resetError, setResetError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -42,32 +46,44 @@ export default function OpsPage() {
     }
   }, [])
 
-  const loadIntegrity = useCallback(
-    (id: number) =>
-      api
-        .integrity(id)
-        .then(setIntegrity)
-        .catch(() => {
-          setIntegrity(null)
-          setError(GENERIC_ERROR)
-        }),
-    [],
-  )
-
   useEffect(() => {
-    if (eventId !== null) void loadIntegrity(eventId)
-  }, [eventId, loadIntegrity])
+    if (eventId === null) return
+    let cancelled = false
+    api
+      .integrity(eventId)
+      .then((r) => {
+        if (!cancelled) setIntegrity(r)
+      })
+      .catch(() => {
+        if (!cancelled) setError(GENERIC_ERROR)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [eventId, refresh])
+
+  const shownIntegrity = integrity && integrity.eventId === eventId ? integrity : null
 
   const reset = async () => {
-    if (eventId === null) return
+    if (eventId === null || resettingRef.current) return
     setMessage(null)
     setError(null)
+    if (!/^\d+$/.test(opensIn.trim()) || Number(opensIn) > 86400) {
+      setResetError('Enter a whole number of seconds from 0 to 86400.')
+      return
+    }
+    setResetError(null)
+    resettingRef.current = true
+    setResetting(true)
     try {
-      await api.reset(eventId, Math.max(0, Math.floor(Number(opensIn)) || 0))
+      await api.reset(eventId, Number(opensIn))
       setMessage('Event reset.')
-      await loadIntegrity(eventId)
+      setRefresh((n) => n + 1)
     } catch {
       setError(GENERIC_ERROR)
+    } finally {
+      resettingRef.current = false
+      setResetting(false)
     }
   }
 
@@ -82,7 +98,10 @@ export default function OpsPage() {
 
       <label className="field">
         Event
-        <select value={eventId ?? ''} onChange={(e) => setEventId(Number(e.target.value))}>
+        <select value={eventId ?? ''} onChange={(e) => {
+            setError(null)
+            setEventId(Number(e.target.value))
+          }}>
           {events.map((ev) => (
             <option key={ev.id} value={ev.id}>
               {ev.title}
@@ -93,17 +112,17 @@ export default function OpsPage() {
 
       <section className="card" aria-label="Integrity">
         <h3>Integrity</h3>
-        {integrity ? (
+        {shownIntegrity ? (
           <>
             <p>
-              Sold {integrity.soldSeats} / {integrity.totalSeats}
+              Sold {shownIntegrity.soldSeats} / {shownIntegrity.totalSeats}
             </p>
             <p>
-              Oversold: {integrity.oversold} {integrity.oversold === 0 ? '✅' : '❌'}
+              Oversold: {shownIntegrity.oversold} {shownIntegrity.oversold === 0 ? '✅' : '❌'}
             </p>
           </>
         ) : (
-          <p className="muted">No data.</p>
+          <p className="muted">{error || eventId === null ? 'No data.' : 'Loading…'}</p>
         )}
       </section>
 
@@ -157,9 +176,15 @@ export default function OpsPage() {
             inputMode="numeric"
             value={opensIn}
             onChange={(e) => setOpensIn(e.target.value)}
+            aria-invalid={resetError !== null}
           />
         </label>
-        <button type="button" className="primary" disabled={eventId === null} onClick={reset}>
+        {resetError && (
+          <p role="alert" className="field-error">
+            {resetError}
+          </p>
+        )}
+        <button type="button" className="primary" disabled={eventId === null || resetting} onClick={reset}>
           Reset event
         </button>
         {message && (

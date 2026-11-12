@@ -140,6 +140,37 @@ describe('EventPage', () => {
     expect(await screen.findByText('Something went wrong — please try again.')).toBeInTheDocument()
   })
 
+  it('shows expiry when the hold is already expired', async () => {
+    const user = userEvent.setup()
+    mocked.hold.mockResolvedValue({ ...hold, expiresAt: new Date(Date.now() - 1000).toISOString() })
+    renderPage()
+    await pickSeatAndHold(user)
+    expect(await screen.findByText('Your hold expired. Pick seats again.')).toBeInTheDocument()
+    await waitFor(() => expect(mocked.event).toHaveBeenCalledTimes(2))
+    expect(screen.queryByRole('button', { name: /^Pay/ })).not.toBeInTheDocument()
+  })
+
+  it('handles sale not open', async () => {
+    const user = userEvent.setup()
+    mocked.hold.mockRejectedValue(new ApiError(problem('sale-not-open', 409)))
+    renderPage()
+    await pickSeatAndHold(user)
+    expect(await screen.findByText("Sales haven't opened yet.")).toBeInTheDocument()
+    await waitFor(() => expect(mocked.event).toHaveBeenCalledTimes(2))
+  })
+
+  it('shows not found for a non-numeric id without fetching', () => {
+    render(
+      <MemoryRouter initialEntries={['/events/abc']}>
+        <Routes>
+          <Route path="/events/:id" element={<EventPage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    expect(screen.getByText('Event not found.')).toBeInTheDocument()
+    expect(mocked.event).not.toHaveBeenCalled()
+  })
+
   it('disables hold before sale opens', async () => {
     mocked.event.mockResolvedValue(detail(future()))
     renderPage()

@@ -327,3 +327,23 @@ td {
   border-bottom: 1px solid var(--line);
   white-space: nowrap;
 }
+
+.user-picker {
+  flex-wrap: wrap;
+}
+
+.user-picker input[aria-invalid='true'] {
+  border-color: #ff3d81;
+}
+
+.hint {
+  flex-basis: 100%;
+  color: #ff3d81;
+  font-size: 0.8rem;
+}
+
+.field-error {
+  color: #ff3d81;
+  margin: 0 0 12px;
+  font-size: 0.9rem;
+}

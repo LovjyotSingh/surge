@@ -25,6 +25,9 @@ function describe(err: unknown): Notice {
     if (slug === 'seat-taken') {
       return { kind: 'error', text: 'Sorry, someone else got seat(s) first.' }
     }
+    if (slug === 'sale-not-open') {
+      return { kind: 'error', text: "Sales haven't opened yet." }
+    }
     if (slug === 'hold-exists') {
       return { kind: 'error', text: 'You already hold seats for this event.' }
     }
@@ -36,7 +39,19 @@ function describe(err: unknown): Notice {
 }
 
 export default function EventPage() {
-  const eventId = Number(useParams().id)
+  const raw = useParams().id ?? ''
+  const eventId = Number(raw)
+  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(eventId)) {
+    return (
+      <main>
+        <p className="muted">Event not found.</p>
+      </main>
+    )
+  }
+  return <EventView key={eventId} eventId={eventId} />
+}
+
+function EventView({ eventId }: { eventId: number }) {
   const [event, setEvent] = useState<EventDetail | null>(null)
   const [loadFailed, setLoadFailed] = useState(false)
   const [saleOpen, setSaleOpen] = useState(false)
@@ -46,10 +61,6 @@ export default function EventPage() {
   const [notice, setNotice] = useState<Notice | null>(null)
   const [busy, setBusy] = useState(false)
   const idempotencyKey = useRef<string | null>(null)
-  const holdRef = useRef<HoldResponse | null>(null)
-  useEffect(() => {
-    holdRef.current = hold
-  }, [hold])
 
   const load = useCallback(
     () =>
@@ -65,8 +76,22 @@ export default function EventPage() {
   )
 
   useEffect(() => {
-    void load()
-  }, [load])
+    let cancelled = false
+    api
+      .event(eventId)
+      .then((e) => {
+        if (cancelled) return
+        setEvent(e)
+        setSaleOpen(new Date(e.saleOpensAt).getTime() <= Date.now())
+        setLoadFailed(false)
+      })
+      .catch(() => {
+        if (!cancelled) setLoadFailed(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [eventId])
 
   const onStream = useCallback(
     (change: SeatStateChange) => {
@@ -81,14 +106,14 @@ export default function EventPage() {
           : prev,
       )
       if (change.state !== 'AVAILABLE') {
-        const own = new Set(holdRef.current?.seatIds ?? [])
+        const own = new Set(hold?.seatIds ?? [])
         setSelected((prev) => {
           const next = new Set([...prev].filter((id) => !ids.has(id) || own.has(id)))
           return next.size === prev.size ? prev : next
         })
       }
     },
-    [eventId],
+    [eventId, hold],
   )
   useSeatStream(eventId, onStream)
 
@@ -118,9 +143,10 @@ export default function EventPage() {
       setSelected(new Set(res.seatIds))
     } catch (err) {
       setNotice(describe(err))
-      if (err instanceof ApiError && slugOf(err) === 'seat-taken') {
-        setSelected(new Set())
-        await load()
+      if (err instanceof ApiError) {
+        const slug = slugOf(err)
+        if (slug === 'seat-taken') setSelected(new Set())
+        if (slug === 'seat-taken' || slug === 'sale-not-open') await load()
       }
     } finally {
       setBusy(false)
@@ -149,7 +175,6 @@ export default function EventPage() {
   }
 
   const onHoldExpired = () => {
-    if (!holdRef.current) return
     setHold(null)
     setSelected(new Set())
     setNotice({ kind: 'info', text: 'Your hold expired. Pick seats again.' })

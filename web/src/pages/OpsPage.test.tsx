@@ -1,4 +1,5 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../api/client'
 import type { LoadTestReport } from '../api/types'
@@ -68,5 +69,38 @@ describe('OpsPage', () => {
     mocked.latestReport.mockResolvedValue(null)
     render(<OpsPage />)
     expect(await screen.findByText(/No load test run yet/)).toBeInTheDocument()
+  })
+
+  it('rejects invalid reset input without calling the API', async () => {
+    const user = userEvent.setup()
+    mocked.latestReport.mockResolvedValue(null)
+    render(<OpsPage />)
+    await screen.findByText(/✅/)
+    const input = screen.getByLabelText('opens in (seconds)')
+    for (const bad of ['', '-5', '1.5', '86401', 'abc']) {
+      await user.clear(input)
+      if (bad) await user.type(input, bad)
+      await user.click(screen.getByRole('button', { name: 'Reset event' }))
+      expect(await screen.findByRole('alert')).toHaveTextContent(/0 to 86400/)
+    }
+    expect(mocked.reset).not.toHaveBeenCalled()
+  })
+
+  it('resets once even on double click', async () => {
+    const user = userEvent.setup()
+    mocked.latestReport.mockResolvedValue(null)
+    let finish!: () => void
+    mocked.reset.mockReturnValue(new Promise<void>((r) => (finish = r)))
+    render(<OpsPage />)
+    await screen.findByText(/✅/)
+    const input = screen.getByLabelText('opens in (seconds)')
+    await user.clear(input)
+    await user.type(input, '30')
+    await user.dblClick(screen.getByRole('button', { name: 'Reset event' }))
+    expect(mocked.reset).toHaveBeenCalledTimes(1)
+    expect(mocked.reset).toHaveBeenCalledWith(1, 30)
+    finish()
+    expect(await screen.findByText('Event reset.')).toBeInTheDocument()
+    await waitFor(() => expect(mocked.integrity).toHaveBeenCalledTimes(2))
   })
 })

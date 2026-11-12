@@ -2,7 +2,7 @@ const KEY = 'surge.userId'
 
 let memoryId: string | undefined
 
-function randomId(): string {
+export function randomUserId(): string {
   return 'demo-' + Math.random().toString(36).slice(2, 6).padEnd(4, '0')
 }
 
@@ -10,11 +10,11 @@ export function getUserId(): string {
   try {
     const existing = sessionStorage.getItem(KEY)
     if (existing) return existing
-    const id = randomId()
+    const id = randomUserId()
     sessionStorage.setItem(KEY, id)
     return id
   } catch {
-    return memoryId ?? (memoryId = randomId())
+    return memoryId ?? (memoryId = randomUserId())
   }
 }
 
