@@ -1,0 +1,224 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useParams } from 'react-router'
+import { ApiError, api } from '../api/client'
+import type { EventDetail, HoldResponse, OrderResponse, SeatStateChange } from '../api/types'
+import Countdown from '../components/Countdown'
+import SeatMap from '../components/SeatMap'
+import { GENERIC_ERROR, formatSaleTime } from '../format'
+import useSeatStream from '../hooks/useSeatStream'
+
+type Notice = { kind: 'error' | 'info'; text: string }
+
+function slugOf(err: ApiError): string {
+  return err.problem.type.split('/').pop() ?? ''
+}
+
+function describe(err: unknown): Notice {
+  if (err instanceof ApiError) {
+    const slug = slugOf(err)
+    if (err.status === 402) {
+      return { kind: 'error', text: 'Payment failed — your seats are still held. Try again.' }
+    }
+    if (err.status === 429) {
+      return { kind: 'error', text: `Slow down — try again in ${err.retryAfterSeconds ?? 1}s.` }
+    }
+    if (slug === 'seat-taken') {
+      return { kind: 'error', text: 'Sorry, someone else got seat(s) first.' }
+    }
+    if (slug === 'hold-exists') {
+      return { kind: 'error', text: 'You already hold seats for this event.' }
+    }
+    if (slug === 'hold-not-found') {
+      return { kind: 'error', text: 'Your hold expired. Pick seats again.' }
+    }
+  }
+  return { kind: 'error', text: GENERIC_ERROR }
+}
+
+export default function EventPage() {
+  const eventId = Number(useParams().id)
+  const [event, setEvent] = useState<EventDetail | null>(null)
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [saleOpen, setSaleOpen] = useState(false)
+  const [selected, setSelected] = useState<ReadonlySet<number>>(new Set())
+  const [hold, setHold] = useState<HoldResponse | null>(null)
+  const [order, setOrder] = useState<OrderResponse | null>(null)
+  const [notice, setNotice] = useState<Notice | null>(null)
+  const [busy, setBusy] = useState(false)
+  const idempotencyKey = useRef<string | null>(null)
+  const holdRef = useRef<HoldResponse | null>(null)
+  useEffect(() => {
+    holdRef.current = hold
+  }, [hold])
+
+  const load = useCallback(
+    () =>
+      api
+        .event(eventId)
+        .then((e) => {
+          setEvent(e)
+          setSaleOpen(new Date(e.saleOpensAt).getTime() <= Date.now())
+          setLoadFailed(false)
+        })
+        .catch(() => setLoadFailed(true)),
+    [eventId],
+  )
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const onStream = useCallback(
+    (change: SeatStateChange) => {
+      if (change.eventId !== eventId) return
+      const ids = new Set(change.seatIds)
+      setEvent((prev) =>
+        prev
+          ? {
+              ...prev,
+              seats: prev.seats.map((s) => (ids.has(s.id) ? { ...s, state: change.state } : s)),
+            }
+          : prev,
+      )
+      if (change.state !== 'AVAILABLE') {
+        const own = new Set(holdRef.current?.seatIds ?? [])
+        setSelected((prev) => {
+          const next = new Set([...prev].filter((id) => !ids.has(id) || own.has(id)))
+          return next.size === prev.size ? prev : next
+        })
+      }
+    },
+    [eventId],
+  )
+  useSeatStream(eventId, onStream)
+
+  const seats = event?.seats
+  const payTotal = useMemo(() => {
+    if (!hold || !seats) return 0
+    const held = new Set(hold.seatIds)
+    return seats.filter((s) => held.has(s.id)).reduce((sum, s) => sum + s.basePriceInr, 0)
+  }, [hold, seats])
+
+  const toggle = (id: number) => {
+    if (hold || order) return
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (!next.delete(id)) next.add(id)
+      return next
+    })
+  }
+
+  const doHold = async () => {
+    setBusy(true)
+    setNotice(null)
+    try {
+      const res = await api.hold(eventId, [...selected])
+      idempotencyKey.current = crypto.randomUUID()
+      setHold(res)
+      setSelected(new Set(res.seatIds))
+    } catch (err) {
+      setNotice(describe(err))
+      if (err instanceof ApiError && slugOf(err) === 'seat-taken') {
+        setSelected(new Set())
+        await load()
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const doPay = async () => {
+    if (!hold || !idempotencyKey.current) return
+    setBusy(true)
+    setNotice(null)
+    try {
+      const res = await api.checkout(hold.holdId, idempotencyKey.current)
+      setOrder(res)
+      setHold(null)
+      setSelected(new Set())
+    } catch (err) {
+      setNotice(describe(err))
+      if (err instanceof ApiError && slugOf(err) === 'hold-not-found') {
+        setHold(null)
+        setSelected(new Set())
+        await load()
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const onHoldExpired = () => {
+    if (!holdRef.current) return
+    setHold(null)
+    setSelected(new Set())
+    setNotice({ kind: 'info', text: 'Your hold expired. Pick seats again.' })
+    void load()
+  }
+
+  if (loadFailed && !event) {
+    return (
+      <main>
+        <p role="alert" className="notice error">
+          {GENERIC_ERROR}
+        </p>
+      </main>
+    )
+  }
+  if (!event) {
+    return (
+      <main>
+        <p className="muted">Loading…</p>
+      </main>
+    )
+  }
+
+  return (
+    <main>
+      <h2>{event.title}</h2>
+      <p className="muted">
+        {event.venueName} · Sale opens {formatSaleTime(event.saleOpensAt, event.zoneId)}
+      </p>
+
+      {!saleOpen && (
+        <p className="banner">
+          Sale opens in <Countdown target={event.saleOpensAt} onDone={() => setSaleOpen(true)} />
+        </p>
+      )}
+
+      <SeatMap seats={event.seats} selected={selected} onToggle={toggle} />
+
+      <section className="actions" aria-label="Booking">
+        {notice && (
+          <p role={notice.kind === 'error' ? 'alert' : 'status'} className={`notice ${notice.kind}`}>
+            {notice.text}
+          </p>
+        )}
+
+        {order ? (
+          <p role="status" className="notice success">
+            Booked! Order #{order.orderId} — ₹{order.totalInr}
+          </p>
+        ) : hold ? (
+          <>
+            <p>
+              Seats held for you <Countdown target={hold.expiresAt} onDone={onHoldExpired} />
+            </p>
+            <button type="button" className="primary" disabled={busy} onClick={doPay}>
+              Pay ₹{payTotal} (final price at checkout)
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            className="primary"
+            disabled={!saleOpen || selected.size === 0 || busy}
+            onClick={doHold}
+          >
+            Hold {selected.size} seats
+          </button>
+        )}
+      </section>
+    </main>
+  )
+}
