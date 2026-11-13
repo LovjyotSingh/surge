@@ -50,6 +50,12 @@ surge:
       GOLD: 2999
       SILVER: 1499
 
+springdoc:
+  api-docs:
+    path: /api/bookings/v3/api-docs
+  swagger-ui:
+    path: /api/bookings/docs
+
 management:
   endpoints:
     web:

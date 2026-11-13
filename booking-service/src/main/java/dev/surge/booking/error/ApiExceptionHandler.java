@@ -106,6 +106,28 @@ public class ApiExceptionHandler {
         return problem(Problems.of(HttpStatus.CONFLICT, "request-in-progress", "Request in progress", e.getMessage()));
     }
 
+    @ExceptionHandler(ReportNotFoundException.class)
+    ResponseEntity<ProblemDetail> reportNotFound(ReportNotFoundException e) {
+        return problem(Problems.of(HttpStatus.NOT_FOUND, "report-not-found", "Report not found", e.getMessage()));
+    }
+
+    @ExceptionHandler(ReportTooLargeException.class)
+    ResponseEntity<ProblemDetail> reportTooLarge(ReportTooLargeException e) {
+        return problem(Problems.of(HttpStatus.CONTENT_TOO_LARGE, "report-too-large", "Report too large",
+                e.getMessage()));
+    }
+
+    @ExceptionHandler(MalformedReportException.class)
+    ResponseEntity<ProblemDetail> malformedReport(MalformedReportException e) {
+        return problem(Problems.of(HttpStatus.BAD_REQUEST, "malformed-request", "Malformed request body",
+                e.getMessage()));
+    }
+
+    @ExceptionHandler(InvalidParameterException.class)
+    ResponseEntity<ProblemDetail> invalidParameter(InvalidParameterException e) {
+        return problem(Problems.of(HttpStatus.BAD_REQUEST, "validation-failed", "Validation failed", e.getMessage()));
+    }
+
     @ExceptionHandler(HttpMessageNotReadableException.class)
     ResponseEntity<ProblemDetail> malformed(HttpMessageNotReadableException e) {
         return problem(Problems.of(HttpStatus.BAD_REQUEST, "malformed-request", "Malformed request body",
