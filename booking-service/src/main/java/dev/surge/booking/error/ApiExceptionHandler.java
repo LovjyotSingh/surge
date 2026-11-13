@@ -73,6 +73,39 @@ public class ApiExceptionHandler {
                 .header(HttpHeaders.RETRY_AFTER, String.valueOf(e.retryAfterSeconds())).body(pd);
     }
 
+    @ExceptionHandler(InvalidIdempotencyKeyException.class)
+    ResponseEntity<ProblemDetail> invalidIdempotencyKey(InvalidIdempotencyKeyException e) {
+        return problem(Problems.of(HttpStatus.BAD_REQUEST, "missing-idempotency-key", "Missing Idempotency-Key",
+                e.getMessage()));
+    }
+
+    @ExceptionHandler(HoldNotFoundException.class)
+    ResponseEntity<ProblemDetail> holdNotFound(HoldNotFoundException e) {
+        return problem(Problems.of(HttpStatus.NOT_FOUND, "hold-not-found", "Hold not found", e.getMessage()));
+    }
+
+    @ExceptionHandler(OrderNotFoundException.class)
+    ResponseEntity<ProblemDetail> orderNotFound(OrderNotFoundException e) {
+        return problem(Problems.of(HttpStatus.NOT_FOUND, "order-not-found", "Order not found", e.getMessage()));
+    }
+
+    @ExceptionHandler(PaymentFailedException.class)
+    ResponseEntity<ProblemDetail> paymentFailed(PaymentFailedException e) {
+        ProblemDetail pd = Problems.of(HttpStatus.PAYMENT_REQUIRED, "payment-failed", "Payment failed", e.getMessage());
+        pd.setProperty("reason", e.reason());
+        return problem(pd);
+    }
+
+    @ExceptionHandler(SeatConflictException.class)
+    ResponseEntity<ProblemDetail> seatConflict(SeatConflictException e) {
+        return problem(Problems.of(HttpStatus.CONFLICT, "seat-taken", "Seat taken", e.getMessage()));
+    }
+
+    @ExceptionHandler(RequestInProgressException.class)
+    ResponseEntity<ProblemDetail> requestInProgress(RequestInProgressException e) {
+        return problem(Problems.of(HttpStatus.CONFLICT, "request-in-progress", "Request in progress", e.getMessage()));
+    }
+
     @ExceptionHandler(HttpMessageNotReadableException.class)
     ResponseEntity<ProblemDetail> malformed(HttpMessageNotReadableException e) {
         return problem(Problems.of(HttpStatus.BAD_REQUEST, "malformed-request", "Malformed request body",

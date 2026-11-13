@@ -27,4 +27,13 @@ public class RedisScripts {
         script.setResultType(List.class);
         return script;
     }
+
+    @Bean
+    @SuppressWarnings("rawtypes")
+    RedisScript<List> finalizeScript() {
+        DefaultRedisScript<List> script = new DefaultRedisScript<>();
+        script.setLocation(new ClassPathResource("redis/finalize.lua"));
+        script.setResultType(List.class);
+        return script;
+    }
 }
