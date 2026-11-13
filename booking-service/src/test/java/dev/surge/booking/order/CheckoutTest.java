@@ -2,6 +2,7 @@ package dev.surge.booking.order;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -15,14 +16,20 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.jayway.jsonpath.JsonPath;
 import dev.surge.booking.hold.RedisKeys;
 import dev.surge.booking.payment.PaymentGateway;
+import dev.surge.booking.payment.PaymentRequest;
 import dev.surge.booking.payment.PaymentResult;
 import dev.surge.booking.support.IntegrationTest;
 import dev.surge.booking.support.TestData;
+import java.math.BigDecimal;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisCallback;
@@ -42,6 +49,7 @@ class CheckoutTest {
     @Autowired JdbcTemplate jdbc;
     /** The type-level spy from @IntegrationTest, delegating to FakePaymentGateway (failure-rate 0.0). */
     @Autowired PaymentGateway gateway;
+    @Autowired IdempotencyStore idempotency;
 
     @BeforeEach
     void reset() {
@@ -233,6 +241,84 @@ class CheckoutTest {
         assertThat(count("SELECT COUNT(*) FROM orders WHERE user_id = 'u2'")).isZero();
         verify(gateway, times(1)).refund(any());
         assertThat(redis.hasKey(RedisKeys.idempotency("u2", "k2"))).isFalse();
+
+        // The lost hold is released (not left to expire), and nothing is added to the sold set.
+        assertThat(redis.hasKey(RedisKeys.hold(h2))).isFalse();
+        assertThat(redis.hasKey(RedisKeys.userHold(1, "u2"))).isFalse();
+        assertThat(redis.hasKey(RedisKeys.seat(1, 7))).isFalse();
+        assertThat(redis.opsForZSet().range(RedisKeys.HOLD_EXPIRY, 0, -1)).isEmpty();
+        assertThat(redis.opsForSet().isMember(RedisKeys.sold(1), "7")).isFalse();
+        hold("u2", "[8]"); // no hold-exists: u2 can pick again straight away
+    }
+
+    @Test
+    void priceIsLockedAtHoldTimeAndNotRepriced() throws Exception {
+        // Sale opened a minute ago: the early-bird rule takes 10% off, 4999 -> 4499 per PLATINUM seat.
+        testData.setSaleOpensAt(1L, Instant.now().minusSeconds(60));
+        MvcResult held = mvc.perform(post("/api/bookings/holds").header("X-User-Id", "u1")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"eventId\":1,\"seatIds\":[1,2]}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.quotedTotalInr").value(8998.0))
+                .andExpect(jsonPath("$.lines[0].seatId").value(1))
+                .andExpect(jsonPath("$.lines[0].priceInr").value(4499.0))
+                .andReturn();
+        String holdId = JsonPath.read(held.getResponse().getContentAsString(), "$.holdId");
+
+        // The early-bird window is over by checkout time; re-pricing now would give 9998.
+        testData.setSaleOpensAt(1L, Instant.parse("2026-01-01T00:00:00Z"));
+        checkout("u1", "k1", holdId).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.totalInr").value(8998.0))
+                .andExpect(jsonPath("$.lines[0].priceInr").value(4499.0))
+                .andExpect(jsonPath("$.lines[1].priceInr").value(4499.0));
+
+        ArgumentCaptor<PaymentRequest> charged = ArgumentCaptor.forClass(PaymentRequest.class);
+        verify(gateway).charge(charged.capture());
+        assertThat(charged.getValue().amountInr()).isEqualByComparingTo(new BigDecimal("8998"));
+        assertThat(count("SELECT COUNT(*) FROM order_item WHERE price_inr = 4499.00")).isEqualTo(2);
+    }
+
+    @Test
+    void inProgressMarkerIsShortLivedAndOrderIdLasts24Hours() throws Exception {
+        String holdId = hold("u1", "[1]");
+        String key = RedisKeys.idempotency("u1", "k1");
+        AtomicLong ttlWhileRunning = new AtomicLong();
+        doAnswer(inv -> {
+            assertThat(redis.opsForValue().get(key)).isEqualTo("IN_PROGRESS");
+            ttlWhileRunning.set(redis.getExpire(key, TimeUnit.SECONDS));
+            return inv.callRealMethod();
+        }).when(gateway).charge(any());
+
+        checkout("u1", "k1", holdId).andExpect(status().isCreated());
+
+        assertThat(ttlWhileRunning.get()).isBetween(1L, 120L);
+        assertThat(redis.getExpire(key, TimeUnit.SECONDS)).isGreaterThan(Duration.ofHours(23).toSeconds());
+    }
+
+    @Test
+    void takeOverIsCompareAndSet() {
+        String key = RedisKeys.idempotency("u1", "k1");
+        redis.opsForValue().set(key, "41", Duration.ofHours(24));
+
+        assertThat(idempotency.takeOver("u1", "k1", 40)).isFalse();
+        assertThat(redis.opsForValue().get(key)).isEqualTo("41");
+
+        assertThat(idempotency.takeOver("u1", "k1", 41)).isTrue();
+        assertThat(redis.opsForValue().get(key)).isEqualTo("IN_PROGRESS");
+        assertThat(redis.getExpire(key, TimeUnit.SECONDS)).isBetween(1L, 120L);
+    }
+
+    @Test
+    void staleOrderIdInKeyIsTreatedAsNewRequest() throws Exception {
+        // A key whose order was deleted (as an admin reset does): the stored id points at no order.
+        redis.opsForValue().set(RedisKeys.idempotency("u1", "k1"), "999999", Duration.ofHours(24));
+        String holdId = hold("u1", "[1]");
+
+        MvcResult r = checkout("u1", "k1", holdId).andExpect(status().isCreated())
+                .andExpect(header().doesNotExist("Idempotent-Replayed")).andReturn();
+
+        int orderId = JsonPath.read(r.getResponse().getContentAsString(), "$.orderId");
+        assertThat(redis.opsForValue().get(RedisKeys.idempotency("u1", "k1"))).isEqualTo(String.valueOf(orderId));
+        assertThat(redis.hasKey(RedisKeys.hold(holdId))).isFalse();
     }
 
     @Test

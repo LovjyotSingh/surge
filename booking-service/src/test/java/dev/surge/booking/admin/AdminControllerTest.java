@@ -5,6 +5,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -24,6 +25,7 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.ResultActions;
 
 @IntegrationTest
 class AdminControllerTest {
@@ -48,11 +50,14 @@ class AdminControllerTest {
         return JsonPath.read(r.getResponse().getContentAsString(), "$.holdId");
     }
 
-    private void buy(String user, String key, String seatIdsJson) throws Exception {
-        String holdId = hold(user, seatIdsJson);
-        mvc.perform(post("/api/bookings/orders").header("X-User-Id", user).header("Idempotency-Key", key)
-                        .contentType(MediaType.APPLICATION_JSON).content("{\"holdId\":\"" + holdId + "\"}"))
-                .andExpect(status().isCreated());
+    private ResultActions checkout(String user, String key, String holdId) throws Exception {
+        return mvc.perform(post("/api/bookings/orders").header("X-User-Id", user).header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON).content("{\"holdId\":\"" + holdId + "\"}"));
+    }
+
+    private int buy(String user, String key, String seatIdsJson) throws Exception {
+        MvcResult r = checkout(user, key, hold(user, seatIdsJson)).andExpect(status().isCreated()).andReturn();
+        return JsonPath.read(r.getResponse().getContentAsString(), "$.orderId");
     }
 
     private long count(String sql) {
@@ -68,7 +73,45 @@ class AdminControllerTest {
                 .andExpect(jsonPath("$.soldSeats").value(2))
                 .andExpect(jsonPath("$.orderItems").value(2))
                 .andExpect(jsonPath("$.distinctSeatsSold").value(2))
-                .andExpect(jsonPath("$.oversold").value(0));
+                .andExpect(jsonPath("$.oversold").value(0))
+                .andExpect(jsonPath("$.consistent").value(true));
+    }
+
+    @Test
+    void integrityFlagsASoldSeatWithoutAnOrder() throws Exception {
+        buy("u1", "k1", "[1]");
+        jdbc.update("UPDATE seat SET status = 'SOLD' WHERE id = 10");
+        mvc.perform(get("/api/bookings/admin/events/1/integrity")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.soldSeats").value(2))
+                .andExpect(jsonPath("$.distinctSeatsSold").value(1))
+                .andExpect(jsonPath("$.oversold").value(0))
+                .andExpect(jsonPath("$.consistent").value(false));
+    }
+
+    /** C1: a load test re-run reuses its keys after a reset. The stale key must not 404 or strand the new hold. */
+    @Test
+    void sameIdempotencyKeyBuysAgainAfterReset() throws Exception {
+        int firstOrder = buy("u1", "K", "[1]");
+
+        mvc.perform(post("/api/bookings/admin/events/1/reset")).andExpect(status().isNoContent());
+        String key = RedisKeys.idempotency("u1", "K");
+        assertThat(redis.opsForValue().get(key)).isEqualTo(String.valueOf(firstOrder)); // reset keeps idem keys
+
+        String holdId = hold("u1", "[1]");
+        MvcResult r = checkout("u1", "K", holdId).andExpect(status().isCreated())
+                .andExpect(header().doesNotExist("Idempotent-Replayed")).andReturn();
+        int secondOrder = JsonPath.read(r.getResponse().getContentAsString(), "$.orderId");
+
+        assertThat(secondOrder).isNotEqualTo(firstOrder);
+        assertThat(redis.opsForValue().get(key)).isEqualTo(String.valueOf(secondOrder));
+        assertThat(count("SELECT COUNT(*) FROM orders WHERE event_id = 1")).isEqualTo(1);
+        assertThat(count("SELECT COUNT(*) FROM seat WHERE id = 1 AND status = 'SOLD'")).isEqualTo(1);
+        // No stuck hold: the hold was finalized like any other sale.
+        assertThat(redis.hasKey(RedisKeys.hold(holdId))).isFalse();
+        assertThat(redis.hasKey(RedisKeys.userHold(1, "u1"))).isFalse();
+        assertThat(redis.hasKey(RedisKeys.seat(1, 1))).isFalse();
+        assertThat(redis.opsForSet().isMember(RedisKeys.sold(1), "1")).isTrue();
+        assertThat(redis.opsForZSet().range(RedisKeys.HOLD_EXPIRY, 0, -1)).isEmpty();
     }
 
     @Test

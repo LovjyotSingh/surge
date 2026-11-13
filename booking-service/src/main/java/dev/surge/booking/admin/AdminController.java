@@ -59,7 +59,7 @@ public class AdminController {
                 + "WHERE o.event_id = ?", eventId);
         int distinct = count("SELECT COUNT(DISTINCT oi.seat_id) FROM order_item oi JOIN orders o ON o.id = oi.order_id "
                 + "WHERE o.event_id = ?", eventId);
-        return new IntegrityReport(eventId, total, sold, items, distinct, items - distinct);
+        return IntegrityReport.of(eventId, total, sold, items, distinct);
     }
 
     @PostMapping("/events/{eventId}/reset")

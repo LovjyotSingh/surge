@@ -25,8 +25,12 @@ public class OrderReader {
     }
 
     @Transactional(readOnly = true)
+    public Optional<OrderResponse> findForUser(String userId, long orderId) {
+        return orders.findByIdAndUserId(orderId, userId).map(o -> OrderResponse.from(o, inventory.get(o.getEventId())));
+    }
+
+    @Transactional(readOnly = true)
     public OrderResponse getForUser(String userId, long orderId) {
-        Order order = orders.findByIdAndUserId(orderId, userId).orElseThrow(() -> new OrderNotFoundException(orderId));
-        return OrderResponse.from(order, inventory.get(order.getEventId()));
+        return findForUser(userId, orderId).orElseThrow(() -> new OrderNotFoundException(orderId));
     }
 }

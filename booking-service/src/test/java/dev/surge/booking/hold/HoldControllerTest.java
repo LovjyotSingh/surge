@@ -63,6 +63,10 @@ class HoldControllerTest {
                 .andExpect(jsonPath("$.holdId").isNotEmpty())
                 .andExpect(jsonPath("$.eventId").value(1))
                 .andExpect(jsonPath("$.seatIds[0]").value(1))
+                .andExpect(jsonPath("$.quotedTotalInr").value(9998.0))
+                .andExpect(jsonPath("$.lines.length()").value(2))
+                .andExpect(jsonPath("$.lines[1].seatId").value(2))
+                .andExpect(jsonPath("$.lines[1].priceInr").value(4999.0))
                 .andReturn();
         String expiresAt = JsonPath.read(r.getResponse().getContentAsString(), "$.expiresAt");
         assertThat(Duration.between(before.plus(Duration.ofMinutes(5)), Instant.parse(expiresAt)).abs())
@@ -70,6 +74,20 @@ class HoldControllerTest {
         assertThat(seatState(1)).isEqualTo("HELD");
         assertThat(seatState(2)).isEqualTo("HELD");
         assertThat(seatState(3)).isEqualTo("AVAILABLE");
+    }
+
+    @Test
+    void holdQuotesSurgePriceWhenFewSeatsAreLeft() throws Exception {
+        // 401 of 500 seats sold leaves 99 (< 20%): surge adds 20%, 4999 x 1.2 = 5998.8 -> 5999.
+        String[] sold = LongStream.rangeClosed(100, 500).mapToObj(String::valueOf).toArray(String[]::new);
+        redis.opsForSet().add(RedisKeys.sold(1), sold);
+        MvcResult r = hold("u1", 1, "[1]").andExpect(status().isCreated())
+                .andExpect(jsonPath("$.quotedTotalInr").value(5999.0))
+                .andExpect(jsonPath("$.lines[0].priceInr").value(5999.0))
+                .andReturn();
+        String holdId = JsonPath.read(r.getResponse().getContentAsString(), "$.holdId");
+        // The quote is stored with the hold; checkout charges this and does not re-price.
+        assertThat(redis.opsForHash().get(RedisKeys.hold(holdId), "prices")).isEqualTo("5999.00");
     }
 
     @Test
