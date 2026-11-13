@@ -12,9 +12,14 @@ import org.springframework.context.annotation.Import;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
 /**
- * One shared Spring context for every integration test. PaymentGateway is wrapped in a Mockito spy (delegating to
- * the real FakePaymentGateway), as is OutboxPublisher (real LoggingOutboxPublisher); the outbox scheduler is pushed
- * to PT1H so it never races tests, which call OutboxRelay.relayBatch() explicitly. Tests can stub declines and verify refunds; it resets after each test.
+ * One shared Spring context for every integration test (never add field-level mocks or test properties: each
+ * variation would start a second context with new containers).
+ *
+ * <p>PaymentGateway is wrapped in a Mockito spy (delegating to the real FakePaymentGateway), as is OutboxPublisher
+ * (the real LoggingOutboxPublisher); tests can stub declines or publish failures and verify refunds, and Mockito
+ * resets the spies after each test. The outbox poll and hold sweep intervals are pushed to PT1H so the schedulers
+ * never race tests; tests drive them explicitly through {@code OutboxRelay.relayBatch()},
+ * {@code OutboxPoller.poll()} and {@code HoldExpirySweeper.sweep()}.
  */
 @Target(ElementType.TYPE)
 @Retention(RetentionPolicy.RUNTIME)
