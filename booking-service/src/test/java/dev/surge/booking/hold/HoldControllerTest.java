@@ -89,13 +89,16 @@ class HoldControllerTest {
         hold("u1", 1, "[5]").andExpect(status().isConflict())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/hold-exists"))
                 .andExpect(jsonPath("$.holdId").value(holdId));
+        assertThat(seatState(5)).isEqualTo("AVAILABLE");
     }
 
     @Test
     void soldSeatCannotBeHeld() throws Exception {
-        redis.opsForSet().add("sold:1", "4");
+        redis.opsForSet().add(RedisKeys.sold(1), "4");
         hold("u1", 1, "[4]").andExpect(status().isConflict())
-                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/seat-taken"));
+                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/seat-taken"))
+                .andExpect(jsonPath("$.seatIds[0]").value(4))
+                .andExpect(jsonPath("$.seatIds.length()").value(1));
     }
 
     @Test
@@ -103,12 +106,14 @@ class HoldControllerTest {
         hold("u1", 1, "[1,501]").andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/invalid-seats"))
                 .andExpect(jsonPath("$.seatIds[0]").value(501));
+        assertThat(seatState(1)).isEqualTo("AVAILABLE");
     }
 
     @Test
     void duplicateSeatIdsAreInvalid() throws Exception {
         hold("u1", 1, "[1,1]").andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/invalid-seats"));
+        assertThat(seatState(1)).isEqualTo("AVAILABLE");
     }
 
     @Test
@@ -118,12 +123,14 @@ class HoldControllerTest {
         hold("u1", 1, ids).andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/validation-failed"))
                 .andExpect(jsonPath("$.errors.seatIds").exists());
+        assertThat(seatState(1)).isEqualTo("AVAILABLE");
     }
 
     @Test
     void emptySeatsFailsValidation() throws Exception {
         hold("u1", 1, "[]").andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/validation-failed"));
+        assertThat(seatState(1)).isEqualTo("AVAILABLE");
     }
 
     @Test
@@ -132,6 +139,7 @@ class HoldControllerTest {
         hold("u1", 1, "[1]").andExpect(status().isConflict())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/sale-not-open"))
                 .andExpect(jsonPath("$.saleOpensAt").isNotEmpty());
+        assertThat(seatState(1)).isEqualTo("AVAILABLE");
     }
 
     @Test
@@ -159,5 +167,30 @@ class HoldControllerTest {
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/rate-limited"))
                 .andExpect(header().string("Retry-After", org.hamcrest.Matchers.greaterThanOrEqualTo("1")));
+    }
+
+    @Test
+    void missingUserWinsOverBodyValidation() throws Exception {
+        hold(null, 1, "[]").andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/missing-user"));
+    }
+
+    @Test
+    void malformedBodyIs400() throws Exception {
+        hold("u1", 1, "\"x\"").andExpect(status().isBadRequest())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/malformed-request"))
+                .andExpect(jsonPath("$.title").value("Malformed request body"))
+                .andExpect(jsonPath("$.requestId").isString());
+    }
+
+    @Test
+    void nonJsonContentTypeIs415() throws Exception {
+        mvc.perform(post("/api/bookings/holds").header("X-User-Id", "u1")
+                        .contentType(MediaType.TEXT_PLAIN).content("hello"))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/unsupported-media-type"))
+                .andExpect(jsonPath("$.requestId").isString());
     }
 }
