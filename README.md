@@ -1,0 +1,154 @@
+# Surge
+
+[![CI](https://github.com/LovjyotSingh/surge/actions/workflows/ci.yml/badge.svg)](https://github.com/LovjyotSingh/surge/actions/workflows/ci.yml)
+
+Surge is a flash-sale ticket booking backend. When a big sale opens, thousands of people try to book a few hundred seats in the same second. Surge has to sell every seat exactly once and stay responsive. Phase 1 is one Spring Boot service on Java 25 that keeps the rush in Redis (atomic seat holds written in Lua), writes orders to MySQL with optimistic locking, and pushes live seat updates to the browser. A load tester fires 10,000 concurrent buyers at it to prove that no seat is ever sold twice.
+
+**New here?** Read [LEARN.md](LEARN.md). It walks through every part of the code, explains why each piece exists, and ends with interview questions and answers.
+
+## Result
+
+10,000 simulated buyers racing for the 500 seats of event 1, sent through Nginx like real browser traffic:
+
+| Metric | Value |
+|---|---|
+| Buyers | 10,000 |
+| Seats | 500 |
+| **Sold** | **500** |
+| **Oversold** | **0** |
+| **Errors** | **0** |
+| Requests (holds + checkouts) | 96,002 |
+| Conflicts (409, seat already taken) | 95,002 |
+| Rate limited (429) | 0 |
+| Duration | 11.2 s |
+
+| Latency (ms) | p50 | p95 | p99 | max |
+|---|---|---|---|---|
+| Hold | 718 | 2574 | 3458 | 4432 |
+| Checkout | 2617 | 4008 | 4253 | 4844 |
+
+This ran on one laptop: Docker Desktop on WSL2 with 12 GB of memory for Docker, 24 CPU threads. The load generator, Nginx, the service, MySQL and Redis all shared that machine. It is a correctness test under heavy contention, not a production benchmark. [LEARN.md section 9](LEARN.md#9-the-numbers-and-how-to-explain-them) explains how to read these numbers.
+
+The test suite also runs a smaller version on every CI build: [ConcurrentBookingTest](booking-service/src/test/java/dev/surge/booking/order/ConcurrentBookingTest.java) starts 2,000 buyers on virtual threads against 100 seats and checks that exactly 100 are sold (about 5 s in most laptop runs).
+
+## Architecture (phase 1)
+
+```mermaid
+flowchart LR
+    B["Browser<br/>React + TypeScript"] -->|"HTTP + SSE"| N["Nginx :8080<br/>static files, /api proxy"]
+    L["Load tester<br/>10,000 virtual threads"] -->|HTTP| N
+    N -->|"/api/**"| S["booking-service :8081<br/>Java 25, Spring Boot 4"]
+    S -->|"holds, rate limits,<br/>idempotency, pub/sub"| R[("Redis 7")]
+    S -->|"seats, orders, outbox"| M[("MySQL 8.4")]
+```
+
+How a booking avoids overselling, in three layers:
+
+1. **Redis hold.** A Lua script ([hold.lua](booking-service/src/main/resources/redis/hold.lua)) checks and reserves all requested seats in one atomic step, with a 5-minute expiry. Holds touch only Redis, so the rush never reaches MySQL.
+2. **Optimistic lock.** Checkout marks the seats sold in one MySQL transaction. Each seat row has a JPA `@Version` column, so if two checkouts race for the same seat, only one commit wins ([OrderWriter.java](booking-service/src/main/java/dev/surge/booking/order/OrderWriter.java)).
+3. **Unique constraint.** `order_item.seat_id` is `UNIQUE` ([V1__schema.sql](booking-service/src/main/resources/db/migration/V1__schema.sql)), so the database itself refuses a second order line for the same seat.
+
+Checkout also uses idempotency keys, takes payment outside the database transaction (and refunds if the seat is lost), and writes outgoing messages to a transactional outbox. Live seat changes go out over Server-Sent Events, fanned out through Redis pub/sub.
+
+## Tech stack (built in phase 1)
+
+| Area | Used for |
+|---|---|
+| Java 25 | Records, sealed interfaces, pattern-matching `switch`, virtual threads |
+| Spring Boot 4.0.9 | Web MVC, Data JPA, Data Redis, Validation, Actuator, scheduling |
+| MySQL 8.4 + Flyway | Seats, orders, outbox; versioned schema migrations |
+| Redis 7 | Seat holds (Lua), sold-seat sets, token-bucket rate limit, idempotency keys, pub/sub |
+| springdoc-openapi | Swagger UI and OpenAPI spec |
+| React 19 + TypeScript + Vite | Events page, live seat map, hold countdown, checkout, Ops page |
+| Nginx | Serves the web app, reverse-proxies `/api`, streams SSE |
+| Docker + Compose | Multi-stage images, layered jars, non-root Java containers, health checks |
+| JUnit 5 + Testcontainers, Vitest | Unit and integration tests against real MySQL and Redis |
+| GitHub Actions | CI: backend tests, web tests and build, Docker image build |
+
+## Quick start
+
+You need **Docker Desktop** (on Windows, with the WSL2 backend). Nothing else is required to run the stack.
+
+```bash
+cp .env.example .env                          # optional: local-only database passwords
+docker compose --profile core up -d --build   # MySQL, Redis, booking-service, web
+```
+
+The first build downloads Maven and npm dependencies, so it takes a while. Later builds reuse the cache.
+
+Open **http://localhost:8080**. Pick event 1, select up to 8 seats, click **Hold**, then **Pay**. Now open the same event in a new browser tab. A new tab gets its own random demo user (shown in the header), and seats you hold in one tab turn "held" in the other straight away.
+
+Run the 10,000-buyer load test:
+
+```bash
+docker compose --profile core --profile loadtest run --rm loadtest --users 10000 --event 1
+```
+
+It resets event 1, runs, prints the report, writes it to `reports/` and shows it on the **Ops** page (http://localhost:8080/ops). The run leaves event 1 sold out; reset it from the Ops page or with:
+
+```bash
+curl -X POST "http://localhost:8080/api/bookings/admin/events/1/reset?opensInSeconds=0"
+```
+
+Stop everything with `docker compose --profile core down` (add `-v` to also delete the database data).
+
+Ports on your machine: `8080` web and API through Nginx, `8081` booking-service directly (health and metrics), `3307` MySQL, `6379` Redis.
+
+## API
+
+All endpoints are under `/api/bookings`. Interactive docs: **http://localhost:8080/api/bookings/docs** (Swagger UI). OpenAPI JSON: http://localhost:8080/api/bookings/v3/api-docs.
+
+| Method | Path | Headers | What it does | Success |
+|---|---|---|---|---|
+| GET | `/events` | | List events with sold counts | 200 |
+| GET | `/events/{eventId}` | | Event details and seat map (`AVAILABLE` / `HELD` / `SOLD`) | 200 |
+| GET | `/events/{eventId}/stream` | | Live seat changes as Server-Sent Events | 200 (stream) |
+| POST | `/holds` | `X-User-Id` | Hold 1 to 8 seats for 5 minutes. Body: `{"eventId":1,"seatIds":[1,2]}` | 201 |
+| POST | `/orders` | `X-User-Id`, `Idempotency-Key` | Pay for a hold and confirm the order. Body: `{"holdId":"..."}` | 201, or 200 with `Idempotent-Replayed: true` on a repeat |
+| GET | `/orders/{orderId}` | `X-User-Id` | Your order | 200 |
+| GET | `/admin/events/{eventId}/integrity` | | Sold count and oversold check (`oversold` must be 0) | 200 |
+| POST | `/admin/events/{eventId}/reset?opensInSeconds=N` | | Reset an event; the sale opens in N seconds | 204 |
+| PUT | `/admin/loadtest-reports/latest` | | Store the latest load-test report (used by the load tester) | 204 |
+| GET | `/admin/loadtest-reports/latest` | | Latest load-test report (used by the Ops page) | 200 |
+
+Errors use the Problem Details JSON format (RFC 9457, the successor of RFC 7807) with a `requestId` field. Common ones: `400` validation, `401` missing user, `402` payment failed, `404` not found, `409` seat taken / hold exists / sale not open, `429` rate limited (with `Retry-After`).
+
+Health and metrics are on the service port: http://localhost:8081/actuator/health and http://localhost:8081/actuator/prometheus.
+
+**Phase 1 limits, stated plainly:** there is no login yet. The web app sends a demo user id in the `X-User-Id` header, and the admin endpoints are open. Payment is a fake in-process gateway. Outbox messages are logged, not yet sent to a broker. Run it locally only.
+
+## Run the tests
+
+Docker must be running: the integration tests start real MySQL and Redis containers with Testcontainers.
+
+```bash
+./mvnw -B verify                               # backend: common 4, booking-service 66, loadtest 17 tests
+cd web && npm ci && npx vitest run && npm run build   # web: 28 tests, then a production build
+```
+
+On Windows PowerShell use `.\mvnw.cmd -B verify`. You need JDK 25 and Node 24 for these. CI runs the same commands on every push and pull request to `main` ([ci.yml](.github/workflows/ci.yml)), plus a build of all Docker images.
+
+## Repository layout
+
+| Path | What it is |
+|---|---|
+| [booking-service/](booking-service/) | The Spring Boot service: holds, checkout, outbox, live seat stream, admin |
+| [common/](common/) | Shared code: request-id filter, Problem Details helper, message records |
+| [tools/loadtest/](tools/loadtest/) | The load tester (plain Java, virtual threads, `java.net.http`) |
+| [web/](web/) | React app and the Nginx config that serves it |
+| [compose.yaml](compose.yaml) | The local stack (`core` and `loadtest` profiles) |
+| [docs/superpowers/specs/2026-11-12-surge-design.md](docs/superpowers/specs/2026-11-12-surge-design.md) | The full design spec for all phases |
+| [LEARN.md](LEARN.md) | The learning guide |
+
+## Roadmap: planned, not built yet
+
+Phase 1 (this code) is the core booking flow. The phases below are designed in the [spec](docs/superpowers/specs/2026-11-12-surge-design.md) but **not built yet**.
+
+| Phase | Planned scope |
+|---|---|
+| 2. Microservices platform | auth-service (JWT), catalog-service with Elasticsearch search, payment-service with a Resilience4j circuit breaker, notification-service (PDF tickets, S3-compatible storage, email to Mailpit), Spring Cloud Gateway, Config Server, Eureka, Kafka and RabbitMQ fed by the outbox |
+| 3. Observability | Prometheus, Alertmanager, Grafana dashboards, Logstash + Elasticsearch + Kibana logs, Zipkin traces |
+| 4. AI | AI customer assistant, AI on-call agent that diagnoses incidents, RAG over runbooks, an MCP server |
+| 5. Delivery | Kubernetes manifests for a local kind cluster, Jenkins pipeline, AWS EC2/S3 deployment guide (documented), recorded demo |
+
+Phase 1 already leaves the seams for this: the `PaymentGateway` and `OutboxPublisher` interfaces, the `X-User-Id` header that the gateway will set after checking a JWT, and the `event_ref` table that the catalog service will feed.
