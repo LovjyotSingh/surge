@@ -30,6 +30,39 @@ public class ApiExceptionHandler {
         return problem(pd);
     }
 
+    @ExceptionHandler(MissingUserException.class)
+    ResponseEntity<ProblemDetail> missingUser(MissingUserException e) {
+        return problem(Problems.of(HttpStatus.UNAUTHORIZED, "missing-user", "Missing or invalid user", e.getMessage()));
+    }
+
+    @ExceptionHandler(InvalidSeatsException.class)
+    ResponseEntity<ProblemDetail> invalidSeats(InvalidSeatsException e) {
+        ProblemDetail pd = Problems.of(HttpStatus.BAD_REQUEST, "invalid-seats", "Invalid seats", e.getMessage());
+        pd.setProperty("seatIds", e.seatIds());
+        return problem(pd);
+    }
+
+    @ExceptionHandler(SaleNotOpenException.class)
+    ResponseEntity<ProblemDetail> saleNotOpen(SaleNotOpenException e) {
+        ProblemDetail pd = Problems.of(HttpStatus.CONFLICT, "sale-not-open", "Sale not open", e.getMessage());
+        pd.setProperty("saleOpensAt", e.saleOpensAt().toString());
+        return problem(pd);
+    }
+
+    @ExceptionHandler(SeatsTakenException.class)
+    ResponseEntity<ProblemDetail> seatsTaken(SeatsTakenException e) {
+        ProblemDetail pd = Problems.of(HttpStatus.CONFLICT, "seat-taken", "Seat taken", e.getMessage());
+        pd.setProperty("seatIds", e.seatIds());
+        return problem(pd);
+    }
+
+    @ExceptionHandler(HoldExistsException.class)
+    ResponseEntity<ProblemDetail> holdExists(HoldExistsException e) {
+        ProblemDetail pd = Problems.of(HttpStatus.CONFLICT, "hold-exists", "Hold already exists", e.getMessage());
+        pd.setProperty("holdId", e.holdId());
+        return problem(pd);
+    }
+
     /** Helper for later handlers: always responds with application/problem+json. */
     static ResponseEntity<ProblemDetail> problem(ProblemDetail pd) {
         return ResponseEntity.status(pd.getStatus()).contentType(MediaType.APPLICATION_PROBLEM_JSON).body(pd);
