@@ -66,7 +66,7 @@ What phase 1 contains:
 - **web**: a small React app, served by Nginx, which also proxies the API.
 - **tools/loadtest**: a command-line tool that simulates 10,000 buyers at once.
 
-The measured result: 10,000 buyers for 500 seats, **500 sold, 0 oversold, 0 errors** (run on a laptop; see [section 9](#9-the-numbers-and-how-to-explain-them)).
+The measured result: 10,000 buyers for 500 seats, **500 sold, 0 oversold, 0 errors**, twice in a row (run on a laptop; see [section 9](#9-the-numbers-and-how-to-explain-them)).
 
 What phase 1 does **not** do yet: real login (a demo user id is sent in the `X-User-Id` header), real payments (a fake gateway approves everything), and real message brokers (outbox messages are only logged). Admin endpoints are open. It runs one instance of each container.
 
@@ -85,7 +85,9 @@ The key idea in one sentence: **Redis absorbs the rush, MySQL keeps the truth, a
 
 ### Containers
 
-| Container | Built from | Port on your machine | Job |
+Every published port is bound to `127.0.0.1`, so only your own machine can reach it: Redis has no password and the admin API has no login in phase 1, so neither may be reachable from your network.
+
+| Container | Built from | Port on your machine (127.0.0.1) | Job |
 |---|---|---|---|
 | `web` | [web/Dockerfile](web/Dockerfile) (Nginx 1.27) | 8080 | Serves the React app, proxies `/api` to booking-service |
 | `booking-service` | [booking-service/Dockerfile](booking-service/Dockerfile) (Temurin 25 JRE) | 8081 | All booking logic |
@@ -102,11 +104,11 @@ All key names come from one class, [RedisKeys.java](booking-service/src/main/jav
 | Key | Redis type | Holds | Expires |
 |---|---|---|---|
 | `seat:{eventId}:{seatId}` | string | the hold id that holds this seat | after 5 min |
-| `hold:{holdId}` | hash | `userId`, `eventId`, `seats`, `expiresAt`, `member` | after 5 min |
+| `hold:{holdId}` | hash | `userId`, `eventId`, `seats`, `prices` (locked per seat), `expiresAt`, `member` | after 5 min |
 | `userhold:{eventId}:{userId}` | string | the user's current hold for this event | after 5 min |
 | `holds:expiry` | sorted set | one member per hold (`eventId:holdId:seatIds`), score = expiry time in ms | members removed by the sweeper or at checkout |
 | `sold:{eventId}` | set | ids of sold seats (rebuilt from MySQL at startup) | never |
-| `idem:{userId}:{key}` | string | `IN_PROGRESS`, then the order id | after 24 h |
+| `idem:{userId}:{key}` | string | `IN_PROGRESS`, then the order id | `IN_PROGRESS` after 120 s; the order id after 24 h |
 | `rate:holds:{userId}` | hash | token bucket: `tokens`, `ts` | after 5 s idle |
 | `seats:{eventId}` | pub/sub channel | live seat changes as JSON | (messages are not stored) |
 | `loadtest:latest` | string | the latest load-test report as JSON | never |
@@ -139,17 +141,17 @@ sequenceDiagram
     B->>N: POST /api/bookings/holds
     N->>S: proxy, adds X-Request-Id
     S->>R: token_bucket.lua (rate limit)
-    S->>R: hold.lua (all seats or none)
+    S->>S: price seats (early bird, surge): the price lock
+    S->>R: hold.lua (all seats or none, prices stored)
     S->>R: PUBLISH seats:1 (HELD)
     R-->>S: message delivered to every instance
     S-->>B: SSE event "seats" to every open seat map
-    S-->>B: 201 holdId, expiresAt
+    S-->>B: 201 holdId, expiresAt, quotedTotalInr
     B->>N: POST /api/bookings/orders with Idempotency-Key
     N->>S: proxy
     S->>R: SET idem key NX (IN_PROGRESS)
-    S->>R: read hold hash
-    S->>S: price seats (early bird, surge)
-    S->>S: charge payment (outside any DB transaction)
+    S->>R: read hold hash (seats and locked prices)
+    S->>S: charge the locked total (outside any DB transaction)
     S->>M: one transaction: seats SOLD (version check), order, items, outbox rows
     S->>R: finalize.lua (sold set, delete hold keys)
     S->>R: PUBLISH seats:1 (SOLD)
@@ -181,37 +183,42 @@ sequenceDiagram
    - unknown event: **404** `event-not-found`;
    - a seat that is not in this event, or the same seat twice: **400** `invalid-seats`;
    - the current time (from the injected `Clock`) is before `saleOpensAt`: **409** `sale-not-open`.
-10. **The atomic hold.** [HoldStore.tryHold](booking-service/src/main/java/dev/surge/booking/hold/HoldStore.java) creates a hold id (a UUID) and runs [hold.lua](booking-service/src/main/resources/redis/hold.lua). Redis runs the whole script without running any other command in between:
+
+   Then it **prices every seat now** (the price lock). For each seat, [PriceCalculator](booking-service/src/main/java/dev/surge/booking/pricing/PriceCalculator.java) starts from the tier price and applies the rules in order:
+   - [EarlyBirdRule](booking-service/src/main/java/dev/surge/booking/pricing/EarlyBirdRule.java): 10% off in the first 15 minutes after the sale opens;
+   - [SurgeRule](booking-service/src/main/java/dev/surge/booking/pricing/SurgeRule.java): 20% more when fewer than 20% of seats are left (available = total seats minus `SCARD sold:{eventId}`);
+   - then it rounds to whole rupees (`HALF_UP`). Example: a PLATINUM seat in the early-bird window costs 4999 x 0.90 = 4499.10, so ₹4499.
+
+   The time is read once from the `Clock`, so the sale-open check and the price agree.
+10. **The atomic hold.** [HoldStore.tryHold](booking-service/src/main/java/dev/surge/booking/hold/HoldStore.java) creates a hold id (a UUID) and runs [hold.lua](booking-service/src/main/resources/redis/hold.lua) with the seat ids and their prices. Redis runs the whole script without running any other command in between:
     1. If `userhold:{eventId}:{userId}` exists, the user already holds seats for this event: return `HOLD_EXISTS` (**409** `hold-exists`, with the existing `holdId`).
     2. For every seat: if it is in `sold:{eventId}` or its `seat:` key exists, it is taken. If any are taken, return `TAKEN` and the taken ids. Nothing is held (**409** `seat-taken`, with `seatIds`).
-    3. Otherwise set every `seat:{eventId}:{seatId}` to the hold id with a 5-minute expiry, write the `hold:{holdId}` hash, set `userhold:{eventId}:{userId}`, and add the hold to the `holds:expiry` sorted set.
+    3. Otherwise set every `seat:{eventId}:{seatId}` to the hold id with a 5-minute expiry, write the `hold:{holdId}` hash (including the locked `prices`), set `userhold:{eventId}:{userId}`, and add the hold to the `holds:expiry` sorted set. A hold therefore never exists without its prices.
 11. The script's answer becomes a [HoldResult](booking-service/src/main/java/dev/surge/booking/hold/HoldResult.java), a sealed interface with three records. `HoldService` handles it with a pattern-matching `switch`.
 12. **Live update.** [SeatEventPublisher](booking-service/src/main/java/dev/surge/booking/stream/SeatEventPublisher.java) publishes `{"eventId":1,"seatIds":[3,4],"state":"HELD"}` on the Redis channel `seats:1`. Every instance of booking-service is subscribed to `seats:*` ([RedisListenerConfig](booking-service/src/main/java/dev/surge/booking/config/RedisListenerConfig.java)). [SeatChannelListener](booking-service/src/main/java/dev/surge/booking/stream/SeatChannelListener.java) receives it and `SeatStreamRegistry.broadcast` sends an SSE event named `seats` to every open page for event 1. Other users' seat maps turn those seats "held".
-13. The response is **201** `{"holdId":"...","eventId":1,"seatIds":[3,4],"expiresAt":"..."}`. The page starts a 5-minute [Countdown](web/src/components/Countdown.tsx) and creates an idempotency key with `crypto.randomUUID()` for the payment.
+13. The response is **201** `{"holdId":"...","eventId":1,"seatIds":[3,4],"expiresAt":"...","quotedTotalInr":9998.00,"lines":[{"seatId":3,"priceInr":4999.00},{"seatId":4,"priceInr":4999.00}]}` (two PLATINUM seats, no early bird or surge). The page starts a 5-minute [Countdown](web/src/components/Countdown.tsx), shows **Pay ₹9998** (the quote, which is exactly what checkout will charge) and creates an idempotency key with `crypto.randomUUID()` for the payment.
 
 MySQL was not touched in steps 7 to 13. (The first request for an event loads its seat facts into `InventoryCache`; after that they come from memory.) This is how the rush is absorbed.
 
 ### Part C: paying
 
 14. The user clicks **Pay**. The browser sends `POST /api/bookings/orders` with body `{"holdId":"..."}` and two headers: `X-User-Id` and `Idempotency-Key`. [OrderController](booking-service/src/main/java/dev/surge/booking/order/OrderController.java) rejects a missing, blank or over-64-character key with **400** `missing-idempotency-key`.
-15. **Idempotency.** [CheckoutService.checkout](booking-service/src/main/java/dev/surge/booking/order/CheckoutService.java) calls [IdempotencyStore.begin](booking-service/src/main/java/dev/surge/booking/order/IdempotencyStore.java), which does `SET idem:{userId}:{key} IN_PROGRESS NX` with a 24-hour expiry.
-    - Key already holds an order id: this is a repeat. Return that order with **200** and the header `Idempotent-Replayed: true`. Nothing is charged again.
+15. **Idempotency.** [CheckoutService.checkout](booking-service/src/main/java/dev/surge/booking/order/CheckoutService.java) calls [IdempotencyStore.begin](booking-service/src/main/java/dev/surge/booking/order/IdempotencyStore.java), which does `SET idem:{userId}:{key} IN_PROGRESS NX` with a 120-second expiry (short, so a crashed request frees its key soon).
+    - Key already holds an order id and that order exists: this is a repeat. Return that order with **200** and the header `Idempotent-Replayed: true`. Nothing is charged again.
+    - Key holds an order id but the order is gone (an admin reset deletes orders and keeps keys): the id is stale. A small Lua script swaps it for `IN_PROGRESS` only if the key still holds that id (compare-and-set), and the request continues as a new one.
     - Key holds `IN_PROGRESS`: the same request is still running. **409** `request-in-progress`.
     - Key claimed: continue.
 16. **Database fallback.** Redis might have lost the key (restart, flush). So the service also looks in MySQL for an order with this `(user_id, idempotency_key)`. If one exists, it replays it.
-17. **Load the hold.** The service reads the time once from the `Clock` (so price and `createdAt` agree), reads the `hold:{holdId}` hash and checks it belongs to this user. Missing, expired (Redis already deleted it) or someone else's: **404** `hold-not-found`.
-18. **Price.** For each seat, [PriceCalculator](booking-service/src/main/java/dev/surge/booking/pricing/PriceCalculator.java) starts from the tier price and applies the rules in order:
-    - [EarlyBirdRule](booking-service/src/main/java/dev/surge/booking/pricing/EarlyBirdRule.java): 10% off in the first 15 minutes after the sale opens;
-    - [SurgeRule](booking-service/src/main/java/dev/surge/booking/pricing/SurgeRule.java): 20% more when fewer than 20% of seats are left (sold count from `SCARD sold:{eventId}`);
-    - then it rounds to whole rupees (`HALF_UP`). Example: a PLATINUM seat in the early-bird window costs 4999 x 0.90 = 4499.10, so ₹4499.
+17. **Load the hold.** The service reads the time once from the `Clock` (for `createdAt`), reads the `hold:{holdId}` hash and checks it belongs to this user. Missing, expired (Redis already deleted it) or someone else's: **404** `hold-not-found`.
+18. **Price: the locked quote.** Checkout does **not** price again. It charges the per-seat prices stored in the hold hash in step 10, so the amount on the Pay button is exactly the amount charged, even if the early-bird window closed or surge started in the meantime. This is a "price lock", as real ticketing sites do while you hold seats.
 19. **Payment.** [PaymentGateway.charge](booking-service/src/main/java/dev/surge/booking/payment/PaymentGateway.java) is called **before** any database transaction starts. Phase 1 uses [FakePaymentGateway](booking-service/src/main/java/dev/surge/booking/payment/FakePaymentGateway.java), which approves everything (its failure rate is `0.0` in `application.yml`). If it declines: **402** `payment-failed`. The hold stays, and the idempotency key is released so the user can retry.
-20. **The one database transaction.** [OrderWriter.confirm](booking-service/src/main/java/dev/surge/booking/order/OrderWriter.java) is the only `@Transactional` method in checkout:
+20. **The one database transaction.** [OrderWriter.confirm](booking-service/src/main/java/dev/surge/booking/order/OrderWriter.java) is the only write transaction in checkout (the order lookups in [OrderReader](booking-service/src/main/java/dev/surge/booking/order/OrderReader.java) are short read-only transactions):
     1. Load the seats. Each must be `AVAILABLE` and belong to this event.
     2. Set them `SOLD` and flush. Hibernate's update includes `WHERE id = ? AND version = ?` because [Seat](booking-service/src/main/java/dev/surge/booking/event/Seat.java) has a `@Version` field. If another checkout changed the row first, zero rows match and Hibernate throws.
     3. Insert the `orders` row and one `order_item` per seat. `order_item.seat_id` is unique.
     4. Insert two `outbox` rows: `OrderConfirmed` (destination label `kafka:orders.v1`) and `TicketRequested` (`rabbit:tickets`). The payloads are the records in [common/messaging](common/src/main/java/dev/surge/common/messaging/).
     5. Commit. All of it is saved, or none of it.
-21. **Losing the race.** If the version check or a unique constraint fails, `OrderWriter` turns it into a `SeatConflictException`. `CheckoutService` refunds the payment and returns **409** `seat-taken`. (If the unique violation was on the idempotency key, the order already exists, so it replays that order instead.) If any other error happens, it first checks whether the commit actually succeeded before refunding.
+21. **Losing the race.** If the version check or a unique constraint fails, `OrderWriter` turns it into a `SeatConflictException`. `CheckoutService` refunds the payment, releases the hold and returns **409** `seat-taken`. Releasing runs [release.lua](booking-service/src/main/resources/redis/release.lua): the same compare-and-delete clean-up as `finalize.lua`, but nothing is added to the sold set; open seat maps are then told the MySQL truth (sold seats `SOLD`, the rest `AVAILABLE`). So the buyer can pick other seats at once instead of waiting 5 minutes, and the web page drops the hold and reloads the map. (If the unique violation was on the idempotency key, the order already exists, so it replays that order instead.) If any other error happens, it first checks whether the commit actually succeeded before refunding.
 22. **After the commit.** The database is now the source of truth, so nothing after this point may fail the request:
     - [finalize.lua](booking-service/src/main/resources/redis/finalize.lua) adds the seats to `sold:{eventId}`, deletes the seat keys that still belong to this hold, deletes the hold hash, deletes the user's `userhold` key if it still points to this hold, and removes the hold from `holds:expiry`;
     - a `SOLD` change is published, so every seat map shows the seats as sold;
@@ -278,7 +285,7 @@ Each section follows the same pattern: what it is, why Surge needs it, where it 
 | Encapsulation of a parent and its children | `Order.addItem` sets both sides of the relation ([Order.java](booking-service/src/main/java/dev/surge/booking/order/Order.java)) |
 | Custom unchecked exceptions mapped to HTTP | [booking/error/](booking-service/src/main/java/dev/surge/booking/error/) and [ApiExceptionHandler](booking-service/src/main/java/dev/surge/booking/error/ApiExceptionHandler.java) |
 | Utility classes: `final` with a private constructor | [RedisKeys](booking-service/src/main/java/dev/surge/booking/hold/RedisKeys.java), [Problems](common/src/main/java/dev/surge/common/web/Problems.java), [ReportWriter](tools/loadtest/src/main/java/dev/surge/loadtest/ReportWriter.java) |
-| `BigDecimal` for money | [PriceCalculator](booking-service/src/main/java/dev/surge/booking/pricing/PriceCalculator.java), [TierPrices](booking-service/src/main/java/dev/surge/booking/pricing/TierPrices.java), [CheckoutService](booking-service/src/main/java/dev/surge/booking/order/CheckoutService.java) |
+| `BigDecimal` for money | [PriceCalculator](booking-service/src/main/java/dev/surge/booking/pricing/PriceCalculator.java), [TierPrices](booking-service/src/main/java/dev/surge/booking/pricing/TierPrices.java), [HoldService](booking-service/src/main/java/dev/surge/booking/hold/HoldService.java) (prices the hold), [CheckoutService](booking-service/src/main/java/dev/surge/booking/order/CheckoutService.java) (sums the locked prices) |
 | Text blocks | `ReportWriter.markdown`, `LoadTestConfig.USAGE` ([LoadTestConfig.java](tools/loadtest/src/main/java/dev/surge/loadtest/LoadTestConfig.java)) |
 | A custom annotation | [CurrentUser](booking-service/src/main/java/dev/surge/booking/web/CurrentUser.java) |
 
@@ -446,14 +453,18 @@ The status codes Surge uses:
 | 201 | | Hold created; order created |
 | 200 + `Idempotent-Replayed: true` | | Same `Idempotency-Key` sent again; returns the same order |
 | 204 | | Admin reset; report upload |
-| 400 | `validation-failed`, `invalid-seats`, `missing-idempotency-key`, `malformed-request` | Bad input |
+| 400 | `validation-failed`, `invalid-seats`, `missing-idempotency-key`, `malformed-request` | Bad input, including a value of the wrong type (`/events/abc`, `?opensInSeconds=abc`) |
 | 401 | `missing-user` | Missing or invalid `X-User-Id` |
 | 402 | `payment-failed` | Payment declined |
-| 404 | `event-not-found`, `hold-not-found`, `order-not-found`, `report-not-found` | Not there (or not yours) |
+| 404 | `event-not-found`, `hold-not-found`, `order-not-found`, `report-not-found`; `not-found` for an unknown route | Not there (or not yours) |
+| 405 | `method-not-allowed` | Wrong HTTP method for the path (the `Allow` header lists the right ones) |
 | 409 | `seat-taken`, `hold-exists`, `sale-not-open`, `request-in-progress` | Conflicts with the current state |
 | 413 | `report-too-large` | Report over 256 KB |
 | 415 | `unsupported-media-type` | `Content-Type` is not JSON |
 | 429 | `rate-limited` | Too many hold attempts; see `Retry-After` |
+| 500 | `internal-error` | A bug or an infrastructure failure; logged in full, but the body never contains the exception message |
+
+`ApiExceptionHandler` extends Spring's `ResponseEntityExceptionHandler`. Surge's own exceptions have explicit handlers with the slugs above. Errors that Spring MVC raises by itself (unknown route, wrong method, bad parameter) are built by the base class and pass through one overridden method, `createResponseEntity`, which gives them a Surge `type` derived from the status, the `requestId` and `application/problem+json`. So every error has the same shape, whoever raised it. `ApiErrorsTest` checks the 400, 404, 405 and 500 cases.
 
 A real error body, taken from the running stack:
 
@@ -492,7 +503,10 @@ A standard JSON shape for HTTP errors, defined in RFC 7807 and updated by RFC 94
 **Q4. How is input validated?**
 With Jakarta Bean Validation annotations on the request records and `@Valid` on the controller parameter. A failure throws `MethodArgumentNotValidException`, which `ApiExceptionHandler` turns into a `400` with a map of field errors. Rules that need data (does this seat belong to this event?) are checked in `HoldService` and return `400 invalid-seats`.
 
-**Q5. How do you know who the user is?**
+**Q5. What does a client get for an error Spring raises itself, or for a bug?**
+The same Problem Details shape. Try `curl -s localhost:8080/api/bookings/events/abc`: a `400` with `type` `.../validation-failed`, `detail` `Invalid value for 'eventId'` and a `requestId`. An unknown path gives `404 not-found`, a wrong method `405 method-not-allowed`. An unexpected exception becomes `500 internal-error` with a generic `detail`: the stack trace goes to the log (with the same request id), never to the client, because exception messages can contain internals such as SQL or hostnames.
+
+**Q6. How do you know who the user is?**
 In phase 1, from the `X-User-Id` header, resolved into any controller parameter marked `@CurrentUser` by `CurrentUserArgumentResolver`. It is a stand-in for real login; anyone can send any id. The plan for phase 2 is a gateway that verifies a JWT and sets this header itself, with the service not reachable from outside. The parameter is declared before the request body, so a missing user (`401`) is reported before a bad body (`400`).
 
 ### 5.6 Date-Time API
@@ -506,7 +520,7 @@ In phase 1, from the `X-User-Id` header, resolved into any controller parameter 
 | What | Where |
 |---|---|
 | `Instant` for every timestamp | `HoldResponse.expiresAt`, `EventRef.saleOpensAt`, `Order.createdAt`, `PricingContext.now` |
-| `Duration` from config | `surge.hold.ttl: PT5M` is injected as a `Duration` into [HoldService](booking-service/src/main/java/dev/surge/booking/hold/HoldService.java); the 15-minute window in [EarlyBirdRule](booking-service/src/main/java/dev/surge/booking/pricing/EarlyBirdRule.java); the 24 h key lifetime in [IdempotencyStore](booking-service/src/main/java/dev/surge/booking/order/IdempotencyStore.java) |
+| `Duration` from config | `surge.hold.ttl: PT5M` is injected as a `Duration` into [HoldService](booking-service/src/main/java/dev/surge/booking/hold/HoldService.java); the 15-minute window in [EarlyBirdRule](booking-service/src/main/java/dev/surge/booking/pricing/EarlyBirdRule.java); the 120 s `IN_PROGRESS` and 24 h order-id lifetimes in [IdempotencyStore](booking-service/src/main/java/dev/surge/booking/order/IdempotencyStore.java) |
 | One injected `Clock` | [ClockConfig](booking-service/src/main/java/dev/surge/booking/config/ClockConfig.java) (`Clock.systemUTC()`), used by `HoldService`, `HoldStore`, `CheckoutService`, `OutboxRelay`, `HoldExpirySweeper`, `EventResetService` |
 | `ZoneId` per venue | `event_ref.zone_id`, loaded into [EventInventory](booking-service/src/main/java/dev/surge/booking/inventory/EventInventory.java) |
 | Show times in the venue's zone | [format.ts](web/src/format.ts) (`Intl.DateTimeFormat` with `timeZone`) |
@@ -559,16 +573,16 @@ cat reports/loadtest-*.md
 **Interview questions.**
 
 **Q1. Why `Files.writeString` instead of `FileWriter`?**
-It is one call, uses UTF-8 by default, opens and closes the file for you, and reports problems as `IOException`. `ReportWriter` wraps that in an `UncheckedIOException`, because the caller cannot recover from a disk error and should simply fail the run.
+It is one call, uses UTF-8 by default, opens and closes the file for you, and reports problems as `IOException`. `ReportWriter.write` lets that `IOException` through, and [LoadTestMain](tools/loadtest/src/main/java/dev/surge/loadtest/LoadTestMain.java) treats it as a warning, not a failure: by then the report has already been printed and stored for the Ops page, so a full disk or a read-only folder must not throw away a finished 10,000-buyer run. It prints `WARN: could not write the report files ...` with a hint and still exits with the run's verdict.
 
 **Q2. Why `Path.resolve` instead of string concatenation?**
 It builds a correct path for the operating system (Windows and Linux use different separators) and handles trailing slashes.
 
 **Q3. The load tester runs in a container. How does its report reach your machine?**
-Through a bind mount: `./reports:/app/reports` maps the container's folder onto the repo's `reports/` folder. The Dockerfile also creates `/app/reports` and gives it to the non-root user, so the process can write there.
+Through a bind mount: `./reports:/app/reports` maps the container's folder onto the repo's `reports/` folder. The Dockerfile also creates `/app/reports` and gives it to the non-root user, so the process can write there. On Docker Desktop (Windows, macOS) that is enough. On native Linux the bind mount keeps the host folder's owner, so user 10001 may not be allowed to write it. `compose.yaml` therefore runs the container as `${UID:-10001}`: run `export UID` first and it writes as you, or make the folder writable with `chmod o+w reports`.
 
 **Q4. Why are the Lua scripts separate files instead of Java strings?**
-They are easier to read and review, and editors highlight them. Spring loads each once from the classpath. The one-line "compare and delete" script in `IdempotencyStore` is kept inline because it is tiny.
+They are easier to read and review, and editors highlight them. Spring loads each once from the classpath. The one-line "compare and delete" and "compare and set" scripts in `IdempotencyStore` are kept inline because they are tiny.
 
 ### 5.8 Functional programming and Streams
 
@@ -702,9 +716,11 @@ docker compose --profile core exec mysql mysql -usurge -psurge booking -e "SELEC
 # Sold seats and their version numbers
 docker compose --profile core exec mysql mysql -usurge -psurge booking -e "SELECT id, row_label, number, status, version FROM seat WHERE event_id = 1 AND status = 'SOLD' LIMIT 10;"
 
-# The oversell check the load tester uses
+# The oversell check the load tester uses: oversold must be 0 and consistent true
 curl -s localhost:8080/api/bookings/admin/events/1/integrity
 ```
+
+The integrity endpoint counts with plain SQL: `soldSeats` (seats with status `SOLD`), `orderItems`, `distinctSeatsSold` (distinct seats in order lines), `oversold = orderItems - distinctSeatsSold`, and `consistent = (soldSeats == distinctSeatsSold)`. Section 9 explains why both numbers are there.
 
 **Interview questions.**
 
@@ -739,9 +755,10 @@ The ids come from MySQL's `AUTO_INCREMENT`, which is simple and fits the schema.
 | Key names | [RedisKeys](booking-service/src/main/java/dev/surge/booking/hold/RedisKeys.java) |
 | Atomic hold of several seats | [hold.lua](booking-service/src/main/resources/redis/hold.lua), called from [HoldStore.tryHold](booking-service/src/main/java/dev/surge/booking/hold/HoldStore.java) |
 | Mark sold and clean up after checkout | [finalize.lua](booking-service/src/main/resources/redis/finalize.lua), called from `HoldStore.finalizeSold` |
+| Give a hold back without selling it (checkout lost the seats) | [release.lua](booking-service/src/main/resources/redis/release.lua), called from `HoldStore.release` |
 | Announce expired holds exactly once | [sweep.lua](booking-service/src/main/resources/redis/sweep.lua), called from [HoldExpirySweeper](booking-service/src/main/java/dev/surge/booking/stream/HoldExpirySweeper.java) |
 | Token-bucket rate limit | [token_bucket.lua](booking-service/src/main/resources/redis/token_bucket.lua), called from [RateLimiter](booking-service/src/main/java/dev/surge/booking/ratelimit/RateLimiter.java) |
-| Idempotency keys (`SET NX`, compare-and-delete) | [IdempotencyStore](booking-service/src/main/java/dev/surge/booking/order/IdempotencyStore.java) |
+| Idempotency keys (`SET NX`, compare-and-delete, compare-and-set) | [IdempotencyStore](booking-service/src/main/java/dev/surge/booking/order/IdempotencyStore.java) |
 | Pub/sub for live seat updates | [SeatEventPublisher](booking-service/src/main/java/dev/surge/booking/stream/SeatEventPublisher.java) (publish), [SeatChannelListener](booking-service/src/main/java/dev/surge/booking/stream/SeatChannelListener.java) (subscribe) |
 | Rebuild sold sets from MySQL at startup | [SoldSeatsWarmer](booking-service/src/main/java/dev/surge/booking/inventory/SoldSeatsWarmer.java) |
 | Read all hold states in one round trip (`MGET`) | [SeatMapService.detail](booking-service/src/main/java/dev/surge/booking/event/SeatMapService.java) |
@@ -751,15 +768,15 @@ The ids come from MySQL's `AUTO_INCREMENT`, which is simple and fits the schema.
 
 **Expiry (TTL).** Every hold key is written with a 5-minute expiry (`PX` on `SET`, `PEXPIRE` on the hash). Redis deletes them by itself, so an abandoned hold frees its seats even if the service crashes. The sweeper does not free anything; it only notices expiries so it can tell browsers.
 
-**Exactly-once expiry announcements.** `holds:expiry` is a sorted set scored by expiry time. The sweeper asks for members with a score up to now (`ZRANGEBYSCORE`, at most 500 at a time). For each one, `sweep.lua` first runs `ZREM`. If that removed nothing, someone else already handled this hold (another instance's sweeper, or a checkout's `finalize.lua`), so it returns nothing. Only the caller whose `ZREM` succeeded announces it. The script also leaves out seats that someone has re-held or bought since, so a seat is never wrongly shown as free.
+**Exactly-once expiry announcements.** `holds:expiry` is a sorted set scored by expiry time. The sweeper asks for members with a score up to now (`ZRANGEBYSCORE`, at most 500 at a time). For each one, `sweep.lua` first runs `ZREM`. If that removed nothing, someone else already handled this hold (another instance's sweeper, or a checkout's `finalize.lua` or `release.lua`), so it returns nothing. Only the caller whose `ZREM` succeeded announces it. The script also leaves out seats that someone has re-held or bought since, so a seat is never wrongly shown as free.
 
 **Pub/sub for SSE.** A browser's SSE connection lives on one instance, but the hold that changes a seat may be handled by another. So every change goes through Redis: `PUBLISH seats:{eventId}`, and each instance listens on the pattern `seats:*` and forwards to its own open connections. This is designed to work with several instances; phase 1 runs one. Pub/sub is fire-and-forget: a message is lost if nobody listens, which is fine because a page loads the full seat map when it opens. Publishing never fails a request (`SeatEventPublisherTest` checks that).
 
 **Token bucket.** Each user has a bucket of 10 tokens that refills at 2 tokens per second. Each hold attempt takes one token; an empty bucket means `429`. The script reads the time with Redis `TIME`, never from the app server, so several instances share one clock and their clock drift does not matter. An idle bucket key expires after 5 seconds, the time it takes to refill completely. The token is taken before the hold runs, so failed holds cost a token too.
 
-**Idempotency keys.** `SET idem:{userId}:{key} IN_PROGRESS NX` with a 24-hour expiry claims a key; it succeeds for exactly one request. On success the value becomes the order id. On failure a tiny Lua script deletes the key **only if** it still says `IN_PROGRESS` (compare-and-delete), so a finished order id can never be deleted by a late error. If Redis loses the key, MySQL's unique `(user_id, idempotency_key)` is the backstop.
+**Idempotency keys.** `SET idem:{userId}:{key} IN_PROGRESS NX` with a 120-second expiry claims a key; it succeeds for exactly one request. The short expiry means a request that crashed half-way frees its key within two minutes. On success the value becomes the order id, kept for 24 hours. On failure a tiny Lua script deletes the key **only if** it still says `IN_PROGRESS` (compare-and-delete), so a finished order id can never be deleted by a late error. If the stored order id points at an order that no longer exists (an admin reset deletes orders but leaves these keys), a second tiny script swaps it for `IN_PROGRESS` **only if** it still holds that id (compare-and-set), and the request runs as a new one. If Redis loses the key, MySQL's unique `(user_id, idempotency_key)` is the backstop.
 
-**What if Redis loses its data?** Holds disappear and buyers hold again. The sold sets come back from MySQL at the next startup (`SoldSeatsWarmer`). In between, a buyer could hold a seat that is already sold, but the checkout would fail at MySQL with `409` and a refund. Redis protects MySQL from load; it is not the source of truth.
+**What if Redis loses its data?** Holds disappear and buyers hold again. The sold sets come back from MySQL at the next startup (`SoldSeatsWarmer`). In between, a buyer could hold a seat that is already sold, but the checkout would fail at MySQL with `409`, a refund and the hold released at once. Redis protects MySQL from load; it is not the source of truth.
 
 **How to see it.**
 
@@ -848,7 +865,10 @@ If an attacker breaks into the process, they get the rights of that user. As roo
 **Q4. How do containers find each other?**
 Compose puts them on one network where each service name is a hostname: the service connects to `mysql:3306` and `redis`, and Nginx proxies to `booking-service:8081`. Your machine uses the published ports instead: 3307 for MySQL, 6379 for Redis, 8081 and 8080. MySQL is published on 3307 rather than 3306 so it does not clash with a MySQL you may already have installed.
 
-**Q5. `entrypoint` or `command` for the load tester?**
+**Q5. Why are the ports written as `"127.0.0.1:6379:6379"`?**
+A plain `"6379:6379"` publishes on every network interface (`0.0.0.0`), so anyone on the same Wi-Fi could reach Redis (no password), MySQL and the admin API (no login in phase 1). Prefixing `127.0.0.1` binds the port to the loopback interface only: your browser and tools on this machine still work, and the rest of the network sees nothing. Check it with `docker compose --profile core port redis 6379`, which prints `127.0.0.1:6379`. Containers still talk to each other over the Compose network, which this does not affect.
+
+**Q6. `entrypoint` or `command` for the load tester?**
 Arguments given to `docker compose run loadtest ...` replace the service's `command`. Surge first put `--base-url http://web` in `command`, so `--users 10000` wiped it out and the tester called the wrong address. The fix (see the comment in `compose.yaml`) puts the fixed arguments in `entrypoint`, so your arguments are added after them.
 
 ### 5.13 Nginx
@@ -903,11 +923,11 @@ Test counts at the end of phase 1. This table is the one place the counts are ke
 
 | Module | Tests | What kind |
 |---|---|---|
-| `common` | 4 | Unit: request-id filter, message JSON round trip |
-| `booking-service` | 67 | Unit (pricing) and integration (real MySQL and Redis via Testcontainers, HTTP via MockMvc) |
-| `tools/loadtest` | 17 | Unit, plus a small stub HTTP server ([StubServer](tools/loadtest/src/test/java/dev/surge/loadtest/StubServer.java)) |
-| `web` | 28 | Vitest and Testing Library in jsdom |
-| **Total** | **116** | 88 backend (`./mvnw -B verify`) + 28 web (`npx vitest run`) |
+| `common` | 7 | Unit: request-id filter, Problem Details helper, message JSON round trip |
+| `booking-service` | 81 | Unit (pricing) and integration (real MySQL and Redis via Testcontainers, HTTP via MockMvc) |
+| `tools/loadtest` | 23 | Unit, plus a small stub HTTP server ([StubServer](tools/loadtest/src/test/java/dev/surge/loadtest/StubServer.java)) |
+| `web` | 30 | Vitest and Testing Library in jsdom |
+| **Total** | **141** | 111 backend (`./mvnw -B verify`) + 30 web (`npx vitest run`) |
 
 **One shared Spring context.** Every integration test class is annotated with [@IntegrationTest](booking-service/src/test/java/dev/surge/booking/support/IntegrationTest.java), a meta-annotation that bundles `@SpringBootTest`, `@AutoConfigureMockMvc`, Mockito spies on `PaymentGateway` and `OutboxPublisher`, and `@Import` of [TestcontainersConfig](booking-service/src/test/java/dev/surge/booking/support/TestcontainersConfig.java) and [TestData](booking-service/src/test/java/dev/surge/booking/support/TestData.java). Because every class uses exactly the same configuration, Spring's test-context cache builds the application context **once** and reuses it, with one MySQL container and one Redis container for the whole run. `@ServiceConnection` points Spring at the containers automatically. The annotation also pushes the outbox relay and the sweeper intervals to one hour, so background jobs never race the tests. Tests trigger the jobs themselves: `OutboxRelayTest` calls `relayBatch()`, and in one test the scheduler's entry point `OutboxPoller.poll()`; `HoldExpirySweeperTest` calls `sweep()`. Most test classes call `TestData.resetEvent` in `@BeforeEach` to put the database and Redis back to a clean state; `OutboxRelayTest` clears the outbox table instead. On the laptop, `./mvnw -B verify` ran the whole backend suite in 30 seconds in one run and about 1.5 minutes in two later runs.
 
@@ -926,7 +946,10 @@ The tests worth showing an interviewer:
 | [RateLimiterTest](booking-service/src/test/java/dev/surge/booking/ratelimit/RateLimiterTest.java) | Burst up to capacity, then blocked, then refilled |
 | [SeatStreamTest](booking-service/src/test/java/dev/surge/booking/stream/SeatStreamTest.java) | A hold reaches an open SSE stream |
 | [PricingBindingTest](booking-service/src/test/java/dev/surge/booking/pricing/PricingBindingTest.java) | Real `application.yml` prices bind; rules run in the right order |
-| [LoadTestMainTest](tools/loadtest/src/test/java/dev/surge/loadtest/LoadTestMainTest.java) | The load tester exits with code 1 if anything is oversold |
+| `CheckoutTest.priceIsLockedAtHoldTimeAndNotRepriced` | A hold made in the early-bird window is charged the early-bird price even after the window closes |
+| [AdminControllerTest](booking-service/src/test/java/dev/surge/booking/admin/AdminControllerTest.java) `sameIdempotencyKeyBuysAgainAfterReset` | After a real admin reset, the same key buys again: `201`, a new order, no stuck hold |
+| [ApiErrorsTest](booking-service/src/test/java/dev/surge/booking/error/ApiErrorsTest.java) | Spring's own errors (400, 404, 405) and a forced 500 all come back as Problem Details with `type` and `requestId`, and the 500 hides the exception message |
+| [LoadTestMainTest](tools/loadtest/src/test/java/dev/surge/loadtest/LoadTestMainTest.java) | Exit code 1 if anything is oversold, sold seats do not match order lines, or the 201 count differs from the seats sold; fresh idempotency keys per run; an unwritable report folder is only a warning |
 
 **CI.** [.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every push and pull request to `main`, with read-only permissions:
 
@@ -962,11 +985,11 @@ A small single-page app built with Vite, React 19 and TypeScript, kept deliberat
 | [App.tsx](web/src/App.tsx) | Routes (`/`, `/events/:id`, `/ops`) and the demo-user box |
 | [demoUser.ts](web/src/demoUser.ts) | A random demo id kept in `sessionStorage`, so each new tab is a different user |
 | [api/client.ts](web/src/api/client.ts) | `fetch` wrapper: adds `X-User-Id`, turns Problem Details into an `ApiError` |
-| [EventPage.tsx](web/src/pages/EventPage.tsx) | Seat selection, hold, countdown, pay; one idempotency key per hold |
+| [EventPage.tsx](web/src/pages/EventPage.tsx) | Seat selection, hold, countdown, pay the locked quote; one idempotency key per hold; on `seat-taken` at checkout it drops the hold and reloads the map |
 | [SeatMap.tsx](web/src/components/SeatMap.tsx) | Seat grid, at most 8 selected |
 | [Countdown.tsx](web/src/components/Countdown.tsx) | Sale-opens and hold-expires timers |
 | [useSeatStream.ts](web/src/hooks/useSeatStream.ts) | Opens the `EventSource`, applies `seats` events, closes on unmount |
-| [OpsPage.tsx](web/src/pages/OpsPage.tsx) | Integrity check, event reset, latest load-test report |
+| [OpsPage.tsx](web/src/pages/OpsPage.tsx) | Integrity check (oversold and consistency), event reset, latest load-test report with its PASS/FAIL verdict |
 | [vite.config.ts](web/vite.config.ts) | In `npm run dev`, proxies `/api` to `localhost:8081` |
 
 **Q1. How does the seat map update live?**
@@ -976,7 +999,7 @@ A small single-page app built with Vite, React 19 and TypeScript, kept deliberat
 The Pay button is disabled while a request is in flight, and every attempt for the same hold sends the same `Idempotency-Key` (made once with `crypto.randomUUID()` when the hold succeeds). If two requests still reach the server, the second one gets either the same order back or `409 request-in-progress`.
 
 **Q3. The Pay button shows a price. Is that what the user pays?**
-It shows the sum of base tier prices and says "final price at checkout". The server decides the real price at checkout time (early bird, surge), and the confirmation shows the charged total.
+Yes, exactly. The button shows `quotedTotalInr` from the hold response: the server priced each seat (early bird, surge) when the hold was made and stored those prices with the hold. Checkout charges the stored prices and never re-prices, so the amount cannot change between the click on Pay and the charge. `EventPage.test.tsx` uses a quote that differs from the seat's base price to prove the button shows the quote.
 
 ---
 
@@ -1017,7 +1040,7 @@ Phase 1 already leaves the seams these will plug into:
 | 2. Status check + optimistic lock in one transaction | [OrderWriter](booking-service/src/main/java/dev/surge/booking/order/OrderWriter.java), `@Version` on [Seat](booking-service/src/main/java/dev/surge/booking/event/Seat.java) | Two checkouts for the same seat both committing | If code skips it, layer 3 still stops it |
 | 3. `UNIQUE (seat_id)` on `order_item` | [V1__schema.sql](booking-service/src/main/resources/db/migration/V1__schema.sql) | Any second order line for a seat, from any code path | This is the last line |
 
-Why not rely on layer 2 alone? It would be correct, but every click would become a database transaction. With 10,000 buyers and a pool of 30 connections, most requests would queue for a connection and could time out. Layer 1 answers the losing attempts from Redis without touching MySQL (in the load test, 95,002 conflicts were answered with zero errors).
+Why not rely on layer 2 alone? It would be correct, but every click would become a database transaction. With 10,000 buyers and a pool of 30 connections, most requests would queue for a connection and could time out. Layer 1 answers the losing attempts from Redis without touching MySQL (in the recorded load test, 95,045 conflicts were answered with zero errors).
 
 ### 7.2 Holds in Redis instead of row locks in MySQL
 
@@ -1040,7 +1063,7 @@ The cost: the buyer can be charged and then lose the race for the seat. In that 
 
 After an order commits, other systems need to hear about it (in phase 2: Kafka for search and stats, RabbitMQ for tickets). Publishing straight to a broker after the commit has the dual-write problem: the commit can succeed and the publish fail (or the other way round), and the two systems disagree.
 
-With the outbox, the message is a row written **in the same transaction** as the order: both are saved or neither is. A separate relay reads unsent rows in id order, publishes them, and marks them sent: [OutboxPoller](booking-service/src/main/java/dev/surge/booking/outbox/OutboxPoller.java) triggers it every 0.5 s, and [OutboxRelay](booking-service/src/main/java/dev/surge/booking/outbox/OutboxRelay.java) does each batch in one transaction. If publishing fails, it stops the batch and retries on the next poll, so order is kept.
+With the outbox, the message is a row written **in the same transaction** as the order: both are saved or neither is. A separate relay reads unsent rows in id order, publishes them, and marks them sent: [OutboxPoller](booking-service/src/main/java/dev/surge/booking/outbox/OutboxPoller.java) triggers it every 0.5 s, and [OutboxRelay](booking-service/src/main/java/dev/surge/booking/outbox/OutboxRelay.java) does each batch in one transaction. If publishing fails, it stops the batch and retries on the next poll, so order is kept **within one relay instance**. With several instances, `SKIP LOCKED` lets each take a different batch at the same moment, so messages from different batches can be published in parallel and arrive interleaved; consumers that need strict order would have to rely on a per-aggregate key (for example Kafka partitioned by order id) rather than on global order.
 
 The trade-off is **at-least-once** delivery: if the relay publishes and then crashes before marking the row, the message is sent again. Consumers must ignore duplicates; each message carries a unique `messageId` ([OrderConfirmed](common/src/main/java/dev/surge/common/messaging/OrderConfirmed.java), [TicketRequested](common/src/main/java/dev/surge/common/messaging/TicketRequested.java)) for that. Messages also arrive a little later (up to one poll interval, 0.5 s). In phase 1 the publisher only logs; the broker publishers come in phase 2.
 
@@ -1063,9 +1086,13 @@ Networks fail. A user may click Pay twice, or the response may be lost and the c
 | Repeat while the first is still running | `409 request-in-progress` |
 | First request failed (for example `402` or `409`) | Compare-and-delete removes the `IN_PROGRESS` marker only, so a retry can run |
 | Redis lost the key | Lookup in MySQL by `(user_id, idempotency_key)` finds the order and replays it |
+| The key holds an order id but that order is gone (an admin reset deleted it) | The id is stale: a compare-and-set script swaps it for `IN_PROGRESS` and the request runs as a new one (before this fix it answered `404 order-not-found` and left the new hold stuck for 5 minutes) |
+| The first request crashed half-way | The `IN_PROGRESS` marker expires after 120 s, so the key can be used again |
 | Two requests got past Redis at the same moment | The unique `(user_id, idempotency_key)` constraint fails the second insert; it is refunded and replays the first order |
 
-Keys are scoped per user (`idem:{userId}:{key}`), so two users cannot collide, and they live 24 hours in Redis.
+Keys are scoped per user (`idem:{userId}:{key}`), so two users cannot collide. A completed key (the order id) lives 24 hours in Redis; an `IN_PROGRESS` marker only 120 seconds.
+
+The load tester makes its keys unique per run: each run creates a `runId` (a UUID) and every buyer sends `runId + "-" + userId` (at most 50 characters, under the 64 limit). Its user ids (`lt-0` to `lt-9999`) repeat from run to run, so fixed keys would have pointed at the previous run's deleted orders.
 
 ### 7.8 Cache the facts, never the status
 
@@ -1074,7 +1101,8 @@ Keys are scoped per user (`idem:{userId}:{key}`), so two users cannot collide, a
 ### 7.9 Smaller decisions
 
 - **Request ids everywhere.** Nginx creates one, the service keeps it, puts it in the logging MDC and the response header, and every error body includes it, so a user can quote it. Note the limit: the MDC holds `requestId`, but Spring Boot's default log pattern does not print it, so today's log lines do not show it. Printing it in every log line comes with the JSON logs planned for phase 3.
-- **Problem Details for every error** (`application/problem+json`), so clients branch on a stable `type` instead of parsing messages.
+- **Price locked when the hold is made.** The seats are priced (early bird, surge) when the hold succeeds and the prices are stored in the hold; checkout charges exactly that quote. The alternative, pricing at checkout, meant the Pay button could show one amount and the charge be up to 20% higher if surge started while the user was paying. Real ticketing sites lock the price for the length of the hold too. The cost: surge and early bird are judged at hold time, so a hold made one second before surge starts keeps the lower price for up to 5 minutes.
+- **Problem Details for every error** (`application/problem+json`), including errors Spring raises itself and unexpected 500s, so clients branch on a stable `type` instead of parsing messages.
 - **Best-effort side effects.** Publishing seat changes and the Redis cleanup after a commit never fail a request; they log instead. The database result is what counts.
 - **Flyway owns the schema**; Hibernate only validates it.
 
@@ -1082,13 +1110,14 @@ Keys are scoped per user (`idem:{userId}:{key}`), so two users cannot collide, a
 
 Say these yourself before an interviewer finds them:
 
-- **No authentication.** `X-User-Id` trusts the client, and the admin endpoints (reset, integrity, report upload) are open. Phase 2 plans JWT login and a gateway.
+- **No authentication.** `X-User-Id` trusts the client, and the admin endpoints (reset, integrity, report upload) are open. Phase 2 plans JWT login and a gateway. To keep that safe locally, every published port is bound to `127.0.0.1`, so nothing (Redis without a password, MySQL, the admin API) is reachable from your network.
 - **Fake payment.** It approves everything (configurable failure rate), and refunds only write a log line.
 - **No real broker.** The outbox relay logs messages instead of sending them.
 - **Single instances.** One service instance, one Redis node, one MySQL. The pub/sub design supports more service instances, but that has not been run.
 - **Redis Cluster not supported yet.** Script keys have no hash tags, and `holds:expiry` is one global sorted set.
 - **No cancellations.** `order_item.seat_id` is unique for good, so a cancelled seat could not be sold again without a schema change (for example, uniqueness only over active orders).
 - **A hold can expire during checkout.** If someone else then buys the seat first, this buyer gets `409` and a refund. No oversell, but a bad experience; a real system might extend the hold while payment runs.
+- **A hold is lost on page refresh.** The web app keeps the hold only in the page's memory. After a refresh the seats still show as held, like anyone else's, and the page no longer knows the hold id, so there is no Pay button, and a new hold gets `409 hold-exists` until the old one expires (up to 5 minutes). The `hold-exists` reply carries the `holdId`, so a fix would be to resume it (or store it in `sessionStorage`); phase 1 does not.
 - **The load test ran on one laptop.** It shows correctness under contention, not production capacity.
 
 ## 8. Design BookMyShow: interview script
@@ -1101,7 +1130,7 @@ A first draft for the classic system-design question "Design BookMyShow (or Tick
 - Ask about scale: "How many seats per show, and how many people at sale open?" Then use Surge's numbers as the example: 500 seats, 10,000 buyers.
 
 **2. Estimate the load (1 minute).**
-- If 10,000 people each try about 10 seats, that is about 100,000 requests in a few seconds. Surge's load test made 96,002 requests in 11.2 s **(built)**.
+- If 10,000 people each try about 10 seats, that is about 100,000 requests in a few seconds. Surge's recorded load test made 96,045 requests in 20.6 s on a laptop **(built)**.
 - Almost all of them fail (only 500 can win). So the system must make failing cheap.
 
 **3. API (2 minutes).**
@@ -1121,7 +1150,8 @@ A first draft for the classic system-design question "Design BookMyShow (or Tick
 
 **6. Checkout details (3 minutes).**
 - Idempotency keys in Redis (`SET NX`), with the database as a fallback **(built)**.
-- Payment outside the transaction; refund if the seat is lost **(built)**.
+- Payment outside the transaction; refund and release the hold if the seat is lost **(built)**.
+- Price locked when the hold is made, so the amount shown is the amount charged **(built)**.
 - One hold per user per event and at most 8 seats, to stop hoarding **(built)**.
 - Rate limiting with a token bucket per user **(built)**.
 
@@ -1148,7 +1178,7 @@ A first draft for the classic system-design question "Design BookMyShow (or Tick
 - A hold expires mid-checkout: the database decides; the loser gets `409` and a refund **(built)**.
 
 **11. Proof (1 minute).**
-- "I load-tested it: 10,000 concurrent buyers for 500 seats, 500 sold, 0 oversold, 0 errors, on a laptop. A smaller version, 2,000 buyers for 100 seats, runs in CI on every push." **(built)**
+- "I load-tested it: 10,000 concurrent buyers for 500 seats, 500 sold, 0 oversold, 0 errors, twice in a row, on a laptop. A smaller version, 2,000 buyers for 100 seats, runs in CI on every push." **(built)**
 
 **12. What I would do next.** Login and a gateway, real brokers behind the outbox, metrics dashboards and alerts, then a waiting room for very large sales.
 
@@ -1158,6 +1188,14 @@ A first draft for the classic system-design question "Design BookMyShow (or Tick
 
 Command: `docker compose --profile core --profile loadtest run --rm loadtest --users 10000 --event 1`
 
+The recorded run is the second of two runs made back to back with that command (no manual clean-up in between; each run resets event 1 itself). Both passed every check.
+
+| Check | Result |
+|---|---|
+| Oversold (a seat in two order lines) | 0 |
+| Seats marked SOLD = distinct seats in orders | yes |
+| Buyers who got a 201 = seats sold | 500 = 500 |
+
 | Metric | Value |
 |---|---|
 | Buyers | 10,000 |
@@ -1165,15 +1203,17 @@ Command: `docker compose --profile core --profile loadtest run --rm loadtest --u
 | Sold | 500 |
 | Oversold | 0 |
 | Errors | 0 |
-| Requests | 96,002 |
-| Conflicts | 95,002 |
+| Requests | 96,045 |
+| Conflicts | 95,045 |
 | Rate limited | 0 |
-| Duration | 11.2 s |
+| Duration | 20.6 s |
 
 | Latency (ms) | p50 | p95 | p99 | max |
 |---|---|---|---|---|
-| Hold | 718 | 2574 | 3458 | 4432 |
-| Checkout | 2617 | 4008 | 4253 | 4844 |
+| Hold | 1675 | 3740 | 5975 | 7376 |
+| Checkout | 2652 | 5367 | 6035 | 6739 |
+
+The first run of the pair, started about a minute after the service, sold 500 with 0 oversold and 0 errors too, in 28.1 s (96,001 requests); the JVM was still warming up.
 
 **Where it ran.** One laptop: Docker Desktop on WSL2, 12 GB of memory given to Docker, 24 CPU threads. The load generator, Nginx, booking-service, MySQL and Redis all ran on that one machine at the same time. The traffic went through Nginx, like browser traffic.
 
@@ -1181,13 +1221,19 @@ Command: `docker compose --profile core --profile loadtest run --rm loadtest --u
 
 **How to read the totals.** The report gives totals, not per-buyer counts, but the totals imply how the attempts split:
 - 500 buyers won. Errors and rate limits were both 0, so a buyer could only stop without a seat by using all 10 attempts. That implies the other 9,500 each got `409` ten times: 9,500 x 10 = 95,000 conflicts.
-- That leaves 2 conflicts for the 500 winners: they made 502 hold attempts in total (2 extra), then 500 checkouts with no conflict.
-- Check: hold requests 95,000 + 502 = 95,502, plus 500 checkouts = **96,002 requests**. Conflicts: 95,000 + 2 = **95,002**. Both match the report.
-- On average that is about 8,500 requests per second (96,002 / 11.2 s).
+- That leaves 45 conflicts for the 500 winners: they made 545 hold attempts in total (45 extra), then 500 checkouts with no conflict (a hold reserves its seat, so a winner's checkout cannot lose it).
+- Check: hold requests 95,000 + 545 = 95,545, plus 500 checkouts = **96,045 requests**. Conflicts: 95,000 + 45 = **95,045**. Both match the report.
+- On average that is about 4,700 requests per second (96,045 / 20.6 s).
 
 **Why the latencies are in seconds.** All 10,000 buyers start in the same instant on one laptop that also runs the databases and the load generator, and nothing was tuned for speed. Checkout is slower than hold because it runs the database transaction, with 30 connections shared by everyone who got a hold. The run proves **correctness under extreme contention**, not speed. Do not quote these numbers as production performance.
 
-**How to say it on a resume or in an interview.** "In a local load test, 10,000 concurrent buyers raced for 500 seats: exactly 500 sold, 0 oversold, 0 errors." If asked about latency, explain the laptop setup and that the test was about correctness.
+**Run-to-run variation.** The very first recorded run of phase 1, earlier the same day, took 11.2 s (96,002 requests, hold p50 718 ms). The runs above took 28.1 s and 20.6 s. To check whether the price-lock change made holds slower, the code from before this change was rebuilt and run on the same laptop right afterwards: 27.0 s cold and 19.6 s warm, the same as the new code. So the difference comes from the laptop's state at the time, not from the code. This is one more reason to quote the counts, not the times.
+
+**Isn't "oversold" always 0 by construction?** Yes, and it is worth saying so before an interviewer does. `oversold` is `orderItems - distinctSeatsSold`, the number of extra order lines for a seat that already has one. `order_item.seat_id` is `UNIQUE`, so MySQL can never store such a line, and that number cannot be anything but 0. It is still reported, because it proves the constraint exists in the running database. The checks that can actually fail are the other two. `consistent` compares the seats whose status is `SOLD` with the distinct seats in order lines, so it would catch a seat marked sold without an order, or an order line on a seat still marked available. The load tester also counts, on the client side, the buyers who got `201` for their one seat and requires that number to equal the seats sold: every `201` the users saw must be a distinct seat in the database. The run fails (exit code 1) if any of the three checks fails.
+
+**Running it again.** Each run creates a fresh run id and sends `Idempotency-Key: <runId>-<userId>`, so a second run within 24 hours never reuses the first run's keys (whose orders the reset deleted). The service also copes if a client does reuse such a key: it treats a key that points at a deleted order as new.
+
+**How to say it on a resume or in an interview.** "In a local load test, 10,000 concurrent buyers raced for 500 seats: exactly 500 sold, 0 oversold, 0 errors, and every successful checkout was a distinct seat." Say "10,000 concurrent buyers", not "10,000 checkouts": only 500 buyers could ever reach checkout. If asked about latency, explain the laptop setup and that the test was about correctness.
 
 ### The concurrency test in CI
 
@@ -1230,7 +1276,7 @@ Things to try:
    docker compose --profile core --profile loadtest run --rm loadtest --users 10000 --event 1
    ```
 
-   It resets event 1 first, prints the report, saves it in `reports/`, and the Ops page shows it. The process exits with code 1 if anything was oversold. Other options: `--users`, `--event`, `--hot-share` (0 to 1), `--max-attempts`, `--no-reset` (see [LoadTestConfig](tools/loadtest/src/main/java/dev/surge/loadtest/LoadTestConfig.java)).
+   It resets event 1 first, prints the report, stores it for the Ops page, then saves it in `reports/`. The process exits with code 1 if any check fails: a seat oversold, sold seats not matching order lines, or the number of `201`s differing from the seats sold. You can run it again straight away: each run uses fresh idempotency keys. On native Linux, run `export UID` first (or `chmod o+w reports`) so the container may write `reports/`; if it cannot, it prints a warning and the run still counts. Other options: `--users`, `--event`, `--hot-share` (0 to 1), `--max-attempts`, `--no-reset` (see [LoadTestConfig](tools/loadtest/src/main/java/dev/surge/loadtest/LoadTestConfig.java)).
 5. **Reset after the load test** (it leaves event 1 sold out): use the Ops page, or
 
    ```bash
@@ -1272,12 +1318,14 @@ On Windows PowerShell, use `.\mvnw.cmd` instead of `./mvnw`.
 |---|---|---|
 | `Cannot connect to the Docker daemon` / `docker: command not found` | Docker Desktop is not running | Start Docker Desktop and wait until it says the engine is running |
 | Tests fail with "Could not find a valid Docker environment" | Same: Testcontainers needs Docker | Start Docker Desktop, run the tests again |
-| `port is already allocated` / `bind: address already in use` for 8080, 8081, 3307 or 6379 | Another program (or another stack) uses the port | Find it: `netstat -ano \| findstr :8080` in PowerShell, then stop it. Or change the left number of the port mapping in [compose.yaml](compose.yaml), for example `"8090:80"` |
+| `port is already allocated` / `bind: address already in use` for 8080, 8081, 3307 or 6379 | Another program (or another stack) uses the port | Find it: `netstat -ano \| findstr :8080` in PowerShell, then stop it. Or change the host port in [compose.yaml](compose.yaml), for example `"127.0.0.1:8090:80"` |
 | Containers exit or restart, builds crawl, the load test errors | Docker does not have enough memory | Give Docker more memory. With WSL2, set `memory=` under `[wsl2]` in `%UserProfile%\.wslconfig`, run `wsl --shutdown`, restart Docker Desktop. The recorded run used 12 GB |
 | First `up --build` is slow | Maven and npm download everything once | Wait; later builds use the cache |
 | `the input device is not a TTY` from `docker compose exec` in Git Bash | Git Bash's terminal and Docker's TTY mode disagree | Add `-T` after `exec` (for example `docker compose --profile core exec -T redis redis-cli PING`), or use PowerShell |
 | Hold returns `409 sale-not-open` | The event was reset with "opens in N seconds" | Wait for the countdown, or reset with `opensInSeconds=0` |
-| Hold returns `409 hold-exists` | You already hold seats for this event | Pay, wait 5 minutes, or click **Random** for a new demo user |
+| Hold returns `409 hold-exists` | You already hold seats for this event. After a page refresh the page no longer shows that hold or its Pay button (see [section 7.10](#710-known-limits-of-phase-1)) | Wait up to 5 minutes for the old hold to expire, or click **Random** for a new demo user |
+| Load test prints `WARN: could not write the report files` | On native Linux the container user cannot write the bind-mounted `reports/` folder | The run is not lost (the report was printed and is on the Ops page). For next time: `export UID` before `docker compose`, or `chmod o+w reports` |
+| The app or Redis cannot be reached from another device | By design: every port is bound to `127.0.0.1` | Use the machine itself; do not change this while the admin API and Redis have no authentication |
 | Hold returns `429` | More than about 10 hold attempts in a few seconds as one user | Wait the `Retry-After` seconds |
 | Everything is sold after the load test | The load test sells all 500 seats | Reset event 1 (Ops page or the curl command in [section 10](#10-how-to-run-everything)) |
 | Seat map does not update live | The SSE stream is blocked or buffered | Check `curl -N localhost:8080/api/bookings/events/1/stream` prints `:connected`; the stream location in [nginx.conf](web/nginx.conf) must keep `proxy_buffering off` |
@@ -1292,6 +1340,7 @@ On Windows PowerShell, use `.\mvnw.cmd` instead of `./mvnw`.
 |---|---|
 | Overselling | Selling the same seat to two people, or more seats than exist |
 | Hold | A temporary reservation of seats (5 minutes) before payment |
+| Price lock | Pricing the seats when they are held and charging exactly that price at checkout, whatever happens to prices meanwhile |
 | TTL | Time to live: Redis deletes the key when it runs out |
 | Atomic | Happens completely or not at all, with nothing else running in the middle |
 | Lua script (Redis) | A small program Redis runs as one atomic step |
