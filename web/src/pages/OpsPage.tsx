@@ -5,6 +5,15 @@ import { GENERIC_ERROR } from '../format'
 
 type Report = LoadTestReport | null | undefined // undefined = loading
 
+// Both profiles: the loadtest service depends on web, which lives in the core profile.
+const LOADTEST_COMMAND =
+  'docker compose --profile core --profile loadtest run --rm loadtest --users 10000 --event 1'
+
+/** Same verdict as the load tester; `consistent` is missing in reports stored before it existed. */
+function passed(r: LoadTestReport): boolean {
+  return r.oversold === 0 && r.consistent !== false && r.buyersSucceeded === r.sold
+}
+
 export default function OpsPage() {
   const [events, setEvents] = useState<EventSummary[]>([])
   const [eventId, setEventId] = useState<number | null>(null)
@@ -120,6 +129,12 @@ export default function OpsPage() {
             <p>
               Oversold: {shownIntegrity.oversold} {shownIntegrity.oversold === 0 ? '✅' : '❌'}
             </p>
+            <p>
+              Sold seats match order lines:{' '}
+              {shownIntegrity.consistent
+                ? `yes (${shownIntegrity.distinctSeatsSold}) ✅`
+                : `no (${shownIntegrity.soldSeats} sold, ${shownIntegrity.distinctSeatsSold} in orders) ❌`}
+            </p>
           </>
         ) : (
           <p className="muted">{error || eventId === null ? 'No data.' : 'Loading…'}</p>
@@ -132,15 +147,18 @@ export default function OpsPage() {
           <p className="muted">Loading…</p>
         ) : report === null ? (
           <p className="muted">
-            No load test run yet — run <code>docker compose --profile loadtest run --rm loadtest</code>
+            No load test run yet — run{' '}
+            <code>{LOADTEST_COMMAND}</code>
           </p>
         ) : (
           <div className="table-scroll">
             <table>
               <thead>
                 <tr>
+                  <th scope="col">Result</th>
                   <th scope="col">Users</th>
                   <th scope="col">Sold</th>
+                  <th scope="col">Buyers with 201</th>
                   <th scope="col">Oversold</th>
                   <th scope="col">Hold p50/p95/p99 (ms)</th>
                   <th scope="col">Checkout p50/p95/p99 (ms)</th>
@@ -149,8 +167,10 @@ export default function OpsPage() {
               </thead>
               <tbody>
                 <tr>
+                  <td>{passed(report) ? 'PASS ✅' : 'FAIL ❌'}</td>
                   <td>{report.users}</td>
                   <td>{report.sold}</td>
+                  <td>{report.buyersSucceeded}</td>
                   <td>{report.oversold}</td>
                   <td>
                     {report.hold.p50} / {report.hold.p95} / {report.hold.p99}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router'
 import { ApiError, api } from '../api/client'
 import type { EventDetail, HoldResponse, OrderResponse, SeatStateChange } from '../api/types'
@@ -117,13 +117,6 @@ function EventView({ eventId }: { eventId: number }) {
   )
   useSeatStream(eventId, onStream)
 
-  const seats = event?.seats
-  const payTotal = useMemo(() => {
-    if (!hold || !seats) return 0
-    const held = new Set(hold.seatIds)
-    return seats.filter((s) => held.has(s.id)).reduce((sum, s) => sum + s.basePriceInr, 0)
-  }, [hold, seats])
-
   const toggle = (id: number) => {
     if (hold || order) return
     setSelected((prev) => {
@@ -164,7 +157,8 @@ function EventView({ eventId }: { eventId: number }) {
       setSelected(new Set())
     } catch (err) {
       setNotice(describe(err))
-      if (err instanceof ApiError && slugOf(err) === 'hold-not-found') {
+      // The hold is gone: it expired, or another order got the seats (the server released the hold).
+      if (err instanceof ApiError && ['hold-not-found', 'seat-taken'].includes(slugOf(err))) {
         setHold(null)
         setSelected(new Set())
         await load()
@@ -230,7 +224,7 @@ function EventView({ eventId }: { eventId: number }) {
               Seats held for you <Countdown target={hold.expiresAt} onDone={onHoldExpired} />
             </p>
             <button type="button" className="primary" disabled={busy} onClick={doPay}>
-              Pay ₹{payTotal} (final price at checkout)
+              Pay ₹{hold.quotedTotalInr}
             </button>
           </>
         ) : (

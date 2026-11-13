@@ -29,11 +29,20 @@ export interface EventDetail {
   seats: SeatView[]
 }
 
+/** One held seat and the price locked for it when the hold was made. */
+export interface HoldLine {
+  seatId: number
+  priceInr: number
+}
+
 export interface HoldResponse {
   holdId: string
   eventId: number
   seatIds: number[]
   expiresAt: string
+  /** Exactly what checkout will charge: the prices are locked when the hold is made. */
+  quotedTotalInr: number
+  lines: HoldLine[]
 }
 
 export interface OrderLine {
@@ -65,6 +74,8 @@ export interface IntegrityReport {
   orderItems: number
   distinctSeatsSold: number
   oversold: number
+  /** soldSeats === distinctSeatsSold: every SOLD seat has exactly one order line. */
+  consistent: boolean
 }
 
 export interface LatencyStats {
@@ -81,6 +92,8 @@ export interface LoadTestReport {
   totalSeats: number
   sold: number
   oversold: number
+  /** Missing in reports stored before this field existed. */
+  consistent?: boolean
   buyersSucceeded: number
   requests: number
   conflicts: number

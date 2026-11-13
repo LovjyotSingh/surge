@@ -53,6 +53,7 @@ beforeEach(() => {
     orderItems: 500,
     distinctSeatsSold: 500,
     oversold: 0,
+    consistent: true,
   })
 })
 
@@ -60,22 +61,47 @@ describe('OpsPage', () => {
   it('shows report and integrity', async () => {
     mocked.latestReport.mockResolvedValue(report)
     render(<OpsPage />)
-    expect(await screen.findByRole('cell', { name: '500' })).toBeInTheDocument()
-    expect(await screen.findByText(/✅/)).toBeInTheDocument()
+    expect(await screen.findByRole('cell', { name: 'PASS ✅' })).toBeInTheDocument()
+    expect(screen.getAllByRole('cell', { name: '500' })).toHaveLength(2) // sold, buyers with 201
     expect(screen.getByText('1000')).toBeInTheDocument()
+    expect(await screen.findByText('Oversold: 0 ✅')).toBeInTheDocument()
+    expect(screen.getByText('Sold seats match order lines: yes (500) ✅')).toBeInTheDocument()
   })
 
-  it('shows empty state', async () => {
+  it('flags a failed run and inconsistent seats', async () => {
+    mocked.latestReport.mockResolvedValue({ ...report, buyersSucceeded: 499 })
+    mocked.integrity.mockResolvedValue({
+      eventId: 1,
+      totalSeats: 500,
+      soldSeats: 501,
+      orderItems: 500,
+      distinctSeatsSold: 500,
+      oversold: 0,
+      consistent: false,
+    })
+    render(<OpsPage />)
+    expect(await screen.findByRole('cell', { name: 'FAIL ❌' })).toBeInTheDocument()
+    expect(
+      await screen.findByText('Sold seats match order lines: no (501 sold, 500 in orders) ❌'),
+    ).toBeInTheDocument()
+  })
+
+  it('shows empty state with a command that works', async () => {
     mocked.latestReport.mockResolvedValue(null)
     render(<OpsPage />)
     expect(await screen.findByText(/No load test run yet/)).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'docker compose --profile core --profile loadtest run --rm loadtest --users 10000 --event 1',
+      ).tagName,
+    ).toBe('CODE')
   })
 
   it('rejects invalid reset input without calling the API', async () => {
     const user = userEvent.setup()
     mocked.latestReport.mockResolvedValue(null)
     render(<OpsPage />)
-    await screen.findByText(/✅/)
+    await screen.findByText('Oversold: 0 ✅')
     const input = screen.getByLabelText('opens in (seconds)')
     for (const bad of ['', '-5', '1.5', '86401', 'abc']) {
       await user.clear(input)
@@ -92,7 +118,7 @@ describe('OpsPage', () => {
     let finish!: () => void
     mocked.reset.mockReturnValue(new Promise<void>((r) => (finish = r)))
     render(<OpsPage />)
-    await screen.findByText(/✅/)
+    await screen.findByText('Oversold: 0 ✅')
     const input = screen.getByLabelText('opens in (seconds)')
     await user.clear(input)
     await user.type(input, '30')

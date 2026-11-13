@@ -52,11 +52,15 @@ function renderPage() {
   )
 }
 
+// The quote (1800, an early-bird price) differs from the seat's base price (2000) on purpose: the Pay button must
+// show the locked quote, not a sum of base prices.
 const hold = {
   holdId: 'h-1',
   eventId: 1,
   seatIds: [1],
   expiresAt: new Date(Date.now() + 120_000).toISOString(),
+  quotedTotalInr: 1800,
+  lines: [{ seatId: 1, priceInr: 1800 }],
 }
 
 async function pickSeatAndHold(user: ReturnType<typeof userEvent.setup>) {
@@ -79,7 +83,7 @@ describe('EventPage', () => {
         orderId: 42,
         eventId: 1,
         status: 'CONFIRMED',
-        totalInr: 4999,
+        totalInr: 1800,
         lines: [],
         createdAt: '',
       })
@@ -88,11 +92,11 @@ describe('EventPage', () => {
     expect(await screen.findByText('Seats held for you')).toBeInTheDocument()
     expect(mocked.hold).toHaveBeenCalledWith(1, [1])
 
-    const pay = screen.getByRole('button', { name: 'Pay ₹2000 (final price at checkout)' })
+    const pay = screen.getByRole('button', { name: 'Pay ₹1800' })
     await user.click(pay)
     await screen.findByText('Payment failed — your seats are still held. Try again.')
     await user.click(pay)
-    expect(await screen.findByText('Booked! Order #42 — ₹4999')).toBeInTheDocument()
+    expect(await screen.findByText('Booked! Order #42 — ₹1800')).toBeInTheDocument()
 
     expect(mocked.checkout).toHaveBeenCalledTimes(2)
     const [first, second] = mocked.checkout.mock.calls
@@ -107,12 +111,27 @@ describe('EventPage', () => {
     mocked.checkout.mockRejectedValue(new ApiError(problem('payment-failed', 402)))
     renderPage()
     await pickSeatAndHold(user)
-    await user.click(await screen.findByRole('button', { name: /^Pay ₹2000/ }))
+    await user.click(await screen.findByRole('button', { name: /^Pay ₹1800$/ }))
     expect(
       await screen.findByText('Payment failed — your seats are still held. Try again.'),
     ).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /^Pay ₹2000/ })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /^Pay ₹1800$/ })).toBeEnabled()
     expect(screen.getByText('Seats held for you')).toBeInTheDocument()
+  })
+
+  it('drops the hold and reloads the map when checkout loses the seats', async () => {
+    const user = userEvent.setup()
+    mocked.hold.mockResolvedValue(hold)
+    mocked.checkout.mockRejectedValue(new ApiError(problem('seat-taken', 409)))
+    renderPage()
+    await pickSeatAndHold(user)
+    await user.click(await screen.findByRole('button', { name: 'Pay ₹1800' }))
+
+    expect(await screen.findByText('Sorry, someone else got seat(s) first.')).toBeInTheDocument()
+    await waitFor(() => expect(mocked.event).toHaveBeenCalledTimes(2))
+    expect(screen.queryByRole('button', { name: /^Pay/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('Seats held for you')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Hold 0 seats' })).toBeDisabled()
   })
 
   it('handles seat taken', async () => {
