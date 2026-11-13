@@ -37,6 +37,10 @@ public class TestData {
         });
     }
 
+    public void clearOutbox() {
+        jdbc.update("DELETE FROM outbox");
+    }
+
     public void setSaleOpensAt(long eventId, Instant at) {
         jdbc.update("UPDATE event_ref SET sale_opens_at = ? WHERE id = ?", LocalDateTime.ofInstant(at, ZoneOffset.UTC), eventId);
         inventoryCache.evict(eventId);

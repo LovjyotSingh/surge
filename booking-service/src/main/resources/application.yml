@@ -41,6 +41,9 @@ surge:
     holds:
       capacity: 10
       refill-per-second: 2
+  outbox:
+    poll-interval: PT0.5S
+    batch-size: 100
   pricing:
     tier-prices:
       PLATINUM: 4999
