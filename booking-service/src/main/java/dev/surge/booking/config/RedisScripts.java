@@ -36,4 +36,13 @@ public class RedisScripts {
         script.setResultType(List.class);
         return script;
     }
+
+    @Bean
+    @SuppressWarnings("rawtypes")
+    RedisScript<List> sweepScript() {
+        DefaultRedisScript<List> script = new DefaultRedisScript<>();
+        script.setLocation(new ClassPathResource("redis/sweep.lua"));
+        script.setResultType(List.class);
+        return script;
+    }
 }

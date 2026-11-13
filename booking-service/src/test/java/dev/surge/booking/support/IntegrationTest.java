@@ -18,7 +18,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
  */
 @Target(ElementType.TYPE)
 @Retention(RetentionPolicy.RUNTIME)
-@SpringBootTest(properties = "surge.outbox.poll-interval=PT1H")
+@SpringBootTest(properties = {"surge.outbox.poll-interval=PT1H", "surge.hold.sweep-interval=PT1H"})
 @AutoConfigureMockMvc
 @MockitoSpyBean(types = {PaymentGateway.class, OutboxPublisher.class})
 @Import({TestcontainersConfig.class, TestData.class})
