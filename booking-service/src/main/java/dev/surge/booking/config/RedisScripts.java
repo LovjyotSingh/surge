@@ -18,4 +18,13 @@ public class RedisScripts {
         script.setResultType(List.class);
         return script;
     }
+
+    @Bean
+    @SuppressWarnings("rawtypes")
+    RedisScript<List> tokenBucketScript() {
+        DefaultRedisScript<List> script = new DefaultRedisScript<>();
+        script.setLocation(new ClassPathResource("redis/token_bucket.lua"));
+        script.setResultType(List.class);
+        return script;
+    }
 }

@@ -3,6 +3,7 @@ package dev.surge.booking.error;
 import dev.surge.common.web.Problems;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
@@ -61,6 +62,13 @@ public class ApiExceptionHandler {
         ProblemDetail pd = Problems.of(HttpStatus.CONFLICT, "hold-exists", "Hold already exists", e.getMessage());
         pd.setProperty("holdId", e.holdId());
         return problem(pd);
+    }
+
+    @ExceptionHandler(RateLimitedException.class)
+    ResponseEntity<ProblemDetail> rateLimited(RateLimitedException e) {
+        ProblemDetail pd = Problems.of(HttpStatus.TOO_MANY_REQUESTS, "rate-limited", "Too many requests", e.getMessage());
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).contentType(MediaType.APPLICATION_PROBLEM_JSON)
+                .header(HttpHeaders.RETRY_AFTER, String.valueOf(e.retryAfterSeconds())).body(pd);
     }
 
     /** Helper for later handlers: always responds with application/problem+json. */

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -145,5 +146,18 @@ class HoldControllerTest {
     void unknownEventIs404() throws Exception {
         hold("u1", 999, "[1]").andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/event-not-found"));
+    }
+
+    @Test
+    void eleventhRapidHoldIs429() throws Exception {
+        hold("u0", 1, "[1]").andExpect(status().isCreated());
+        for (int i = 0; i < 10; i++) {
+            hold("u9", 1, "[1]").andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.type").value("https://surge.dev/problems/seat-taken"));
+        }
+        hold("u9", 1, "[1]").andExpect(status().isTooManyRequests())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/rate-limited"))
+                .andExpect(header().string("Retry-After", org.hamcrest.Matchers.greaterThanOrEqualTo("1")));
     }
 }
