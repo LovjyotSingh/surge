@@ -11,7 +11,7 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
-/** Rebuilds the Redis sold-seat sets from MySQL at startup. */
+/** Rebuilds (DEL then SADD) the Redis sold-seat sets from MySQL at startup, dropping stale members. */
 @Component
 public class SoldSeatsWarmer implements ApplicationRunner {
 
@@ -31,8 +31,10 @@ public class SoldSeatsWarmer implements ApplicationRunner {
             String[] soldIds = seats.findByEventIdOrderByRowLabelAscNumberAsc(event.getId()).stream()
                     .filter(s -> s.getStatus() == SeatStatus.SOLD)
                     .map(Seat::getId).map(String::valueOf).toArray(String[]::new);
+            String key = RedisKeys.sold(event.getId());
+            redis.delete(key);
             if (soldIds.length > 0) {
-                redis.opsForSet().add(RedisKeys.sold(event.getId()), soldIds);
+                redis.opsForSet().add(key, soldIds);
             }
         }
     }

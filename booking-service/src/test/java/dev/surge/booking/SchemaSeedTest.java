@@ -34,6 +34,20 @@ class SchemaSeedTest {
     }
 
     @Test
+    void seatIdsFollowDisplayOrder() {
+        assertSeat(1, 1, "A", 1);
+        assertSeat(500, 1, "T", 25);
+        assertSeat(501, 2, "A", 1);
+        assertSeat(700, 3, "D", 25);
+    }
+
+    private void assertSeat(long id, long eventId, String row, int number) {
+        var s = seatRepository.findById(id).orElseThrow();
+        assertThat(s).extracting(Seat::getEventId, Seat::getRowLabel, Seat::getNumber)
+                .containsExactly(eventId, row, number);
+    }
+
+    @Test
     void orderItemSeatIsUnique() {
         jdbc.update("DELETE FROM order_item WHERE seat_id = 1");
         jdbc.update("DELETE FROM orders WHERE user_id = 'uniq-test'");
