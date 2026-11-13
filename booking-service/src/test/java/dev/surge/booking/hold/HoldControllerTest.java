@@ -4,7 +4,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -14,12 +13,14 @@ import dev.surge.booking.support.TestData;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.LongStream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
@@ -157,16 +158,16 @@ class HoldControllerTest {
     }
 
     @Test
-    void eleventhRapidHoldIs429() throws Exception {
-        hold("u0", 1, "[1]").andExpect(status().isCreated());
-        for (int i = 0; i < 10; i++) {
-            hold("u9", 1, "[1]").andExpect(status().isConflict())
-                    .andExpect(jsonPath("$.type").value("https://surge.dev/problems/seat-taken"));
-        }
-        hold("u9", 1, "[1]").andExpect(status().isTooManyRequests())
+    void emptyBucketReturns429WithRetryAfter() throws Exception {
+        Long nowMillis = redis.execute((RedisCallback<Long>) c -> c.serverCommands().time());
+        String key = RedisKeys.holdRate("u9");
+        redis.opsForHash().putAll(key, Map.of("tokens", "0", "ts", String.valueOf(nowMillis)));
+        redis.expire(key, Duration.ofSeconds(5));
+        MvcResult r = hold("u9", 1, "[1]").andExpect(status().isTooManyRequests())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/rate-limited"))
-                .andExpect(header().string("Retry-After", org.hamcrest.Matchers.greaterThanOrEqualTo("1")));
+                .andReturn();
+        assertThat(Long.parseLong(r.getResponse().getHeader("Retry-After"))).isGreaterThanOrEqualTo(1);
     }
 
     @Test

@@ -2,8 +2,10 @@ package dev.surge.booking.stream;
 
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 import dev.surge.booking.event.SeatState;
 import java.util.List;
@@ -21,5 +23,6 @@ class SeatEventPublisherTest {
         SeatEventPublisher publisher = new SeatEventPublisher(redis, JsonMapper.builder().build());
 
         assertThatCode(() -> publisher.publish(1L, List.of(1L, 2L), SeatState.HELD)).doesNotThrowAnyException();
+        verify(redis).convertAndSend(eq("seats:1"), anyString());
     }
 }

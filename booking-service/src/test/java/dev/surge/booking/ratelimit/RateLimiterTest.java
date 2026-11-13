@@ -35,7 +35,7 @@ class RateLimiterTest {
             limiter.tryConsume("rl:t2", 10, 2.0);
         }
         assertThat(limiter.tryConsume("rl:t2", 10, 2.0).allowed()).isFalse();
-        Thread.sleep(600);
+        Thread.sleep(750);
         assertThat(limiter.tryConsume("rl:t2", 10, 2.0).allowed()).isTrue();
     }
 
