@@ -221,7 +221,7 @@ MySQL was not touched in steps 7 to 13. (The first request for an event loads it
 
 ### Part D: after the response
 
-24. **Outbox relay.** Every 0.5 s, [OutboxRelay](booking-service/src/main/java/dev/surge/booking/outbox/OutboxRelay.java) runs `SELECT ... WHERE published_at IS NULL ORDER BY id LIMIT 100 FOR UPDATE SKIP LOCKED` ([OutboxRepository](booking-service/src/main/java/dev/surge/booking/outbox/OutboxRepository.java)), hands each row to the [OutboxPublisher](booking-service/src/main/java/dev/surge/booking/outbox/OutboxPublisher.java) and sets `published_at`. In phase 1 the publisher is [LoggingOutboxPublisher](booking-service/src/main/java/dev/surge/booking/outbox/LoggingOutboxPublisher.java): it writes a log line. Kafka and RabbitMQ publishers are planned for phase 2.
+24. **Outbox relay.** Every 0.5 s, [OutboxPoller](booking-service/src/main/java/dev/surge/booking/outbox/OutboxPoller.java) (the scheduled job) calls `relayBatch()` on [OutboxRelay](booking-service/src/main/java/dev/surge/booking/outbox/OutboxRelay.java). In one transaction, that method runs `SELECT ... WHERE published_at IS NULL ORDER BY id LIMIT 100 FOR UPDATE SKIP LOCKED` ([OutboxRepository](booking-service/src/main/java/dev/surge/booking/outbox/OutboxRepository.java)), hands each row to the [OutboxPublisher](booking-service/src/main/java/dev/surge/booking/outbox/OutboxPublisher.java) and sets `published_at`. In phase 1 the publisher is [LoggingOutboxPublisher](booking-service/src/main/java/dev/surge/booking/outbox/LoggingOutboxPublisher.java): it writes a log line. Kafka and RabbitMQ publishers are planned for phase 2.
 25. **If the user never pays.** After 5 minutes Redis deletes the seat keys, the hold hash and the `userhold` key by itself. Every second, [HoldExpirySweeper](booking-service/src/main/java/dev/surge/booking/stream/HoldExpirySweeper.java) reads the `holds:expiry` members whose time has passed and runs [sweep.lua](booking-service/src/main/resources/redis/sweep.lua) for each. The script removes the member first (`ZREM`); if it was already gone, another instance or a checkout handled it, so it stops. Otherwise it returns the seats that are really free (key gone, not sold), and the sweeper publishes them as `AVAILABLE` and increments the `holds_expired_total` metric.
 
 ## 4. Code map
@@ -237,7 +237,7 @@ Paths below `booking/` mean [booking-service/src/main/java/dev/surge/booking/](b
 | [booking/inventory/](booking-service/src/main/java/dev/surge/booking/inventory/) | `InventoryCache` (seat facts in memory), `SoldSeatsWarmer` (rebuilds sold sets at startup) |
 | [booking/pricing/](booking-service/src/main/java/dev/surge/booking/pricing/) | `PricingRule`, `EarlyBirdRule`, `SurgeRule`, `PriceCalculator`, `TierPrices` |
 | [booking/payment/](booking-service/src/main/java/dev/surge/booking/payment/) | `PaymentGateway` interface, `FakePaymentGateway` |
-| [booking/outbox/](booking-service/src/main/java/dev/surge/booking/outbox/) | `OutboxRelay`, `OutboxRepository`, `OutboxPublisher`, `LoggingOutboxPublisher`, `OutboxMessage` entity |
+| [booking/outbox/](booking-service/src/main/java/dev/surge/booking/outbox/) | `OutboxPoller` (scheduled entry point), `OutboxRelay` (transactional batch), `OutboxRepository`, `OutboxPublisher`, `LoggingOutboxPublisher`, `OutboxMessage` entity |
 | [booking/stream/](booking-service/src/main/java/dev/surge/booking/stream/) | `SeatEventPublisher`, `SeatChannelListener`, `SeatStreamRegistry` (SSE), `HoldExpirySweeper` |
 | [booking/ratelimit/](booking-service/src/main/java/dev/surge/booking/ratelimit/) | `RateLimiter`, `RateLimitProperties` |
 | [booking/admin/](booking-service/src/main/java/dev/surge/booking/admin/) | `AdminController` (integrity, reset, load-test report), `EventResetService` |
@@ -355,7 +355,7 @@ The keys are a fixed enum. `EnumMap` is backed by an array indexed by the enum's
 |---|---|
 | `CountDownLatch` as a start gate | [LoadTestMain](tools/loadtest/src/main/java/dev/surge/loadtest/LoadTestMain.java), [Buyer](tools/loadtest/src/main/java/dev/surge/loadtest/Buyer.java) (`startGate.await()`), [ConcurrentBookingTest](booking-service/src/test/java/dev/surge/booking/order/ConcurrentBookingTest.java) |
 | `ExecutorService` + `Future` | `LoadTestMain` submits 10,000 `Buyer` tasks and collects results with `f.get()` |
-| `@Scheduled` background jobs | `OutboxRelay.poll` (every 0.5 s), `HoldExpirySweeper.scheduledSweep` (every 1 s), `SeatStreamRegistry.heartbeat` (every 20 s); enabled by `@EnableScheduling` in [BookingApplication](booking-service/src/main/java/dev/surge/booking/BookingApplication.java) |
+| `@Scheduled` background jobs | [OutboxPoller.poll](booking-service/src/main/java/dev/surge/booking/outbox/OutboxPoller.java) (every 0.5 s), `HoldExpirySweeper.scheduledSweep` (every 1 s), `SeatStreamRegistry.heartbeat` (every 20 s); enabled by `@EnableScheduling` in [BookingApplication](booking-service/src/main/java/dev/surge/booking/BookingApplication.java) |
 | Thread-safe collections | `ConcurrentHashMap`, `CopyOnWriteArrayList` (see 5.2) |
 | `ThreadLocalRandom` | [FakePaymentGateway](booking-service/src/main/java/dev/surge/booking/payment/FakePaymentGateway.java), `ConcurrentBookingTest` |
 | Atomicity outside the JVM | Redis Lua scripts and MySQL transactions (sections 5.10 and 5.11) |
@@ -382,7 +382,7 @@ It only works inside one JVM. With two instances, two requests for the same seat
 "Check then act". Two buyers both ask "is seat 42 free?", both hear "yes", and both reserve it. Surge removes the gap between the check and the write: in `hold.lua` the check and the reservation happen in one atomic script, and in MySQL the `UPDATE ... WHERE version = ?` checks and writes in one statement.
 
 **Q4. What happens if a scheduled job throws an exception?**
-`OutboxRelay.poll` and `HoldExpirySweeper.scheduledSweep` catch `RuntimeException` and log a warning. That run is skipped and the next run tries again, for example after Redis or MySQL comes back. The relay also stops a batch at the first failed message and keeps the rest for the next poll, so messages stay in order.
+`OutboxPoller.poll` and `HoldExpirySweeper.scheduledSweep` catch `RuntimeException` and log a warning (`WARN`). That run is skipped and the next run tries again, for example after Redis or MySQL comes back. The relay also stops a batch at the first failed message and keeps the rest for the next poll, so messages stay in order.
 
 **Q5. `fixedDelay` or `fixedRate`?**
 `fixedDelay` waits the given time after the previous run finishes, so runs never overlap. The outbox relay and the sweeper use it. `fixedRate` starts a run every N milliseconds regardless; the SSE heartbeat uses it because it only needs a rough beat.
@@ -633,7 +633,7 @@ No. Since Java 16, `Stream.toList()` returns an unmodifiable list. Adding to it 
 | Config from environment variables with defaults | `${MYSQL_URL:jdbc:mysql://localhost:3307/booking}`, `${REDIS_HOST:localhost}` in `application.yml` |
 | Jackson 3 | Spring Boot 4 uses Jackson 3 (package `tools.jackson`); Surge injects its `JsonMapper` |
 
-**Why `CheckoutService` is not `@Transactional`.** Payment and the Redis calls must stay outside the database transaction (see [section 7.3](#73-payment-outside-the-database-transaction)). Only `OrderWriter.confirm` is transactional, and it lives in a separate bean on purpose. Spring applies `@Transactional` through a proxy around the bean. A call from one method to another inside the same class skips the proxy, so it would run without a transaction. Calling another bean goes through its proxy, so the transaction starts.
+**Why `CheckoutService` is not `@Transactional`.** Payment and the Redis calls must stay outside the database transaction (see [section 7.3](#73-payment-outside-the-database-transaction)). Only `OrderWriter.confirm` is transactional, and it lives in a separate bean on purpose. Spring applies `@Transactional` through a proxy around the bean. A call from one method to another inside the same class skips the proxy, so it would run without a transaction. Calling another bean goes through its proxy, so the transaction starts. The outbox uses the same split: `OutboxPoller` (scheduled) calls `OutboxRelay.relayBatch()` (transactional). Q1 below tells the bug that taught this.
 
 **How to see it.**
 
@@ -646,6 +646,8 @@ curl -s localhost:8081/actuator/prometheus | grep -E "holds_expired_total|outbox
 
 **Q1. How does `@Transactional` work, and what is the self-invocation trap?**
 Spring wraps the bean in a proxy. When a caller invokes a `@Transactional` method through the proxy, it opens a transaction, calls the real method, and commits, or rolls back on a `RuntimeException`. A call from inside the same object does not pass through the proxy, so no transaction starts. That is why the transactional step of checkout is its own bean, `OrderWriter`.
+
+Surge hit this trap for real. In the first version, the `@Scheduled` method lived inside `OutboxRelay` and called `this.relayBatch()`. The proxy was skipped, so `relayBatch()` ran without its transaction: `published_at` was set on entities that were no longer managed, and the change was never saved. Every poll re-sent the same rows; the running stack showed all 1,004 outbox rows still unpublished and the `outbox_backlog` gauge stuck at 1004. The unit test missed it because it called `relayBatch()` through the proxy. The fix moved the schedule into a separate bean, [OutboxPoller](booking-service/src/main/java/dev/surge/booking/outbox/OutboxPoller.java), which calls `relay.relayBatch()` through the injected proxy. A regression test, `OutboxRelayTest.scheduledEntryPointCommitsPublishedRows`, now calls `poller.poll()` (the scheduler's entry point) and checks that the rows are marked published. The lesson: test the method the framework actually calls.
 
 **Q2. What is auto-configuration? Did you write any?**
 Spring Boot looks at what is on the classpath and creates sensible beans (a `DataSource` if there is a JDBC driver, and so on). Surge's `common` module has its own: `CommonAutoConfiguration` is listed in `META-INF/spring/...AutoConfiguration.imports` and registers the `RequestIdFilter`, only in servlet web apps (`@ConditionalOnWebApplication`). Services get it just by adding the dependency.
@@ -695,10 +697,10 @@ Suppose two checkouts both read seat 42 at version 0. MySQL (InnoDB) lets the fi
 
 ```bash
 # Which migrations ran
-docker compose exec mysql mysql -usurge -psurge booking -e "SELECT version, description, success FROM flyway_schema_history;"
+docker compose --profile core exec mysql mysql -usurge -psurge booking -e "SELECT version, description, success FROM flyway_schema_history;"
 
 # Sold seats and their version numbers
-docker compose exec mysql mysql -usurge -psurge booking -e "SELECT id, row_label, number, status, version FROM seat WHERE event_id = 1 AND status = 'SOLD' LIMIT 10;"
+docker compose --profile core exec mysql mysql -usurge -psurge booking -e "SELECT id, row_label, number, status, version FROM seat WHERE event_id = 1 AND status = 'SOLD' LIMIT 10;"
 
 # The oversell check the load tester uses
 curl -s localhost:8080/api/bookings/admin/events/1/integrity
@@ -762,11 +764,11 @@ The ids come from MySQL's `AUTO_INCREMENT`, which is simple and fits the schema.
 **How to see it.**
 
 ```bash
-docker compose exec redis redis-cli --scan --pattern 'seat:1:*'          # seats held right now
-docker compose exec redis redis-cli ZRANGE holds:expiry 0 -1 WITHSCORES  # holds waiting to expire
-docker compose exec redis redis-cli SCARD sold:1                          # sold seats in event 1
-docker compose exec redis redis-cli SUBSCRIBE seats:1                     # live seat messages (Ctrl+C to stop)
-docker compose exec redis redis-cli MONITOR                               # every command, live (Ctrl+C to stop)
+docker compose --profile core exec redis redis-cli --scan --pattern 'seat:1:*'          # seats held right now
+docker compose --profile core exec redis redis-cli ZRANGE holds:expiry 0 -1 WITHSCORES  # holds waiting to expire
+docker compose --profile core exec redis redis-cli SCARD sold:1                          # sold seats in event 1
+docker compose --profile core exec redis redis-cli SUBSCRIBE seats:1                     # live seat messages (Ctrl+C to stop)
+docker compose --profile core exec redis redis-cli MONITOR                               # every command, live (Ctrl+C to stop)
 ```
 
 Watch the rate limiter: 12 quick holds as one user. The first succeeds, the next ones get `409 hold-exists`, and after about 10 attempts the bucket is empty and you get `429`.
@@ -827,8 +829,8 @@ How Compose starts things in the right order: MySQL and Redis have health checks
 
 ```bash
 docker compose --profile core ps                  # every container and its health
-docker compose logs -f booking-service            # follow the service log (Ctrl+C to stop)
-docker compose exec booking-service id            # shows uid=10001(surge): not root
+docker compose --profile core logs -f booking-service            # follow the service log (Ctrl+C to stop)
+docker compose --profile core exec booking-service id            # shows uid=10001(surge): not root
 docker image history surge-booking-service        # one image layer per COPY of a jar layer
 ```
 
@@ -897,25 +899,29 @@ Routes like `/events/1` exist only in the browser. On a refresh, the browser ask
 
 **Where it is in the code.**
 
+Test counts at the end of phase 1. This table is the one place the counts are kept; the rest of the repo refers here.
+
 | Module | Tests | What kind |
 |---|---|---|
 | `common` | 4 | Unit: request-id filter, message JSON round trip |
-| `booking-service` | 66 | Unit (pricing) and integration (real MySQL and Redis via Testcontainers, HTTP via MockMvc) |
+| `booking-service` | 67 | Unit (pricing) and integration (real MySQL and Redis via Testcontainers, HTTP via MockMvc) |
 | `tools/loadtest` | 17 | Unit, plus a small stub HTTP server ([StubServer](tools/loadtest/src/test/java/dev/surge/loadtest/StubServer.java)) |
 | `web` | 28 | Vitest and Testing Library in jsdom |
+| **Total** | **116** | 88 backend (`./mvnw -B verify`) + 28 web (`npx vitest run`) |
 
-**One shared Spring context.** Every integration test class is annotated with [@IntegrationTest](booking-service/src/test/java/dev/surge/booking/support/IntegrationTest.java), a meta-annotation that bundles `@SpringBootTest`, `@AutoConfigureMockMvc`, Mockito spies on `PaymentGateway` and `OutboxPublisher`, and `@Import` of [TestcontainersConfig](booking-service/src/test/java/dev/surge/booking/support/TestcontainersConfig.java) and [TestData](booking-service/src/test/java/dev/surge/booking/support/TestData.java). Because every class uses exactly the same configuration, Spring's test-context cache builds the application context **once** and reuses it, with one MySQL container and one Redis container for the whole run. `@ServiceConnection` points Spring at the containers automatically. The annotation also pushes the outbox relay and the sweeper intervals to one hour, so background jobs never race the tests; tests call `relayBatch()` and `sweep()` directly. Most test classes call `TestData.resetEvent` in `@BeforeEach` to put the database and Redis back to a clean state; `OutboxRelayTest` clears the outbox table instead. On the laptop, `./mvnw -B verify` ran all 87 backend tests in 30 seconds in one run and 1.5 minutes in another.
+**One shared Spring context.** Every integration test class is annotated with [@IntegrationTest](booking-service/src/test/java/dev/surge/booking/support/IntegrationTest.java), a meta-annotation that bundles `@SpringBootTest`, `@AutoConfigureMockMvc`, Mockito spies on `PaymentGateway` and `OutboxPublisher`, and `@Import` of [TestcontainersConfig](booking-service/src/test/java/dev/surge/booking/support/TestcontainersConfig.java) and [TestData](booking-service/src/test/java/dev/surge/booking/support/TestData.java). Because every class uses exactly the same configuration, Spring's test-context cache builds the application context **once** and reuses it, with one MySQL container and one Redis container for the whole run. `@ServiceConnection` points Spring at the containers automatically. The annotation also pushes the outbox relay and the sweeper intervals to one hour, so background jobs never race the tests. Tests trigger the jobs themselves: `OutboxRelayTest` calls `relayBatch()`, and in one test the scheduler's entry point `OutboxPoller.poll()`; `HoldExpirySweeperTest` calls `sweep()`. Most test classes call `TestData.resetEvent` in `@BeforeEach` to put the database and Redis back to a clean state; `OutboxRelayTest` clears the outbox table instead. On the laptop, `./mvnw -B verify` ran the whole backend suite in 30 seconds in one run and about 1.5 minutes in two later runs.
 
 The tests worth showing an interviewer:
 
 | Test | What it proves |
 |---|---|
-| [ConcurrentBookingTest](booking-service/src/test/java/dev/surge/booking/order/ConcurrentBookingTest.java) | 2,000 buyers on virtual threads, 100 seats: exactly 100 sold, 100 distinct seats (about 5 s in most runs) |
+| [ConcurrentBookingTest](booking-service/src/test/java/dev/surge/booking/order/ConcurrentBookingTest.java) | 2,000 buyers on virtual threads, 100 seats: exactly 100 sold, 100 distinct seats (5 to 18 s on the laptop) |
 | [CheckoutTest](booking-service/src/test/java/dev/surge/booking/order/CheckoutTest.java) `redisFlushCannotCauseDoubleSale` | With Redis wiped after a sale, MySQL still refuses a second sale, and the payment is refunded |
 | `CheckoutTest.replayReturnsSameOrder` | Same key, same body, charged once |
 | `CheckoutTest.redisFlushedKeyStillReplaysFromDatabase` | Idempotency survives Redis losing the key |
 | `CheckoutTest.declinedPaymentKeepsHold` | `402`, the hold survives, a retry with a new key succeeds |
 | [SchemaSeedTest](booking-service/src/test/java/dev/surge/booking/SchemaSeedTest.java) `orderItemSeatIsUnique` | The database rejects a second order line for one seat |
+| [OutboxRelayTest](booking-service/src/test/java/dev/surge/booking/outbox/OutboxRelayTest.java) `scheduledEntryPointCommitsPublishedRows` | Calling the scheduler's entry point (`OutboxPoller.poll()`) really marks rows published; the regression test for the self-invocation bug in [section 5.9](#59-spring-boot) |
 | [HoldExpirySweeperTest](booking-service/src/test/java/dev/surge/booking/stream/HoldExpirySweeperTest.java) | Expired seats are announced; re-held or bought seats are not |
 | [RateLimiterTest](booking-service/src/test/java/dev/surge/booking/ratelimit/RateLimiterTest.java) | Burst up to capacity, then blocked, then refilled |
 | [SeatStreamTest](booking-service/src/test/java/dev/surge/booking/stream/SeatStreamTest.java) | A hold reaches an open SSE stream |
@@ -945,7 +951,7 @@ One shared Spring context and one set of containers for the whole run, thanks to
 `PaymentGateway` is a Mockito spy around the fake gateway. A test stubs `charge` to return a decline, checks the `402` and that the hold survives, and in the race test verifies that `refund` was called exactly once.
 
 **Q5. What does CI check before a change is merged?**
-That the backend compiles and all 87 backend tests pass against real containers, that the web tests pass and the production build works, and that every Docker image still builds.
+That the backend compiles and every backend test passes against real containers, that the web tests pass and the production build works, and that every Docker image still builds.
 
 ### 5.15 The web app (React)
 
@@ -1034,7 +1040,7 @@ The cost: the buyer can be charged and then lose the race for the seat. In that 
 
 After an order commits, other systems need to hear about it (in phase 2: Kafka for search and stats, RabbitMQ for tickets). Publishing straight to a broker after the commit has the dual-write problem: the commit can succeed and the publish fail (or the other way round), and the two systems disagree.
 
-With the outbox, the message is a row written **in the same transaction** as the order: both are saved or neither is. A separate relay ([OutboxRelay](booking-service/src/main/java/dev/surge/booking/outbox/OutboxRelay.java)) reads unsent rows in id order, publishes them, and marks them sent. If publishing fails, it stops the batch and retries on the next poll, so order is kept.
+With the outbox, the message is a row written **in the same transaction** as the order: both are saved or neither is. A separate relay reads unsent rows in id order, publishes them, and marks them sent: [OutboxPoller](booking-service/src/main/java/dev/surge/booking/outbox/OutboxPoller.java) triggers it every 0.5 s, and [OutboxRelay](booking-service/src/main/java/dev/surge/booking/outbox/OutboxRelay.java) does each batch in one transaction. If publishing fails, it stops the batch and retries on the next poll, so order is kept.
 
 The trade-off is **at-least-once** delivery: if the relay publishes and then crashes before marking the row, the message is sent again. Consumers must ignore duplicates; each message carries a unique `messageId` ([OrderConfirmed](common/src/main/java/dev/surge/common/messaging/OrderConfirmed.java), [TicketRequested](common/src/main/java/dev/surge/common/messaging/TicketRequested.java)) for that. Messages also arrive a little later (up to one poll interval, 0.5 s). In phase 1 the publisher only logs; the broker publishers come in phase 2.
 
@@ -1067,7 +1073,7 @@ Keys are scoped per user (`idem:{userId}:{key}`), so two users cannot collide, a
 
 ### 7.9 Smaller decisions
 
-- **Request ids everywhere.** Nginx creates one, the service keeps it, puts it in the logging MDC and the response header, and every error body includes it, so a user can quote it. (Printing it in every log line comes with the JSON logs planned for phase 3.)
+- **Request ids everywhere.** Nginx creates one, the service keeps it, puts it in the logging MDC and the response header, and every error body includes it, so a user can quote it. Note the limit: the MDC holds `requestId`, but Spring Boot's default log pattern does not print it, so today's log lines do not show it. Printing it in every log line comes with the JSON logs planned for phase 3.
 - **Problem Details for every error** (`application/problem+json`), so clients branch on a stable `type` instead of parsing messages.
 - **Best-effort side effects.** Publishing seat changes and the Redis cleanup after a commit never fail a request; they log instead. The database result is what counts.
 - **Flyway owns the schema**; Hibernate only validates it.
@@ -1173,10 +1179,10 @@ Command: `docker compose --profile core --profile loadtest run --rm loadtest --u
 
 **What each buyer does** ([Buyer](tools/loadtest/src/main/java/dev/surge/loadtest/Buyer.java), [SeatPicker](tools/loadtest/src/main/java/dev/surge/loadtest/SeatPicker.java)): waits at the start gate, then tries to hold one seat. 70% of picks aim at the first 100 seats (the "best rows") to create heavy contention; the rest are spread over all seats. On `409 seat-taken` it tries another seat, up to 10 attempts. With a hold, it checks out once. Each buyer has its own user id, so the per-user rate limit (10 tokens) never triggers, which is why "rate limited" is 0.
 
-**How to read the totals.** The numbers add up exactly:
-- 500 buyers won. The other 9,500 tried 10 seats each and got `409` every time: 9,500 x 10 = 95,000 conflicts.
-- The 500 winners made 502 hold attempts in total (2 of them hit a taken seat) and 500 checkouts.
-- Hold requests: 95,000 + 502 = 95,502. Plus 500 checkouts = **96,002 requests**. Conflicts: 95,000 + 2 = **95,002**.
+**How to read the totals.** The report gives totals, not per-buyer counts, but the totals imply how the attempts split:
+- 500 buyers won. Errors and rate limits were both 0, so a buyer could only stop without a seat by using all 10 attempts. That implies the other 9,500 each got `409` ten times: 9,500 x 10 = 95,000 conflicts.
+- That leaves 2 conflicts for the 500 winners: they made 502 hold attempts in total (2 extra), then 500 checkouts with no conflict.
+- Check: hold requests 95,000 + 502 = 95,502, plus 500 checkouts = **96,002 requests**. Conflicts: 95,000 + 2 = **95,002**. Both match the report.
 - On average that is about 8,500 requests per second (96,002 / 11.2 s).
 
 **Why the latencies are in seconds.** All 10,000 buyers start in the same instant on one laptop that also runs the databases and the load generator, and nothing was tuned for speed. Checkout is slower than hold because it runs the database transaction, with 30 connections shared by everyone who got a hold. The run proves **correctness under extreme contention**, not speed. Do not quote these numbers as production performance.
@@ -1185,7 +1191,7 @@ Command: `docker compose --profile core --profile loadtest run --rm loadtest --u
 
 ### The concurrency test in CI
 
-[ConcurrentBookingTest](booking-service/src/test/java/dev/surge/booking/order/ConcurrentBookingTest.java): 2,000 virtual-thread buyers, 100 seats (event 2), each trying up to 10 random seats. Result: exactly 100 sold, 100 distinct seats. On the laptop it took about 5 seconds in most runs (5.0 s and 5.1 s; one later run took 18.2 s). The count is what matters, not the time. It calls the services directly (no HTTP) against real MySQL and Redis containers, and runs on every CI build.
+[ConcurrentBookingTest](booking-service/src/test/java/dev/surge/booking/order/ConcurrentBookingTest.java): 2,000 virtual-thread buyers, 100 seats (event 2), each trying up to 10 random seats. Result: exactly 100 sold, 100 distinct seats. The test logs its own time. On the laptop that was 4,997 ms and 5,076 ms in the first two runs and 18,219 ms and 17,909 ms in the two later ones, so expect anywhere from about 5 to 18 seconds. The count is what matters, not the time. It calls the services directly (no HTTP) against real MySQL and Redis containers, and runs on every CI build.
 
 ### The manual browser check
 
@@ -1240,13 +1246,13 @@ Stop: `docker compose --profile core down`. Add `-v` to delete the database data
 Docker must be running for the backend tests (Testcontainers starts MySQL and Redis).
 
 ```bash
-./mvnw -B verify                    # all backend tests: common 4, booking-service 66, loadtest 17
+./mvnw -B verify                    # every backend test (counts in section 5.14)
 ```
 
 ```bash
 cd web
 npm ci                              # install exactly what package-lock.json says
-npx vitest run                      # 28 web tests
+npx vitest run                      # web tests
 npm run build                       # type-check and production build
 ```
 
@@ -1269,14 +1275,14 @@ On Windows PowerShell, use `.\mvnw.cmd` instead of `./mvnw`.
 | `port is already allocated` / `bind: address already in use` for 8080, 8081, 3307 or 6379 | Another program (or another stack) uses the port | Find it: `netstat -ano \| findstr :8080` in PowerShell, then stop it. Or change the left number of the port mapping in [compose.yaml](compose.yaml), for example `"8090:80"` |
 | Containers exit or restart, builds crawl, the load test errors | Docker does not have enough memory | Give Docker more memory. With WSL2, set `memory=` under `[wsl2]` in `%UserProfile%\.wslconfig`, run `wsl --shutdown`, restart Docker Desktop. The recorded run used 12 GB |
 | First `up --build` is slow | Maven and npm download everything once | Wait; later builds use the cache |
-| `the input device is not a TTY` from `docker compose exec` in Git Bash | Git Bash's terminal and Docker's TTY mode disagree | Add `-T` after `exec` (for example `docker compose exec -T redis redis-cli PING`), or use PowerShell |
+| `the input device is not a TTY` from `docker compose exec` in Git Bash | Git Bash's terminal and Docker's TTY mode disagree | Add `-T` after `exec` (for example `docker compose --profile core exec -T redis redis-cli PING`), or use PowerShell |
 | Hold returns `409 sale-not-open` | The event was reset with "opens in N seconds" | Wait for the countdown, or reset with `opensInSeconds=0` |
 | Hold returns `409 hold-exists` | You already hold seats for this event | Pay, wait 5 minutes, or click **Random** for a new demo user |
 | Hold returns `429` | More than about 10 hold attempts in a few seconds as one user | Wait the `Retry-After` seconds |
 | Everything is sold after the load test | The load test sells all 500 seats | Reset event 1 (Ops page or the curl command in [section 10](#10-how-to-run-everything)) |
 | Seat map does not update live | The SSE stream is blocked or buffered | Check `curl -N localhost:8080/api/bookings/events/1/stream` prints `:connected`; the stream location in [nginx.conf](web/nginx.conf) must keep `proxy_buffering off` |
 | Swagger UI gives 404 | Wrong path | Use http://localhost:8080/api/bookings/docs (it redirects to `/api/bookings/swagger-ui/index.html`) |
-| booking-service never becomes healthy | MySQL or Redis not healthy yet, or a startup error | `docker compose logs booking-service`; `docker compose --profile core ps` |
+| booking-service never becomes healthy | MySQL or Redis not healthy yet, or a startup error | `docker compose --profile core logs booking-service`; `docker compose --profile core ps` |
 | Want a clean database | Old data from earlier runs | `docker compose --profile core down -v`, then `up -d --build` again |
 | `./mvnw: Permission denied` on Linux or macOS | The executable bit was lost | `chmod +x mvnw` ([.gitattributes](.gitattributes) keeps its line endings as LF) |
 

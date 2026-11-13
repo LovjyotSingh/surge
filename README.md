@@ -29,7 +29,7 @@ Surge is a flash-sale ticket booking backend. When a big sale opens, thousands o
 
 This ran on one laptop: Docker Desktop on WSL2 with 12 GB of memory for Docker, 24 CPU threads. The load generator, Nginx, the service, MySQL and Redis all shared that machine. It is a correctness test under heavy contention, not a production benchmark. [LEARN.md section 9](LEARN.md#9-the-numbers-and-how-to-explain-them) explains how to read these numbers.
 
-The test suite also runs a smaller version on every CI build: [ConcurrentBookingTest](booking-service/src/test/java/dev/surge/booking/order/ConcurrentBookingTest.java) starts 2,000 buyers on virtual threads against 100 seats and checks that exactly 100 are sold (about 5 s in most laptop runs).
+The test suite also runs a smaller version on every CI build: [ConcurrentBookingTest](booking-service/src/test/java/dev/surge/booking/order/ConcurrentBookingTest.java) starts 2,000 buyers on virtual threads against 100 seats and checks that exactly 100 are sold (it took 5 to 18 s on the laptop).
 
 ## Architecture (phase 1)
 
@@ -122,11 +122,11 @@ Health and metrics are on the service port: http://localhost:8081/actuator/healt
 Docker must be running: the integration tests start real MySQL and Redis containers with Testcontainers.
 
 ```bash
-./mvnw -B verify                               # backend: common 4, booking-service 66, loadtest 17 tests
-cd web && npm ci && npx vitest run && npm run build   # web: 28 tests, then a production build
+./mvnw -B verify                               # backend: unit + Testcontainers integration tests
+cd web && npm ci && npx vitest run && npm run build   # web: Vitest tests, then a production build
 ```
 
-On Windows PowerShell use `.\mvnw.cmd -B verify`. You need JDK 25 and Node 24 for these. CI runs the same commands on every push and pull request to `main` ([ci.yml](.github/workflows/ci.yml)), plus a build of all Docker images.
+On Windows PowerShell use `.\mvnw.cmd -B verify`. You need JDK 25 and Node 24 for these. Test counts per module and the tests worth reading first are in [LEARN.md section 5.14](LEARN.md#514-testing-and-ci). CI runs the same commands on every push and pull request to `main` ([ci.yml](.github/workflows/ci.yml)), plus a build of all Docker images.
 
 ## Repository layout
 
