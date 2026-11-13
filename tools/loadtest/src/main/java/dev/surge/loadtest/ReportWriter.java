@@ -1,7 +1,6 @@
 package dev.surge.loadtest;
 
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.ZoneId;
@@ -15,6 +14,8 @@ public final class ReportWriter {
     private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(IST);
     private static final DateTimeFormatter HUMAN = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(IST);
     private static final JsonMapper JSON = JsonMapper.builder().build();
+    private static final String OK = "✅";
+    private static final String BAD = "❌";
 
     private ReportWriter() {
     }
@@ -23,28 +24,31 @@ public final class ReportWriter {
         return JSON.writerWithDefaultPrettyPrinter().writeValueAsString(r);
     }
 
-    public static List<Path> write(Path dir, LoadTestReport r) {
+    /** Writes {@code loadtest-<IST timestamp>.json} and {@code .md} into {@code dir}, creating it if needed. */
+    public static List<Path> write(Path dir, LoadTestReport r) throws IOException {
         String base = "loadtest-" + STAMP.format(r.startedAt());
         Path json = dir.resolve(base + ".json");
         Path md = dir.resolve(base + ".md");
-        try {
-            Files.createDirectories(dir);
-            Files.writeString(json, json(r));
-            Files.writeString(md, markdown(r));
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
+        Files.createDirectories(dir);
+        Files.writeString(json, json(r));
+        Files.writeString(md, markdown(r));
         return List.of(json, md);
     }
 
     public static String markdown(LoadTestReport r) {
-        String verdict = r.oversold() == 0 ? "Oversold: 0 ✅" : "Oversold: " + r.oversold() + " ❌";
+        String verdict = r.passed() ? "PASS " + OK : "FAIL " + BAD;
         return """
             # Surge load test
 
             Started: %s (Asia/Kolkata) · Event %d · %d buyers · %d ms
 
             **%s**
+
+            | Check | Result |
+            |---|---|
+            | Oversold (a seat in two order lines) | %d %s |
+            | Seats marked SOLD = distinct seats in orders | %s %s |
+            | Buyers who got a 201 = seats sold | %d = %d %s |
 
             | Metric | Value |
             |---|---|
@@ -63,8 +67,15 @@ public final class ReportWriter {
             """.formatted(
                 HUMAN.format(r.startedAt()),
                 r.eventId(), r.users(), r.durationMs(), verdict,
+                r.oversold(), mark(r.oversold() == 0),
+                r.consistent() ? "yes" : "no", mark(r.consistent()),
+                r.buyersSucceeded(), r.sold(), mark(r.buyersSucceeded() == r.sold()),
                 r.totalSeats(), r.sold(), r.buyersSucceeded(), r.requests(), r.conflicts(), r.rateLimited(), r.errors(),
                 r.hold().p50(), r.hold().p95(), r.hold().p99(), r.hold().max(),
                 r.checkout().p50(), r.checkout().p95(), r.checkout().p99(), r.checkout().max());
+    }
+
+    private static String mark(boolean ok) {
+        return ok ? OK : BAD;
     }
 }

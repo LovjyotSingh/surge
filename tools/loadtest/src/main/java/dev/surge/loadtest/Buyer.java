@@ -16,6 +16,7 @@ public final class Buyer implements Callable<BuyerOutcome> {
     private static final int MAX_RATE_LIMIT_WAITS = 30;
 
     private final String userId;
+    private final String idempotencyKey;
     private final long eventId;
     private final List<Long> seatIds;
     private final BookingApi api;
@@ -31,15 +32,17 @@ public final class Buyer implements Callable<BuyerOutcome> {
         void sleep(long millis) throws InterruptedException;
     }
 
-    public Buyer(String userId, long eventId, List<Long> seatIds, BookingApi api, CountDownLatch startGate,
-                 double hotShare, int maxAttempts, RandomGenerator rnd) {
-        this(userId, eventId, seatIds, api, startGate, hotShare, maxAttempts, rnd, Thread::sleep);
+    /** {@code idempotencyKey} is sent on the checkout; it must be unique per run (see LoadTestMain). */
+    public Buyer(String userId, String idempotencyKey, long eventId, List<Long> seatIds, BookingApi api,
+                 CountDownLatch startGate, double hotShare, int maxAttempts, RandomGenerator rnd) {
+        this(userId, idempotencyKey, eventId, seatIds, api, startGate, hotShare, maxAttempts, rnd, Thread::sleep);
     }
 
-    Buyer(String userId, long eventId, List<Long> seatIds, BookingApi api, CountDownLatch startGate,
-                 double hotShare, int maxAttempts, RandomGenerator rnd, Sleeper sleeper) {
+    Buyer(String userId, String idempotencyKey, long eventId, List<Long> seatIds, BookingApi api,
+          CountDownLatch startGate, double hotShare, int maxAttempts, RandomGenerator rnd, Sleeper sleeper) {
         this.sleeper = sleeper;
         this.userId = userId;
+        this.idempotencyKey = idempotencyKey;
         this.eventId = eventId;
         this.seatIds = seatIds;
         this.api = api;
@@ -89,7 +92,7 @@ public final class Buyer implements Callable<BuyerOutcome> {
                 return new BuyerOutcome(false, conflicts, rateLimited, errors, holdLat, checkoutLat);
             }
             long t0 = System.nanoTime();
-            HttpResponse<String> order = api.checkout(userId, "lt-" + userId, holdId);
+            HttpResponse<String> order = api.checkout(userId, idempotencyKey, holdId);
             checkoutLat.add(elapsedMs(t0));
             if (order.statusCode() == 201) {
                 return new BuyerOutcome(true, conflicts, rateLimited, errors, holdLat, checkoutLat);

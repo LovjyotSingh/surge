@@ -1,8 +1,12 @@
 package dev.surge.loadtest;
 
+import java.io.IOException;
+import java.io.PrintStream;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -28,12 +32,28 @@ public final class LoadTestMain {
         System.exit(run(cfg));
     }
 
+    /**
+     * Idempotency key for one buyer in one run. A fresh run id per run means a re-run never reuses the keys of an
+     * earlier run (whose orders a reset has deleted). A UUID (36) + "-" + "lt-" + an int (at most 13) stays under
+     * the server's 64-character limit.
+     */
+    static String idempotencyKey(String runId, String userId) {
+        return runId + "-" + userId;
+    }
+
     static int run(LoadTestConfig cfg) throws Exception {
+        return run(cfg, System.out, System.err);
+    }
+
+    static int run(LoadTestConfig cfg, PrintStream out, PrintStream err) throws Exception {
+        String runId = UUID.randomUUID().toString();
         try (BookingApi api = new BookingApi(cfg.baseUrl())) {
             if (cfg.reset()) {
                 api.reset(cfg.eventId());
             }
             List<Long> seatIds = api.seatIds(cfg.eventId());
+            out.println("Run " + runId + ": " + cfg.users() + " buyers, event " + cfg.eventId()
+                + ", Idempotency-Key = " + idempotencyKey(runId, "<userId>"));
             CountDownLatch gate = new CountDownLatch(1);
             List<Future<BuyerOutcome>> futures = new ArrayList<>(cfg.users());
             Instant startedAt = Instant.now();
@@ -46,8 +66,9 @@ public final class LoadTestMain {
             List<Long> checkoutLat = new ArrayList<>();
             try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
                 for (int n = 0; n < cfg.users(); n++) {
-                    futures.add(pool.submit(new Buyer("lt-" + n, cfg.eventId(), seatIds, api, gate,
-                        cfg.hotShare(), cfg.maxAttempts(), RandomGenerator.getDefault())));
+                    String userId = "lt-" + n;
+                    futures.add(pool.submit(new Buyer(userId, idempotencyKey(runId, userId), cfg.eventId(), seatIds,
+                        api, gate, cfg.hotShare(), cfg.maxAttempts(), RandomGenerator.getDefault())));
                 }
                 gate.countDown();
                 for (Future<BuyerOutcome> f : futures) {
@@ -67,13 +88,29 @@ public final class LoadTestMain {
             JsonNode integrity = api.integrity(cfg.eventId());
             LoadTestReport report = new LoadTestReport(startedAt, cfg.users(), cfg.eventId(),
                 integrity.get("totalSeats").asInt(), integrity.get("soldSeats").asInt(),
-                integrity.get("oversold").asInt(), succeeded, holdLat.size() + checkoutLat.size(), conflicts, rateLimited, errors,
+                integrity.get("oversold").asInt(), integrity.path("consistent").asBoolean(false), succeeded,
+                holdLat.size() + checkoutLat.size(), conflicts, rateLimited, errors,
                 durationMs, LatencyStats.of(holdLat), LatencyStats.of(checkoutLat));
 
-            ReportWriter.write(cfg.outDir(), report);
+            // Show and publish the result first: a read-only report folder must not lose a finished run.
+            out.println(ReportWriter.markdown(report));
             api.putReport(ReportWriter.json(report));
-            System.out.println(ReportWriter.markdown(report));
-            return report.oversold() > 0 ? 1 : 0;
+            writeFiles(cfg.outDir(), report, out, err);
+            return report.passed() ? 0 : 1;
+        }
+    }
+
+    /** Saving the files is a convenience: a failure is reported but does not fail the run. */
+    private static void writeFiles(Path dir, LoadTestReport report, PrintStream out, PrintStream err) {
+        try {
+            List<Path> files = ReportWriter.write(dir, report);
+            out.println("Report files: " + files);
+        } catch (IOException e) {
+            err.println("WARN: could not write the report files to " + dir + " (" + e + ").");
+            err.println("WARN: the report above was printed and sent to the Ops page, so the run is not lost.");
+            err.println("WARN: hint for Linux: the container user (uid 10001 unless UID is exported) may not be "
+                + "allowed to write ./reports. Run `chmod o+w reports`, or `export UID` before docker compose "
+                + "so the container runs as you.");
         }
     }
 }

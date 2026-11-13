@@ -37,8 +37,8 @@ class BuyerTest {
 
     private BuyerOutcome run() throws Exception {
         CountDownLatch gate = new CountDownLatch(0);
-        return new Buyer("lt-0", 1, List.of(1L, 2L, 3L, 4L, 5L), api, gate, 0.7, 10, new Random(1),
-            sleeps::add).call();
+        return new Buyer("lt-0", "run-1-lt-0", 1, List.of(1L, 2L, 3L, 4L, 5L), api, gate, 0.7, 10,
+            new Random(1), sleeps::add).call();
     }
 
     private static Reply problem(int status, String suffix) {
@@ -55,6 +55,8 @@ class BuyerTest {
         assertThat(o.holdLatenciesMs()).hasSize(2);
         assertThat(o.checkoutLatenciesMs()).hasSize(1);
         assertThat(stub.receivedBodies).anyMatch(b -> b.contains("\"holdId\":\"h-1\""));
+        int checkout = stub.received.indexOf(ORDERS);
+        assertThat(stub.receivedIdempotencyKeys.get(checkout)).isEqualTo("run-1-lt-0");
     }
 
     @Test

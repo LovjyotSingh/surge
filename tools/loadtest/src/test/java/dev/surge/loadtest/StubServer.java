@@ -26,6 +26,8 @@ final class StubServer implements AutoCloseable {
     private final Map<String, Deque<Reply>> scripts = new ConcurrentHashMap<>();
     final List<String> received = new CopyOnWriteArrayList<>();
     final List<String> receivedBodies = new CopyOnWriteArrayList<>();
+    /** Idempotency-Key header of each request, or "" when absent (same index as {@link #received}). */
+    final List<String> receivedIdempotencyKeys = new CopyOnWriteArrayList<>();
 
     StubServer() throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -50,8 +52,12 @@ final class StubServer implements AutoCloseable {
     private void handle(HttpExchange ex) throws IOException {
         String key = ex.getRequestMethod() + " " + ex.getRequestURI().getPath();
         String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-        received.add(key);
-        receivedBodies.add(body);
+        String idem = ex.getRequestHeaders().getFirst("Idempotency-Key");
+        synchronized (this) { // keep the three lists index-aligned under concurrent requests
+            received.add(key);
+            receivedBodies.add(body);
+            receivedIdempotencyKeys.add(idem == null ? "" : idem);
+        }
         Deque<Reply> q = scripts.get(key);
         Reply reply;
         if (q == null) {
