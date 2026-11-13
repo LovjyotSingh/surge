@@ -83,7 +83,7 @@ class CheckoutTest {
         String holdId = hold("u1", "[1,2]");
 
         checkout("u1", "k1", holdId).andExpect(status().isCreated())
-                .andExpect(jsonPath("$.totalInr").value(9998))
+                .andExpect(jsonPath("$.totalInr").value(9998.0))
                 .andExpect(jsonPath("$.lines.length()").value(2))
                 .andExpect(jsonPath("$.status").value("CONFIRMED"));
 
@@ -109,15 +109,45 @@ class CheckoutTest {
     void replayReturnsSameOrder() throws Exception {
         String holdId = hold("u1", "[1,2]");
         MvcResult first = checkout("u1", "k1", holdId).andExpect(status().isCreated()).andReturn();
-        int orderId = JsonPath.read(first.getResponse().getContentAsString(), "$.orderId");
+        String firstBody = first.getResponse().getContentAsString();
+        int orderId = JsonPath.read(firstBody, "$.orderId");
 
-        checkout("u1", "k1", holdId).andExpect(status().isOk())
+        MvcResult replay = checkout("u1", "k1", holdId).andExpect(status().isOk())
                 .andExpect(header().string("Idempotent-Replayed", "true"))
                 .andExpect(jsonPath("$.orderId").value(orderId))
-                .andExpect(jsonPath("$.totalInr").value(9998));
+                .andExpect(jsonPath("$.totalInr").value(9998.0)).andReturn();
+        String replayBody = replay.getResponse().getContentAsString();
 
+        assertThat(replayBody).isEqualTo(firstBody);
+        assertThat((String) JsonPath.read(replayBody, "$.createdAt")).isEqualTo(JsonPath.read(firstBody, "$.createdAt"));
         assertThat(count("SELECT COUNT(*) FROM orders WHERE event_id = 1")).isEqualTo(1);
         verify(gateway, times(1)).charge(any());
+    }
+
+    @Test
+    void redisFlushedKeyStillReplaysFromDatabase() throws Exception {
+        String h1 = hold("u1", "[1,2]");
+        MvcResult first = checkout("u1", "k1", h1).andExpect(status().isCreated()).andReturn();
+        String firstBody = first.getResponse().getContentAsString();
+
+        redis.execute((RedisCallback<Object>) c -> {
+            c.serverCommands().flushAll();
+            return null;
+        });
+        String h2 = hold("u1", "[3,4]");
+
+        MvcResult retry = checkout("u1", "k1", h2).andExpect(status().isOk())
+                .andExpect(header().string("Idempotent-Replayed", "true")).andReturn();
+
+        assertThat(retry.getResponse().getContentAsString()).isEqualTo(firstBody);
+        assertThat(count("SELECT COUNT(*) FROM orders WHERE event_id = 1")).isEqualTo(1);
+        assertThat(count("SELECT COUNT(*) FROM seat WHERE id IN (3,4) AND status = 'SOLD'")).isZero();
+        // Design: the DB lookup happens before charging, so the retry is never charged (or refunded).
+        verify(gateway, times(1)).charge(any());
+        verify(gateway, never()).refund(any());
+        // The key is re-completed so later retries are served from Redis again.
+        int orderId = JsonPath.read(firstBody, "$.orderId");
+        assertThat(redis.opsForValue().get(RedisKeys.idempotency("u1", "k1"))).isEqualTo(String.valueOf(orderId));
     }
 
     @Test
@@ -128,6 +158,7 @@ class CheckoutTest {
         checkout("u1", "k", holdId).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/request-in-progress"));
         verify(gateway, never()).charge(any());
+        assertThat(redis.opsForValue().get(RedisKeys.idempotency("u1", "k"))).isEqualTo("IN_PROGRESS");
     }
 
     @Test
@@ -166,7 +197,7 @@ class CheckoutTest {
 
         Mockito.reset(gateway);
         checkout("u1", "k2", holdId).andExpect(status().isCreated())
-                .andExpect(jsonPath("$.totalInr").value(9998));
+                .andExpect(jsonPath("$.totalInr").value(9998.0));
     }
 
     @Test

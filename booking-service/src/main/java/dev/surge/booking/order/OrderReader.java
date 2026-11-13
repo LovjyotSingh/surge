@@ -2,6 +2,7 @@ package dev.surge.booking.order;
 
 import dev.surge.booking.error.OrderNotFoundException;
 import dev.surge.booking.inventory.InventoryCache;
+import java.util.Optional;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -15,6 +16,12 @@ public class OrderReader {
     public OrderReader(OrderRepository orders, InventoryCache inventory) {
         this.orders = orders;
         this.inventory = inventory;
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<OrderResponse> findByIdempotencyKey(String userId, String key) {
+        return orders.findByUserIdAndIdempotencyKey(userId, key)
+                .map(o -> OrderResponse.from(o, inventory.get(o.getEventId())));
     }
 
     @Transactional(readOnly = true)

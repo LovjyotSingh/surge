@@ -10,13 +10,12 @@ import dev.surge.booking.outbox.OutboxRepository;
 import dev.surge.common.messaging.OrderConfirmed;
 import dev.surge.common.messaging.TicketRequested;
 import java.math.BigDecimal;
-import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.springframework.dao.ConcurrencyFailureException;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.json.JsonMapper;
@@ -32,27 +31,25 @@ public class OrderWriter {
     private final OrderRepository orders;
     private final OutboxRepository outbox;
     private final JsonMapper json;
-    private final Clock clock;
 
-    public OrderWriter(SeatRepository seats, OrderRepository orders, OutboxRepository outbox, JsonMapper json,
-                       Clock clock) {
+    public OrderWriter(SeatRepository seats, OrderRepository orders, OutboxRepository outbox, JsonMapper json) {
         this.seats = seats;
         this.orders = orders;
         this.outbox = outbox;
         this.json = json;
-        this.clock = clock;
     }
 
     @Transactional
-    public Order confirm(ActiveHold hold, Map<Long, BigDecimal> prices, String idempotencyKey) {
+    public Order confirm(ActiveHold hold, Map<Long, BigDecimal> prices, String idempotencyKey, Instant now) {
         try {
-            return doConfirm(hold, prices, idempotencyKey);
-        } catch (ObjectOptimisticLockingFailureException | DataIntegrityViolationException e) {
+            return doConfirm(hold, prices, idempotencyKey, now);
+        } catch (ConcurrencyFailureException | DataIntegrityViolationException e) {
             throw new SeatConflictException();
         }
     }
 
-    private Order doConfirm(ActiveHold hold, Map<Long, BigDecimal> prices, String idempotencyKey) {
+    private Order doConfirm(ActiveHold hold, Map<Long, BigDecimal> prices, String idempotencyKey,
+                            Instant now) {
         List<Seat> found = seats.findAllById(hold.seatIds());
         if (found.size() != hold.seatIds().size()) {
             throw new SeatConflictException();
@@ -65,8 +62,7 @@ public class OrderWriter {
         }
         seats.saveAllAndFlush(found);
 
-        BigDecimal total = hold.seatIds().stream().map(prices::get).reduce(BigDecimal.ZERO, BigDecimal::add);
-        Instant now = clock.instant();
+        BigDecimal total = hold.seatIds().stream().map(prices::get).reduce(BigDecimal.ZERO, BigDecimal::add).setScale(2);
         Order order = new Order(hold.userId(), hold.eventId(), OrderStatus.CONFIRMED, total, idempotencyKey, now);
         for (Long seatId : hold.seatIds()) {
             order.addItem(new OrderItem(seatId, prices.get(seatId)));
