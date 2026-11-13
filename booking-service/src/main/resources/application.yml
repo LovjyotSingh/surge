@@ -34,6 +34,11 @@ spring:
 surge:
   hold:
     ttl: PT5M
+  pricing:
+    tier-prices:
+      PLATINUM: 4999
+      GOLD: 2999
+      SILVER: 1499
 
 management:
   endpoints:
