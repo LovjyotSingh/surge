@@ -7,7 +7,6 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,15 +30,6 @@ public class OutboxRelay {
         Gauge.builder("outbox_backlog", repository, OutboxRepository::countByPublishedAtIsNull)
                 .description("Outbox rows not yet published")
                 .register(registry);
-    }
-
-    @Scheduled(fixedDelayString = "${surge.outbox.poll-interval}", initialDelayString = "${surge.outbox.poll-interval}")
-    public void poll() {
-        try {
-            relayBatch();
-        } catch (RuntimeException e) {
-            log.warn("outbox relay batch failed", e);
-        }
     }
 
     /** Publishes up to batch-size rows; stops at the first failure, committing those already published. */

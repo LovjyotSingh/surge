@@ -22,6 +22,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 class OutboxRelayTest {
 
     @Autowired OutboxRelay relay;
+    @Autowired OutboxPoller poller;
     @Autowired OutboxRepository repository;
     @Autowired OutboxPublisher publisher;
     @Autowired TestData testData;
@@ -78,5 +79,14 @@ class OutboxRelayTest {
         assertThat(relay.relayBatch()).isEqualTo(100);
         assertThat(relay.relayBatch()).isEqualTo(50);
         assertThat(relay.relayBatch()).isZero();
+    }
+
+    @Test
+    void scheduledEntryPointCommitsPublishedRows() {
+        insert(3);
+
+        poller.poll();
+
+        assertThat(repository.findAll()).hasSize(3).allSatisfy(m -> assertThat(m.getPublishedAt()).isNotNull());
     }
 }
