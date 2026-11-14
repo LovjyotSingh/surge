@@ -152,15 +152,20 @@ class TicketWorkflowTest extends TicketTestBase {
                 JSON.writeValueAsString(new TicketRequested(UUID.randomUUID(), valid.orderId(), "u-1", 3L, List.of(),
                         valid.occurredAt())),
                 JSON.writeValueAsString(new TicketRequested(UUID.randomUUID(), 0, "u-1", 3L, valid.seatIds(),
+                        valid.occurredAt())),
+                JSON.writeValueAsString(new TicketRequested(UUID.randomUUID(), valid.orderId(), "u-1", 0L, valid.seatIds(),
                         valid.occurredAt())));
 
         bodies.forEach(this::publishRaw);
+        // A body that is not JSON by content type: the spring-messaging conversion error, never reaches the workflow.
+        rabbit.send("surge.tickets", "ticket.requested", org.springframework.amqp.core.MessageBuilder
+                .withBody("plain text, not a ticket".getBytes()).setContentType("text/plain").build());
 
         // A retry would take 1 s + 2 s per message: all of them being dead-lettered fast means none was retried.
         await().atMost(Duration.ofSeconds(10)).untilAsserted(() ->
-                assertThat(queueDepth("tickets.dlq")).isEqualTo(bodies.size()));
+                assertThat(queueDepth("tickets.dlq")).isEqualTo(bodies.size() + 1));
         // One workflow call per message that parsed into a record, never a second.
-        verify(workflow, times(4)).process(any());
+        verify(workflow, times(5)).process(any());
         verify(booking, never()).order(any(), anyLong());
         verify(store, never()).put(anyLong(), any());
         assertThat(mailpit.messages()).isEmpty();
