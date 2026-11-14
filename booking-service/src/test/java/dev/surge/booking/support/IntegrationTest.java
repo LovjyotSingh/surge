@@ -1,6 +1,6 @@
 package dev.surge.booking.support;
 
-import dev.surge.booking.outbox.OutboxPublisher;
+import dev.surge.outbox.OutboxPublisher;
 import dev.surge.booking.payment.PaymentGateway;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;

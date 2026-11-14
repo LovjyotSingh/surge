@@ -1,4 +1,4 @@
-package dev.surge.booking.outbox;
+package dev.surge.outbox;
 
 import java.util.List;
 import org.springframework.data.jpa.repository.JpaRepository;

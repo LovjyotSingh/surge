@@ -1,4 +1,4 @@
-package dev.surge.booking.outbox;
+package dev.surge.outbox;
 
 /**
  * Delivers one outbox message to its destination. Throwing signals failure; the relay retries on the next poll.

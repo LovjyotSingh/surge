@@ -1,11 +1,9 @@
-package dev.surge.booking.outbox;
+package dev.surge.outbox;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Component;
 
 /** Phase 1 publisher: logs the message. Later phases add broker publishers routed by destination. */
-@Component
 public class LoggingOutboxPublisher implements OutboxPublisher {
 
     private static final Logger log = LoggerFactory.getLogger(LoggingOutboxPublisher.class);

@@ -1,4 +1,4 @@
-package dev.surge.booking.outbox;
+package dev.surge.outbox;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;

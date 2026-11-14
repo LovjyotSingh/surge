@@ -8,6 +8,11 @@ import static org.mockito.Mockito.verify;
 
 import dev.surge.booking.support.IntegrationTest;
 import dev.surge.booking.support.TestData;
+import dev.surge.outbox.OutboxMessage;
+import dev.surge.outbox.OutboxPoller;
+import dev.surge.outbox.OutboxPublisher;
+import dev.surge.outbox.OutboxRelay;
+import dev.surge.outbox.OutboxRepository;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;

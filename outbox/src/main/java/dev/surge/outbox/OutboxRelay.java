@@ -1,4 +1,4 @@
-package dev.surge.booking.outbox;
+package dev.surge.outbox;
 
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -7,11 +7,9 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 /** Publishes unpublished outbox rows in id order. Rows are locked with SKIP LOCKED so relays can run concurrently. */
-@Component
 public class OutboxRelay {
 
     private static final Logger log = LoggerFactory.getLogger(OutboxRelay.class);
