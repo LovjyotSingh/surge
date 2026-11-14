@@ -23,6 +23,7 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.amqp.core.Binding;
@@ -31,6 +32,8 @@ import org.springframework.amqp.core.Queue;
 import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.health.actuate.endpoint.HealthEndpoint;
+import org.springframework.context.ApplicationContext;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -52,11 +55,25 @@ class OutboxBrokerPublishingTest {
     @Autowired KafkaTemplate<String, String> kafkaTemplate;
     @Autowired RabbitAdmin rabbitAdmin;
     @Autowired RabbitTemplate rabbitTemplate;
+    @Autowired ApplicationContext context;
+    @Autowired HealthEndpoint healthEndpoint;
+
+    private Queue queue;
+    private Binding binding;
 
     @BeforeEach
     void reset() {
         testData.resetEvent(1L);
         jdbc.update("DELETE FROM outbox");
+        queue = new Queue("test.ticket.requested." + UUID.randomUUID(), true, false, false);
+        rabbitAdmin.declareQueue(queue);
+        binding = new Binding(queue.getName(), Binding.DestinationType.QUEUE, "surge.tickets", "ticket.requested", null);
+        rabbitAdmin.declareBinding(binding);
+    }
+
+    @AfterEach
+    void deleteQueue() {
+        rabbitAdmin.deleteQueue(queue.getName());
     }
 
     private KafkaConsumer<String, String> consumerAtEnd() {
@@ -125,25 +142,50 @@ class OutboxBrokerPublishingTest {
 
     @Test
     void checkoutPublishesTicketRequestedToRabbit() throws Exception {
-        Queue queue = new Queue("test.ticket.requested." + UUID.randomUUID(), true, false, false);
-        rabbitAdmin.declareQueue(queue);
-        rabbitAdmin.declareBinding(new Binding(queue.getName(), Binding.DestinationType.QUEUE, "surge.tickets",
-                "ticket.requested", null));
-        try {
+        long orderId = buyOneSeat();
+
+        assertThat(relay.relayBatch()).isEqualTo(2);
+
+        Message message = rabbitTemplate.receive(queue.getName(), WAIT.toMillis());
+        assertThat(message).isNotNull();
+        assertThat(message.getMessageProperties().getContentType()).isEqualTo("application/json");
+        assertThat((String) message.getMessageProperties().getHeader("type")).isEqualTo("TicketRequested");
+        String body = new String(message.getBody(), StandardCharsets.UTF_8);
+        assertThat(JsonPath.<Number>read(body, "$.orderId").longValue()).isEqualTo(orderId);
+        assertThat(unpublished()).isZero();
+    }
+
+    /**
+     * Outbox rows are relayed in id order: OrderConfirmed (Kafka) is inserted before TicketRequested (Rabbit). With no
+     * queue bound the broker returns the ticket message, so the relay publishes the Kafka row, stops at the ticket row
+     * and leaves only it unpublished. Once a queue is bound the next batch delivers it.
+     */
+    @Test
+    void unroutableTicketStaysUnpublished() throws Exception {
+        rabbitAdmin.removeBinding(binding);
+        try (var consumer = consumerAtEnd()) {
             long orderId = buyOneSeat();
 
-            assertThat(relay.relayBatch()).isEqualTo(2);
+            assertThat(relay.relayBatch()).isEqualTo(1);
+            assertThat(poll(consumer, 1)).hasSize(1);
+            assertThat(jdbc.queryForList("SELECT type FROM outbox WHERE published_at IS NULL", String.class))
+                    .containsExactly("TicketRequested");
+
+            rabbitAdmin.declareBinding(binding);
+            assertThat(relay.relayBatch()).isEqualTo(1);
 
             Message message = rabbitTemplate.receive(queue.getName(), WAIT.toMillis());
             assertThat(message).isNotNull();
-            assertThat(message.getMessageProperties().getContentType()).isEqualTo("application/json");
-            assertThat((String) message.getMessageProperties().getHeader("type")).isEqualTo("TicketRequested");
-            String body = new String(message.getBody(), StandardCharsets.UTF_8);
-            assertThat(JsonPath.<Number>read(body, "$.orderId").longValue()).isEqualTo(orderId);
+            assertThat(JsonPath.<Number>read(new String(message.getBody(), StandardCharsets.UTF_8), "$.orderId")
+                    .longValue()).isEqualTo(orderId);
             assertThat(unpublished()).isZero();
-        } finally {
-            rabbitAdmin.deleteQueue(queue.getName());
         }
+    }
+
+    @Test
+    void rabbitHealthIsNotPartOfBookingHealth() {
+        assertThat(context.containsBean("rabbitHealthContributor")).isFalse();
+        assertThat(healthEndpoint.health().getStatus().getCode()).isEqualTo("UP");
     }
 
     @Test

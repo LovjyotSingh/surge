@@ -75,9 +75,9 @@ public class OrderWriter {
                 hold.eventId(), hold.seatIds(), total, now);
         TicketRequested ticket = new TicketRequested(UUID.randomUUID(), order.getId(), hold.userId(),
                 hold.eventId(), hold.seatIds(), now);
-        outbox.save(new OutboxMessage(aggregateId, "OrderConfirmed", MessageTypes.ORDERS_DESTINATION,
+        outbox.save(new OutboxMessage(aggregateId, MessageTypes.ORDER_CONFIRMED, MessageTypes.ORDERS_DESTINATION,
                 json.writeValueAsString(confirmed), now));
-        outbox.save(new OutboxMessage(aggregateId, "TicketRequested", MessageTypes.TICKET_REQUESTED_DESTINATION,
+        outbox.save(new OutboxMessage(aggregateId, MessageTypes.TICKET_REQUESTED, MessageTypes.TICKET_REQUESTED_DESTINATION,
                 json.writeValueAsString(ticket), now));
         return order;
     }

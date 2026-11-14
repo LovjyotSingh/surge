@@ -7,8 +7,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.springframework.kafka.core.KafkaTemplate;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Sends the payload (already JSON) as a String record. The key is the payload's top-level {@code eventId} when
@@ -17,7 +15,6 @@ import tools.jackson.databind.json.JsonMapper;
  */
 public class KafkaOutboxSender implements OutboxSender {
 
-    private static final JsonMapper JSON = JsonMapper.builder().build();
     private static final long TIMEOUT_SECONDS = 5;
 
     private final KafkaTemplate<String, String> template;
@@ -29,12 +26,12 @@ public class KafkaOutboxSender implements OutboxSender {
     @Override
     public void send(OutboxMessage message, OutboxDestination destination) {
         String topic = ((OutboxDestination.Kafka) destination).topic();
-        JsonNode payload = JSON.readTree(message.getPayload());
-        String key = text(payload, "eventId");
+        
+        String key = PayloadFields.scalar(message.getPayload(), "eventId");
         ProducerRecord<String, String> record = new ProducerRecord<>(topic,
                 key != null ? key : message.getAggregateId(), message.getPayload());
         record.headers().add("type", message.getType().getBytes(StandardCharsets.UTF_8));
-        String messageId = text(payload, "messageId");
+        String messageId = PayloadFields.scalar(message.getPayload(), "messageId");
         if (messageId != null) {
             record.headers().add("messageId", messageId.getBytes(StandardCharsets.UTF_8));
         }
@@ -48,8 +45,4 @@ public class KafkaOutboxSender implements OutboxSender {
         }
     }
 
-    private static String text(JsonNode payload, String field) {
-        JsonNode node = payload.get(field);
-        return node == null || node.isNull() ? null : node.asString();
-    }
 }

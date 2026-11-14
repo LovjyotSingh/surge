@@ -34,7 +34,11 @@ spring:
         max.block.ms: 5000
   rabbitmq:
     host: ${RABBIT_HOST:localhost}
+    connection-timeout: 5s
     publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
   data:
     redis:
       host: ${REDIS_HOST:localhost}
@@ -67,6 +71,9 @@ springdoc:
     path: /api/bookings/docs
 
 management:
+  health:
+    rabbit:
+      enabled: false
   endpoints:
     web:
       exposure:
