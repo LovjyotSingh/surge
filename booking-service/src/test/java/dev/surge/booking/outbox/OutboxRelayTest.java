@@ -1,7 +1,9 @@
 package dev.surge.booking.outbox;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.verify;
@@ -38,7 +40,9 @@ class OutboxRelayTest {
         testData.clearOutbox();
     }
 
+    /** The rows use fake destinations; the real publisher would reject them, so publishing is stubbed to a no-op. */
     private List<Long> insert(int count) {
+        doNothing().when(publisher).publish(any());
         List<Long> ids = new ArrayList<>();
         for (int i = 1; i <= count; i++) {
             OutboxMessage m = new OutboxMessage("agg-" + i, "TestEvent", "test.topic", "{\"n\":" + i + "}", Instant.now());
@@ -73,6 +77,7 @@ class OutboxRelayTest {
         assertThat(repository.findById(ids.get(2)).orElseThrow().getPublishedAt()).isNull();
 
         org.mockito.Mockito.reset(publisher);
+        doNothing().when(publisher).publish(any());
         assertThat(relay.relayBatch()).isEqualTo(2);
         assertThat(repository.findAll()).allSatisfy(m -> assertThat(m.getPublishedAt()).isNotNull());
     }

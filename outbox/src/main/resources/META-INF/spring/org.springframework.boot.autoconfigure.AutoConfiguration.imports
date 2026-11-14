@@ -1,1 +1,2 @@
 dev.surge.outbox.OutboxAutoConfiguration
+dev.surge.outbox.OutboxRoutingAutoConfiguration

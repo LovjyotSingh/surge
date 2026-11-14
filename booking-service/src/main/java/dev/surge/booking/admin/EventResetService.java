@@ -6,20 +6,27 @@ import dev.surge.booking.event.SeatState;
 import dev.surge.booking.hold.RedisKeys;
 import dev.surge.booking.inventory.InventoryCache;
 import dev.surge.booking.stream.SeatEventPublisher;
+import dev.surge.common.messaging.MessageTypes;
+import dev.surge.common.messaging.SalesReset;
+import dev.surge.outbox.OutboxMessage;
+import dev.surge.outbox.OutboxRepository;
 import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import org.springframework.data.redis.core.Cursor;
 import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.json.JsonMapper;
 
-/** Restores an event to a freshly seeded state so a load test can be re-run. Outbox rows are left alone. */
+/** Restores an event to a freshly seeded state so a load test can be re-run. Existing outbox rows are left alone; a SalesReset row is added so consumers can drop their copies. */
 @Service
 public class EventResetService {
 
@@ -32,10 +39,12 @@ public class EventResetService {
     private final SeatEventPublisher publisher;
     private final EventRefRepository events;
     private final Clock clock;
+    private final OutboxRepository outbox;
+    private final JsonMapper json;
 
     public EventResetService(JdbcTemplate jdbc, TransactionTemplate tx, StringRedisTemplate redis,
                              InventoryCache inventory, SeatEventPublisher publisher, EventRefRepository events,
-                             Clock clock) {
+                             Clock clock, OutboxRepository outbox, JsonMapper json) {
         this.jdbc = jdbc;
         this.tx = tx;
         this.redis = redis;
@@ -43,6 +52,8 @@ public class EventResetService {
         this.publisher = publisher;
         this.events = events;
         this.clock = clock;
+        this.outbox = outbox;
+        this.json = json;
     }
 
     public void reset(long eventId, int opensInSeconds) {
@@ -55,6 +66,10 @@ public class EventResetService {
             jdbc.update("DELETE FROM orders WHERE event_id = ?", eventId);
             jdbc.update("UPDATE seat SET status = 'AVAILABLE' WHERE event_id = ?", eventId);
             jdbc.update("UPDATE event_ref SET sale_opens_at = ? WHERE id = ?", opensAt, eventId);
+            Instant now = clock.instant();
+            SalesReset reset = new SalesReset(UUID.randomUUID(), eventId, now);
+            outbox.save(new OutboxMessage(String.valueOf(eventId), MessageTypes.SALES_RESET,
+                    MessageTypes.ORDERS_DESTINATION, json.writeValueAsString(reset), now));
         });
 
         List<Long> seatIds = jdbc.queryForList("SELECT id FROM seat WHERE event_id = ? ORDER BY id", Long.class,

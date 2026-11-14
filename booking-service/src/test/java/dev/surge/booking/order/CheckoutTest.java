@@ -101,7 +101,7 @@ class CheckoutTest {
                 "SELECT type, destination, published_at FROM outbox ORDER BY id");
         assertThat(outbox).hasSize(2);
         assertThat(outbox).extracting(m -> m.get("type") + "|" + m.get("destination"))
-                .containsExactlyInAnyOrder("OrderConfirmed|kafka:orders.v1", "TicketRequested|rabbit:tickets");
+                .containsExactlyInAnyOrder("OrderConfirmed|kafka:orders.v1", "TicketRequested|rabbit:surge.tickets/ticket.requested");
         assertThat(outbox).allMatch(m -> m.get("published_at") == null);
 
         assertThat(redis.opsForSet().members(RedisKeys.sold(1))).containsExactlyInAnyOrder("1", "2");

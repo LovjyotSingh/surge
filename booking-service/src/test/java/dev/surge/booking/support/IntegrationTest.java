@@ -9,14 +9,15 @@ import java.lang.annotation.Target;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
 /**
  * One shared Spring context for every integration test (never add field-level mocks or test properties: each
  * variation would start a second context with new containers).
  *
- * <p>PaymentGateway is wrapped in a Mockito spy (delegating to the real FakePaymentGateway), as is OutboxPublisher
- * (the real LoggingOutboxPublisher); tests can stub declines or publish failures and verify refunds, and Mockito
+ * <p>PaymentGateway is wrapped in a Mockito spy (delegating to the real FakePaymentGateway), as are OutboxPublisher
+ * (the real RoutingOutboxPublisher) and KafkaTemplate; tests can stub declines or publish failures and verify refunds, and Mockito
  * resets the spies after each test. The outbox poll and hold sweep intervals are pushed to PT1H so the schedulers
  * never race tests; tests drive them explicitly through {@code OutboxRelay.relayBatch()},
  * {@code OutboxPoller.poll()} and {@code HoldExpirySweeper.sweep()}.
@@ -25,7 +26,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 @Retention(RetentionPolicy.RUNTIME)
 @SpringBootTest(properties = {"surge.outbox.poll-interval=PT1H", "surge.hold.sweep-interval=PT1H"})
 @AutoConfigureMockMvc
-@MockitoSpyBean(types = {PaymentGateway.class, OutboxPublisher.class})
+@MockitoSpyBean(types = {PaymentGateway.class, OutboxPublisher.class, KafkaTemplate.class})
 @Import({TestcontainersConfig.class, TestData.class})
 public @interface IntegrationTest {
 }

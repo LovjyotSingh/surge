@@ -7,6 +7,7 @@ import dev.surge.booking.event.SeatStatus;
 import dev.surge.booking.hold.ActiveHold;
 import dev.surge.outbox.OutboxMessage;
 import dev.surge.outbox.OutboxRepository;
+import dev.surge.common.messaging.MessageTypes;
 import dev.surge.common.messaging.OrderConfirmed;
 import dev.surge.common.messaging.TicketRequested;
 import java.math.BigDecimal;
@@ -74,9 +75,9 @@ public class OrderWriter {
                 hold.eventId(), hold.seatIds(), total, now);
         TicketRequested ticket = new TicketRequested(UUID.randomUUID(), order.getId(), hold.userId(),
                 hold.eventId(), hold.seatIds(), now);
-        outbox.save(new OutboxMessage(aggregateId, "OrderConfirmed", "kafka:orders.v1",
+        outbox.save(new OutboxMessage(aggregateId, "OrderConfirmed", MessageTypes.ORDERS_DESTINATION,
                 json.writeValueAsString(confirmed), now));
-        outbox.save(new OutboxMessage(aggregateId, "TicketRequested", "rabbit:tickets",
+        outbox.save(new OutboxMessage(aggregateId, "TicketRequested", MessageTypes.TICKET_REQUESTED_DESTINATION,
                 json.writeValueAsString(ticket), now));
         return order;
     }
