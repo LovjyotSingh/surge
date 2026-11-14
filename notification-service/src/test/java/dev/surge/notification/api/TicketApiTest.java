@@ -142,4 +142,29 @@ class TicketApiTest extends TicketTestBase {
         org.awaitility.Awaitility.await().untilAsserted(() -> assertThat(queueDepth("tickets.dlq")).isEqualTo(3));
         assertThat(queueDepth("tickets")).isZero();
     }
+
+    @Autowired
+    org.springframework.amqp.rabbit.core.RabbitAdmin admin;
+    @Autowired
+    @org.springframework.beans.factory.annotation.Qualifier("ticketsBinding")
+    org.springframework.amqp.core.Binding ticketsBinding;
+
+    @Test
+    void replayOfAnUnroutableMessageKeepsItInTheDlq() throws Exception {
+        deadLetter(JSON.writeValueAsString(stubOrder("u-1", nextOrderId())), "s3 is down");
+        org.awaitility.Awaitility.await().untilAsserted(() -> assertThat(queueDepth("tickets.dlq")).isEqualTo(1));
+
+        admin.removeBinding(ticketsBinding);
+        try {
+            mvc.perform(post("/api/notifications/admin/dlq/replay?limit=5").header("X-User-Roles", "ADMIN"))
+                    .andExpect(status().isServiceUnavailable())
+                    .andExpect(jsonPath("$.type").value("https://surge.dev/problems/replay-failed"));
+        } finally {
+            admin.declareBinding(ticketsBinding);
+        }
+
+        org.awaitility.Awaitility.await().untilAsserted(() -> assertThat(queueDepth("tickets.dlq")).isEqualTo(1));
+        assertThat(queueDepth("tickets")).isZero();
+        // The binding is restored in the finally block above; the message stays for the next test's purge.
+    }
 }

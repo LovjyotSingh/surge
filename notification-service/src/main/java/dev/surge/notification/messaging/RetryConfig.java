@@ -32,7 +32,9 @@ public class RetryConfig {
 
     static boolean isRetryable(Throwable failure) {
         for (Throwable t = failure; t != null; t = t.getCause() == t ? null : t.getCause()) {
-            if (t instanceof IllegalArgumentException || t instanceof MessageConversionException) {
+            if (t instanceof IllegalArgumentException || t instanceof MessageConversionException
+                    || t instanceof org.springframework.messaging.converter.MessageConversionException
+                    || t instanceof org.springframework.messaging.handler.invocation.MethodArgumentResolutionException) {
                 return false;
             }
         }

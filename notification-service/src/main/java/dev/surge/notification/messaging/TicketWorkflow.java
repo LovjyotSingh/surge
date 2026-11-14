@@ -80,7 +80,7 @@ public class TicketWorkflow {
         byte[] pdf = renderer.render(data);
         String key = store.put(message.orderId(), pdf);
 
-        Ticket ticket = tickets.save(new Ticket(message.orderId(), message.userId(), message.eventId(), key,
+        Ticket ticket = tickets.saveAndFlush(new Ticket(message.orderId(), message.userId(), message.eventId(), key,
                 Instant.now(clock)));
         mailer.send(email, data, pdf);
         ticket.markEmailed(Instant.now(clock));
@@ -96,6 +96,9 @@ public class TicketWorkflow {
         }
         if (m.userId() == null || !VALID_ID.matcher(m.userId()).matches()) {
             throw new IllegalArgumentException("invalid user id");
+        }
+        if (m.eventId() <= 0) {
+            throw new IllegalArgumentException("eventId must be positive");
         }
         if (m.orderId() <= 0) {
             throw new IllegalArgumentException("orderId must be positive");

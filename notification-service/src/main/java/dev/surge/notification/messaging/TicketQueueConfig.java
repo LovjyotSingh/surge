@@ -48,7 +48,8 @@ public class TicketQueueConfig {
 
     @Bean
     Queue deadLetterQueue() {
-        return QueueBuilder.durable(DLQ).build();
+        // Classic on purpose: a quorum default would drop listed (nack+requeue) messages at its delivery limit.
+        return QueueBuilder.durable(DLQ).withArgument("x-queue-type", "classic").build();
     }
 
     @Bean

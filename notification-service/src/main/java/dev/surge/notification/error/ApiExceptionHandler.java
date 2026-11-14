@@ -44,6 +44,12 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(Problems.of(HttpStatus.BAD_REQUEST, "validation-failed", "Invalid parameter", e.getMessage()));
     }
 
+    /** Nothing was lost, but the topology or broker is unhealthy: a server-side condition, so 503 (not a client 409). */
+    @ExceptionHandler(ReplayFailedException.class)
+    ResponseEntity<ProblemDetail> replayFailed(ReplayFailedException e) {
+        return problem(Problems.of(HttpStatus.SERVICE_UNAVAILABLE, "replay-failed", "Replay failed", e.getMessage()));
+    }
+
     private static ResponseEntity<ProblemDetail> problem(ProblemDetail pd) {
         return ResponseEntity.status(pd.getStatus()).contentType(MediaType.APPLICATION_PROBLEM_JSON).body(pd);
     }
