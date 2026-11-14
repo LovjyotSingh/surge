@@ -60,9 +60,12 @@ class RouteConfig {
                         .filters(f -> f.circuitBreaker(c -> c.setName("catalog")
                                 .setFallbackUri("forward:/fallback/catalog")))
                         .uri(catalog))
-                // --- booking: public event reads incl. the SSE stream (no response timeout) ---
-                .route("booking-events", r -> r.method(HttpMethod.GET).and().path("/api/bookings/events/**")
+                // --- booking: the SSE stream has no response timeout; other public event reads use the default ---
+                .route("booking-events-stream", r -> r.method(HttpMethod.GET).and()
+                        .path("/api/bookings/events/*/stream")
                         .metadata(RESPONSE_TIMEOUT, -1)
+                        .uri(booking))
+                .route("booking-events", r -> r.method(HttpMethod.GET).and().path("/api/bookings/events/**")
                         .uri(booking))
                 .route("booking-holds", r -> r.path("/api/bookings/holds/**")
                         .filters(f -> f.filter(holdsLimit)

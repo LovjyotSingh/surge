@@ -43,6 +43,10 @@ public final class Downstream {
         return "http://localhost:" + port;
     }
 
+    public Function<RecordedRequest, MockResponse> currentHandler() {
+        return handler;
+    }
+
     public void respondWith(Function<RecordedRequest, MockResponse> response) {
         handler = response;
     }

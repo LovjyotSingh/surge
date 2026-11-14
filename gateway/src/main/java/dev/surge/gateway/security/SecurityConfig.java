@@ -22,7 +22,10 @@ import org.springframework.security.oauth2.server.resource.authentication.Reacti
 import org.springframework.security.web.server.SecurityWebFilterChain;
 import org.springframework.security.web.server.context.NoOpServerSecurityContextRepository;
 import org.springframework.security.web.server.savedrequest.NoOpServerRequestCache;
+import org.springframework.http.client.reactive.ReactorClientHttpConnector;
+import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
+import reactor.netty.http.client.HttpClient;
 
 /**
  * The gateway is the only place that reads {@code Authorization: Bearer}. Rule table (first match wins):
@@ -86,13 +89,21 @@ class SecurityConfig {
     ReactiveJwtDecoder jwtDecoder(
             @Value("${spring.security.oauth2.resourceserver.jwt.jwk-set-uri}") String jwkSetUri,
             @Value("${surge.security.issuer:surge-auth}") String issuer) {
+        // A hanging auth-service must not hang the gateway: bounded connect and response time, then fail closed.
+        HttpClient http = HttpClient.create().option(io.netty.channel.ChannelOption.CONNECT_TIMEOUT_MILLIS, 2000)
+                .responseTimeout(java.time.Duration.ofSeconds(2));
         NimbusReactiveJwtDecoder decoder = NimbusReactiveJwtDecoder.withJwkSetUri(jwkSetUri)
+                .webClient(WebClient.builder().clientConnector(new ReactorClientHttpConnector(http)).build())
                 .jwsAlgorithm(org.springframework.security.oauth2.jose.jws.SignatureAlgorithm.RS256)
                 .build();
         decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
                 JwtValidators.createDefaultWithIssuer(issuer),
                 requireClaims()));
-        return decoder;
+        // Anything other than "this token is bad" (key set unreachable, timed out) is a service failure, not a 401: fail closed, 503.
+        return token -> decoder.decode(token).onErrorMap(
+                e -> !(e instanceof org.springframework.security.oauth2.jwt.JwtException),
+                e -> new org.springframework.security.authentication.AuthenticationServiceException(
+                        "Token signing keys are unavailable", e));
     }
 
     /** exp must be present (the default timestamp validator lets a token without exp live forever) and sub must be safe. */

@@ -160,7 +160,7 @@ class GatewaySecurityTest extends GatewayTestBase {
         List<EntityExchangeResult<byte[]>> mine = new ArrayList<>();
         for (int i = 0; i < 16; i++) {
             mine.add(client.post().uri(i % 2 == 0 ? "/api/auth/login" : "/api/auth/signup")
-                    .header("X-Forwarded-For", "203.0.113.7, 10.0.0.1").bodyValue("{}").exchange()
+                    .header("X-Forwarded-For", "10.0.0.1, 203.0.113.7").bodyValue("{}").exchange()
                     .expectBody().returnResult());
         }
         assertThat(mine.subList(0, 10)).allSatisfy(r -> assertThat(r.getStatus()).isEqualTo(HttpStatus.OK));
@@ -171,11 +171,59 @@ class GatewaySecurityTest extends GatewayTestBase {
                 .isTrue();
         assertThat(new String(denied.getResponseBodyContent())).contains(PROBLEM + "rate-limited");
 
-        // a different client IP has its own bucket; only the FIRST forwarded hop counts
-        client.post().uri("/api/auth/login").header("X-Forwarded-For", "203.0.113.99, 203.0.113.7").bodyValue("{}")
+        // a different client IP has its own bucket; only the LAST forwarded hop counts
+        client.post().uri("/api/auth/login").header("X-Forwarded-For", "203.0.113.7, 203.0.113.99").bodyValue("{}")
                 .exchange().expectStatus().isOk();
         // the login limit does not touch other auth routes
         client.get().uri("/api/auth/.well-known/jwks.json").header("X-Forwarded-For", "203.0.113.7").exchange()
                 .expectStatus().isOk();
+    }
+
+    @Test
+    void rotatingTheFirstForwardedHopDoesNotEscapeTheLimit() throws Exception {
+        List<HttpStatus> statuses = new ArrayList<>();
+        for (int i = 0; i < 16; i++) {
+            statuses.add((HttpStatus) client.post().uri("/api/auth/login")
+                    .header("X-Forwarded-For", "10.9." + i + ".1, 198.51.100.5").bodyValue("{}").exchange()
+                    .expectBody().returnResult().getStatus());
+        }
+        assertThat(statuses.subList(0, 10)).containsOnly(HttpStatus.OK);
+        assertThat(statuses).contains(HttpStatus.TOO_MANY_REQUESTS);
+    }
+
+    @Test
+    void ipBucketIsKeyedOnTheLastHop() throws Exception {
+        // exhaust the bucket of 9.9.9.9 directly ...
+        for (int i = 0; i < 16; i++) {
+            client.post().uri("/api/auth/login").header("X-Forwarded-For", "9.9.9.9").bodyValue("{}").exchange()
+                    .expectBody().returnResult();
+        }
+        // ... a request that merely lists it as the last hop shares that bucket and is refused,
+        client.post().uri("/api/auth/login").header("X-Forwarded-For", "1.1.1.1, 9.9.9.9").bodyValue("{}")
+                .exchange().expectStatus().isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        // while a request with 9.9.9.9 only as a (forgeable) earlier hop is a different client
+        client.post().uri("/api/auth/login").header("X-Forwarded-For", "9.9.9.9, 1.1.1.1").bodyValue("{}")
+                .exchange().expectStatus().isOk();
+    }
+
+    @Test
+    void unreachableOrHangingJwksFailsClosedWithin3Seconds() throws Exception {
+        // an unknown kid forces a fetch of the key set; the mock answers after 5 s, the decoder gives up after 2 s
+        var original = JWKS.currentHandler();
+        JWKS.respondWith(request -> new mockwebserver3.MockResponse.Builder().code(200)
+                .headersDelay(5, java.util.concurrent.TimeUnit.SECONDS).body("{\"keys\":[]}").build());
+        try {
+            long start = System.nanoTime();
+            client.post().uri("/api/bookings/holds").header(HttpHeaders.AUTHORIZATION, bearer(token("u-j",
+                    "u-j@surge.test", List.of("USER"), ISSUER, Instant.now().plus(1, ChronoUnit.HOURS), UNKNOWN_KEY)))
+                    .bodyValue("{}").exchange()
+                    .expectStatus().isEqualTo(HttpStatus.SERVICE_UNAVAILABLE)
+                    .expectHeader().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON)
+                    .expectBody().jsonPath("$.type").isEqualTo(PROBLEM + "service-unavailable");
+            assertThat(java.time.Duration.ofNanos(System.nanoTime() - start)).isLessThan(java.time.Duration.ofSeconds(3));
+            assertThat(BOOKING.sawNothing()).isTrue();
+        } finally {
+            JWKS.respondWith(original);
+        }
     }
 }

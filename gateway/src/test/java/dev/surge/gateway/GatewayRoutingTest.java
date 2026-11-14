@@ -258,4 +258,16 @@ class GatewayRoutingTest extends GatewayTestBase {
                 bearer(adminToken("u-1"))).exchange().expectStatus().isOk();
         assertThat(AUTH.next().getTarget()).isEqualTo("/api/auth/admin/test-tokens");
     }
+
+    @Test
+    void slowNonStreamEventsReadTimesOutWith504() throws Exception {
+        // headers after 2 s; the route timeout in tests is 1.5 s (the stream route is exempt, other event reads are not)
+        BOOKING.respondWith(request -> new MockResponse.Builder().code(200)
+                .headersDelay(2, TimeUnit.SECONDS).body("{}").build());
+        client.get().uri("/api/bookings/events/7").exchange()
+                .expectStatus().isEqualTo(HttpStatus.GATEWAY_TIMEOUT)
+                .expectHeader().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON)
+                .expectBody().jsonPath("$.type").isEqualTo(PROBLEM + "gateway-timeout")
+                .jsonPath("$.requestId").isNotEmpty();
+    }
 }

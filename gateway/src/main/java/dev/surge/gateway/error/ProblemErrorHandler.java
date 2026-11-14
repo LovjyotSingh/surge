@@ -45,6 +45,13 @@ public class ProblemErrorHandler implements ErrorWebExceptionHandler {
     }
 
     private static HttpStatusCode statusOf(Throwable ex) {
+        // Key set unreachable or too slow while verifying a token: fail closed with 503 (not 500, not 504).
+        for (Throwable c = ex; c != null; c = c.getCause() == c ? null : c.getCause()) {
+            if (c instanceof org.springframework.security.authentication.AuthenticationServiceException
+                    || c instanceof org.springframework.security.oauth2.jwt.JwtException) {
+                return HttpStatus.SERVICE_UNAVAILABLE;
+            }
+        }
         Throwable t = ex;
         for (int depth = 0; t != null && depth < 10; depth++, t = t.getCause()) {
             if (t instanceof ResponseStatusException rse) {

@@ -26,19 +26,20 @@ public final class KeyResolvers {
     }
 
     /**
-     * First hop of {@code X-Forwarded-For} (set by nginx, which must overwrite rather than append it), else the
-     * socket's remote address.
+     * LAST hop of {@code X-Forwarded-For}: the one the nearest proxy (nginx) appended, which a client cannot choose (a
+     * client can only forge the earlier hops). Falls back to the socket address when the header is absent or blank.
      */
     public static KeyResolver clientIp() {
         return exchange -> Mono.justOrEmpty(clientIp(exchange));
     }
 
     static String clientIp(ServerWebExchange exchange) {
-        String forwarded = exchange.getRequest().getHeaders().getFirst("X-Forwarded-For");
-        if (forwarded != null) {
-            String first = forwarded.split(",", 2)[0].trim();
-            if (IP_LITERAL.matcher(first).matches()) {
-                return first;
+        java.util.List<String> lines = exchange.getRequest().getHeaders().getOrEmpty("X-Forwarded-For");
+        if (!lines.isEmpty()) {
+            String[] hops = String.join(",", lines).split(",");
+            String last = hops[hops.length - 1].trim();
+            if (IP_LITERAL.matcher(last).matches()) {
+                return last;
             }
         }
         InetSocketAddress remote = exchange.getRequest().getRemoteAddress();
