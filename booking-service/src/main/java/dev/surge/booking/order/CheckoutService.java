@@ -125,6 +125,8 @@ public class CheckoutService {
         Map<Long, BigDecimal> prices = lockedPrices(hold);
         BigDecimal total = prices.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add).setScale(2);
 
+        // PaymentUnavailableException (open circuit, timeout, 5xx) propagates: checkout() aborts the idempotency key,
+        // the hold stays, and there is nothing to refund because no charge is known to have succeeded.
         PaymentResult payment = payments.charge(new PaymentRequest(userId + ":" + idempotencyKey, userId, total));
         if (!payment.approved()) {
             throw new PaymentFailedException(payment.declineReason());

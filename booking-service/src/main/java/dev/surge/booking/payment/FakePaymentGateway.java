@@ -6,10 +6,12 @@ import java.util.random.RandomGenerator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
-/** Stand-in payment provider: declines with probability {@code surge.payment.fake.failure-rate}. */
+/** Stand-in payment provider (surge.payment.mode=fake, the default): declines with probability {@code surge.payment.fake.failure-rate}. */
 @Component
+@ConditionalOnProperty(name = "surge.payment.mode", havingValue = "fake", matchIfMissing = true)
 public class FakePaymentGateway implements PaymentGateway {
 
     private static final Logger log = LoggerFactory.getLogger(FakePaymentGateway.class);

@@ -54,6 +54,8 @@ surge:
   hold:
     ttl: PT5M
   payment:
+    mode: fake
+    base-url: http://payment-service
     fake:
       failure-rate: 0.0
   rate-limit:
@@ -95,3 +97,30 @@ logging:
   level:
     # Eureka/LoadBalancer starters make this cache hint fire at every start; no client-side LB cache tuning wanted.
     org.springframework.cloud.loadbalancer.config.LoadBalancerCacheAutoConfiguration: ERROR
+
+# Circuit breaker + retry for the HTTP payment client (surge.payment.mode=http). Mirrored in config-repo/booking-service.yml.
+# Slow calls (>= 2 s) count towards opening only when 100 % of calls are slow; failures open it at 50 %.
+resilience4j:
+  circuitbreaker:
+    instances:
+      payment:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 20
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        slow-call-duration-threshold: 2s
+        slow-call-rate-threshold: 100
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        record-exceptions:
+          - org.springframework.web.client.ResourceAccessException
+          - org.springframework.web.client.HttpServerErrorException
+          - dev.surge.booking.payment.PaymentTimeoutException
+  retry:
+    instances:
+      payment:
+        max-attempts: 2
+        wait-duration: 100ms
+        retry-exceptions:
+          - org.springframework.web.client.ResourceAccessException
+          - org.springframework.web.client.HttpServerErrorException

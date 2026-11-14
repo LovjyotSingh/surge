@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -17,6 +18,7 @@ import com.jayway.jsonpath.JsonPath;
 import dev.surge.booking.hold.RedisKeys;
 import dev.surge.booking.payment.PaymentGateway;
 import dev.surge.booking.payment.PaymentRequest;
+import dev.surge.booking.payment.PaymentUnavailableException;
 import dev.surge.booking.payment.PaymentResult;
 import dev.surge.booking.support.IntegrationTest;
 import dev.surge.booking.support.TestData;
@@ -206,6 +208,28 @@ class CheckoutTest {
         Mockito.reset(gateway);
         checkout("u1", "k2", holdId).andExpect(status().isCreated())
                 .andExpect(jsonPath("$.totalInr").value(9998.0));
+    }
+
+    @Test
+    void openCircuitReturns503AndKeepsHold() throws Exception {
+        String holdId = hold("u1", "[1,2]");
+        doThrow(new PaymentUnavailableException("circuit open", null)).when(gateway).charge(any());
+
+        checkout("u1", "k1", holdId).andExpect(status().isServiceUnavailable())
+                .andExpect(header().string("Retry-After", "10"))
+                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/payment-unavailable"));
+
+        assertThat(redis.hasKey(RedisKeys.hold(holdId))).isTrue();
+        assertThat(redis.hasKey(RedisKeys.seat(1, 1))).isTrue();
+        assertThat(seatStates("@.id==1 || @.id==2")).containsExactly("HELD", "HELD");
+        assertThat(count("SELECT COUNT(*) FROM seat WHERE id IN (1,2) AND status = 'SOLD'")).isZero();
+        assertThat(count("SELECT COUNT(*) FROM orders WHERE event_id = 1")).isZero();
+        // The key was aborted, so a retry with the very same key can proceed once the payment service is back.
+        assertThat(redis.hasKey(RedisKeys.idempotency("u1", "k1"))).isFalse();
+        verify(gateway, never()).refund(any());
+
+        Mockito.reset(gateway);
+        checkout("u1", "k1", holdId).andExpect(status().isCreated());
     }
 
     @Test

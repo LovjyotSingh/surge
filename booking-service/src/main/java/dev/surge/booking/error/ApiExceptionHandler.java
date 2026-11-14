@@ -1,5 +1,6 @@
 package dev.surge.booking.error;
 
+import dev.surge.booking.payment.PaymentUnavailableException;
 import dev.surge.common.web.Problems;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -100,6 +101,16 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         ProblemDetail pd = Problems.of(HttpStatus.PAYMENT_REQUIRED, "payment-failed", "Payment failed", e.getMessage());
         pd.setProperty("reason", e.reason());
         return problem(pd);
+    }
+
+    /** The payment service is down or its circuit is open: nothing was charged, the hold is kept, try again shortly. */
+    @ExceptionHandler(PaymentUnavailableException.class)
+    ResponseEntity<ProblemDetail> paymentUnavailable(PaymentUnavailableException e) {
+        log.warn("Payment unavailable: {}", e.getMessage());
+        ProblemDetail pd = Problems.of(HttpStatus.SERVICE_UNAVAILABLE, "payment-unavailable", "Payment unavailable",
+                "The payment service is not available right now. Your seats are still held; try again shortly.");
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).contentType(MediaType.APPLICATION_PROBLEM_JSON)
+                .header(HttpHeaders.RETRY_AFTER, "10").body(pd);
     }
 
     @ExceptionHandler(SeatConflictException.class)

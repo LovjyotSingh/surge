@@ -15,3 +15,31 @@ surge:
       PLATINUM: 4999
       GOLD: 2999
       SILVER: 1499
+  payment:
+    # The deployed stack (compose) talks to the real payment-service; booking's own file defaults to fake.
+    mode: http
+    base-url: http://payment-service
+resilience4j:
+  circuitbreaker:
+    instances:
+      payment:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 20
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        slow-call-duration-threshold: 2s
+        slow-call-rate-threshold: 100
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        record-exceptions:
+          - org.springframework.web.client.ResourceAccessException
+          - org.springframework.web.client.HttpServerErrorException
+          - dev.surge.booking.payment.PaymentTimeoutException
+  retry:
+    instances:
+      payment:
+        max-attempts: 2
+        wait-duration: 100ms
+        retry-exceptions:
+          - org.springframework.web.client.ResourceAccessException
+          - org.springframework.web.client.HttpServerErrorException
