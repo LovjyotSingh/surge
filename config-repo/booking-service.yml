@@ -1,0 +1,17 @@
+# Booking business settings. booking-service's own application.yml carries the same values as a
+# fallback so it still starts without the config server; when the config server is up, THIS file wins.
+surge:
+  hold:
+    ttl: PT5M
+  rate-limit:
+    holds:
+      capacity: 10
+      refill-per-second: 2
+  outbox:
+    poll-interval: PT0.5S
+    batch-size: 100
+  pricing:
+    tier-prices:
+      PLATINUM: 4999
+      GOLD: 2999
+      SILVER: 1499

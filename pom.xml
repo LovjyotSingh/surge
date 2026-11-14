@@ -22,6 +22,8 @@
     <modules>
         <module>common</module>
         <module>outbox</module>
+        <module>discovery</module>
+        <module>config-server</module>
         <module>booking-service</module>
         <module>tools/loadtest</module>
     </modules>
