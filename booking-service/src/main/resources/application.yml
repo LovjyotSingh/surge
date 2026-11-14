@@ -29,6 +29,9 @@ spring:
           time_zone: UTC
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    consumer:
+      group-id: booking-catalog
+      auto-offset-reset: earliest
     producer:
       acks: all
       properties:

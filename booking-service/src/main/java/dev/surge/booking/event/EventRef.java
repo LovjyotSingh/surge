@@ -34,6 +34,14 @@ public class EventRef {
         this.status = status;
     }
 
+    /** Applies a re-announced event: only descriptive fields change, never seats or status. */
+    public void updateDetails(String title, String venueName, Instant saleOpensAt, String zoneId) {
+        this.title = title;
+        this.venueName = venueName;
+        this.saleOpensAt = saleOpensAt;
+        this.zoneId = zoneId;
+    }
+
     public Long getId() { return id; }
     public String getTitle() { return title; }
     public String getVenueName() { return venueName; }

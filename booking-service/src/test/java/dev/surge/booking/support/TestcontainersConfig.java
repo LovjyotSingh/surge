@@ -1,6 +1,7 @@
 package dev.surge.booking.support;
 
 import com.redis.testcontainers.RedisContainer;
+import org.apache.kafka.clients.admin.NewTopic;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Bean;
@@ -33,5 +34,11 @@ public class TestcontainersConfig {
     @ServiceConnection
     RabbitMQContainer rabbit() {
         return new RabbitMQContainer("rabbitmq:4-management");
+    }
+
+    /** catalog.v1 is owned by catalog-service; the test broker needs it so booking's listener can subscribe. */
+    @Bean
+    NewTopic catalogTopic() {
+        return new NewTopic("catalog.v1", 3, (short) 1);
     }
 }
