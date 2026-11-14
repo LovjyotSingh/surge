@@ -1,6 +1,8 @@
 package dev.surge.booking.support;
 
 import dev.surge.booking.inventory.InventoryCache;
+import dev.surge.booking.payment.FakePaymentGateway;
+import dev.surge.booking.payment.PaymentGateway;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -18,11 +20,14 @@ public class TestData {
     private final JdbcTemplate jdbc;
     private final StringRedisTemplate redis;
     private final InventoryCache inventoryCache;
+    private final PaymentGateway payments;
 
-    public TestData(JdbcTemplate jdbc, StringRedisTemplate redis, InventoryCache inventoryCache) {
+    public TestData(JdbcTemplate jdbc, StringRedisTemplate redis, InventoryCache inventoryCache,
+                    PaymentGateway payments) {
         this.jdbc = jdbc;
         this.redis = redis;
         this.inventoryCache = inventoryCache;
+        this.payments = payments;
     }
 
     public void resetEvent(long eventId) {
@@ -30,6 +35,9 @@ public class TestData {
         jdbc.update("DELETE FROM orders WHERE event_id = ?", eventId);
         jdbc.update("UPDATE seat SET status = 'AVAILABLE' WHERE event_id = ?", eventId);
         setSaleOpensAt(eventId, DEFAULT_SALE_OPENS_AT);
+        if (payments instanceof FakePaymentGateway fake) {
+            fake.forgetAll(); // the fake remembers charges by reference, like payment-service
+        }
         inventoryCache.evict(eventId);
         redis.execute((RedisCallback<Object>) connection -> {
             connection.serverCommands().flushAll();

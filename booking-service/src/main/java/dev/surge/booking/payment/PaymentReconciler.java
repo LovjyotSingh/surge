@@ -18,7 +18,9 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Resolves charges whose outcome booking never learned. A record is only looked at once it is older than
- * {@code surge.hold.ttl + 1 min}: by then the user's own retry (same Idempotency-Key, same reference) has either
+ * {@code surge.hold.ttl + 1 min}. This is safe because CheckoutService refuses to commit an order once its hold has
+ * expired (checked against the checkout start time, right before the commit), so no order for a record can appear
+ * later than the hold ttl plus the commit time. By then the user's own retry (same Idempotency-Key, same reference) has either
  * produced an order or can no longer do so. Each record is handled alone, in its own transaction, under
  * {@code FOR UPDATE SKIP LOCKED}, so several booking instances never refund the same payment twice.
  */

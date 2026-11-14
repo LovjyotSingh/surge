@@ -281,6 +281,21 @@ class HttpPaymentGatewayTest {
         assertThat(breaker.getMetrics().getNumberOfFailedCalls()).isZero();
     }
 
+    @Test
+    void breakerOpeningBetweenAttemptsStillLeavesTheFirstAttemptInDoubt() {
+        // Attempt 1: the request went out and the connection broke (maybe stored); that failure opens the breaker,
+        // so attempt 2 is rejected by the open circuit. The call as a whole must still be "in doubt".
+        RestClient client = RestClient.builder().baseUrl("http://payment-service")
+                .requestInterceptor((request, body, execution) -> {
+                    breaker.transitionToOpenState();
+                    throw new ResourceAccessException("reset", new java.io.IOException("Connection reset"));
+                }).build();
+        HttpPaymentGateway flaky = new HttpPaymentGateway(client, breaker, retries.retry("payment"));
+
+        assertThatThrownBy(() -> flaky.charge(REQUEST)).isInstanceOf(PaymentInDoubtException.class)
+                .hasCauseInstanceOf(CallNotPermittedException.class);
+    }
+
 
     /** Sends failing charges until the breaker opens (5 recorded failures with a minimum of 5 calls). */
     private void driveOpen() {

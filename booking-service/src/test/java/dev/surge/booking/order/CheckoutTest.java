@@ -18,6 +18,7 @@ import com.jayway.jsonpath.JsonPath;
 import dev.surge.booking.hold.RedisKeys;
 import dev.surge.booking.payment.PaymentGateway;
 import dev.surge.booking.error.IdempotencyKeyReusedException;
+import dev.surge.booking.error.SeatConflictException;
 import dev.surge.booking.payment.PaymentInDoubtException;
 import dev.surge.booking.payment.PaymentRequest;
 import dev.surge.booking.payment.PaymentUnavailableException;
@@ -29,6 +30,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.BeforeEach;
@@ -54,6 +56,9 @@ class CheckoutTest {
     /** The type-level spy from @IntegrationTest, delegating to FakePaymentGateway (failure-rate 0.0). */
     @Autowired PaymentGateway gateway;
     @Autowired IdempotencyStore idempotency;
+    /** Type-level spies from @IntegrationTest, delegating to the real beans. */
+    @Autowired OrderWriter writer;
+    @Autowired OrderReader reader;
 
     @BeforeEach
     void reset() {
@@ -270,6 +275,75 @@ class CheckoutTest {
                 .andExpect(jsonPath("$.detail").value(
                         "This Idempotency-Key was already used for a different payment. Use a new key."));
         assertThat(redis.hasKey(RedisKeys.hold(holdId))).isTrue();
+    }
+
+    @Test
+    void failedConfirmRefundsAndASameKeyRetryIsDeclinedAsRefunded() throws Exception {
+        String holdId = hold("u1", "[1,2]");
+        doThrow(new IllegalStateException("db exploded")).when(writer).confirm(any(), any(), any(), any());
+
+        checkout("u1", "k1", holdId).andExpect(status().isInternalServerError());
+
+        verify(gateway, times(1)).refund(any());
+        assertThat(count("SELECT COUNT(*) FROM orders WHERE event_id = 1")).isZero();
+        assertThat(redis.hasKey(RedisKeys.idempotency("u1", "k1"))).isFalse();
+        // The hold is still live. The retry reuses the reference, which payment-service now reports as refunded.
+        checkout("u1", "k1", holdId).andExpect(status().isPaymentRequired())
+                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/payment-failed"))
+                .andExpect(jsonPath("$.reason").value("refunded"));
+        assertThat(count("SELECT COUNT(*) FROM orders WHERE event_id = 1")).isZero();
+        verify(gateway, times(1)).refund(any());
+    }
+
+    @Test
+    void failedConfirmWithFailingOrderLookupIsRecordedInDoubtAndNeverRefunded() throws Exception {
+        String holdId = hold("u1", "[1,2]");
+        doThrow(new IllegalStateException("db exploded")).when(writer).confirm(any(), any(), any(), any());
+        // 1st lookup (before charging) finds nothing; the recovery lookup after the failed confirm throws.
+        doReturn(Optional.empty()).doThrow(new IllegalStateException("db still down"))
+                .when(reader).findByIdempotencyKey(any(), any());
+
+        checkout("u1", "k1", holdId).andExpect(status().isInternalServerError());
+
+        assertThat(count("SELECT COUNT(*) FROM payment_in_doubt WHERE reference = 'u1:k1'")).isEqualTo(1);
+        verify(gateway, never()).refund(any());
+    }
+
+    @Test
+    void seatConflictWhereTheKeyAlreadyHasAnOrderReplaysItWithoutRefund() throws Exception {
+        String first = hold("u1", "[1,2]");
+        checkout("u1", "k1", first).andExpect(status().isCreated());
+        OrderResponse existing = reader.findByIdempotencyKey("u1", "k1").orElseThrow();
+        // Forget the idempotency key (as a Redis loss would) and let the order commit lose to a unique violation.
+        redis.delete(RedisKeys.idempotency("u1", "k1"));
+        String second = hold("u1", "[3,4]");
+        Mockito.clearInvocations(gateway);
+        doThrow(new SeatConflictException()).when(writer).confirm(any(), any(), any(), any());
+        doReturn(Optional.empty()).doReturn(Optional.of(existing)).when(reader).findByIdempotencyKey(any(), any());
+
+        checkout("u1", "k1", second).andExpect(status().isOk())
+                .andExpect(header().string("Idempotent-Replayed", "true"))
+                .andExpect(jsonPath("$.orderId").value(existing.orderId()));
+
+        verify(gateway, never()).refund(any());
+        assertThat(count("SELECT COUNT(*) FROM orders WHERE event_id = 1")).isEqualTo(1);
+    }
+
+    @Test
+    void holdThatExpiredBeforeTheCommitIsRefundedAndNotFound() throws Exception {
+        String holdId = hold("u1", "[1,2]");
+        // The Redis keys are still alive, but the hold's own expiry is already in the past.
+        redis.opsForHash().put(RedisKeys.hold(holdId), "expiresAt",
+                String.valueOf(Instant.now().minusSeconds(60).toEpochMilli()));
+
+        checkout("u1", "k1", holdId).andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/hold-not-found"));
+
+        verify(gateway, times(1)).charge(any());
+        verify(gateway, times(1)).refund(any());
+        verify(writer, never()).confirm(any(), any(), any(), any());
+        assertThat(count("SELECT COUNT(*) FROM orders WHERE event_id = 1")).isZero();
+        assertThat(redis.hasKey(RedisKeys.idempotency("u1", "k1"))).isFalse();
     }
 
     @Test

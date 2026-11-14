@@ -143,6 +143,14 @@ public class CheckoutService {
             throw new PaymentFailedException(payment.declineReason());
         }
 
+        // Bounds how late an order can commit after its hold expired; PaymentReconciler's "older than hold ttl + 1 min"
+        // safety depends on it. Uses the one `now` read when checkout started.
+        if (now.isAfter(hold.expiresAt())) {
+            HoldNotFoundException expired = new HoldNotFoundException();
+            refundQuietly(payment.paymentId(), expired);
+            throw expired;
+        }
+
         Order order;
         try {
             order = writer.confirm(hold, prices, idempotencyKey, now.truncatedTo(ChronoUnit.MICROS));

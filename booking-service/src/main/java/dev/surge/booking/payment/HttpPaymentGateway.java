@@ -82,7 +82,12 @@ public class HttpPaymentGateway implements PaymentGateway {
         try {
             return guarded.get();
         } catch (CallNotPermittedException e) {
-            throw new PaymentUnavailableException("payment circuit is open: " + what + " not attempted", e);
+            String message = "payment circuit is open: " + what + " not attempted";
+            if (maybeSent.get()) {
+                // An earlier attempt of this same call may have reached the provider before the breaker opened.
+                throw new PaymentInDoubtException(message, e);
+            }
+            throw new PaymentUnavailableException(message, e);
         } catch (ResourceAccessException | HttpServerErrorException | PaymentTimeoutException
                  | PaymentUnreachableException e) {
             String message = "payment service unavailable: " + what + " failed";

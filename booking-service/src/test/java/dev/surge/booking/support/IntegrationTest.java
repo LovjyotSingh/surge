@@ -1,6 +1,8 @@
 package dev.surge.booking.support;
 
 import dev.surge.outbox.OutboxPublisher;
+import dev.surge.booking.order.OrderReader;
+import dev.surge.booking.order.OrderWriter;
 import dev.surge.booking.payment.PaymentGateway;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
@@ -27,7 +29,8 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 @SpringBootTest(properties = {"surge.outbox.poll-interval=PT1H", "surge.hold.sweep-interval=PT1H",
         "surge.payment.reconcile-interval=PT1H", "eureka.client.enabled=false", "spring.cloud.config.enabled=false"})
 @AutoConfigureMockMvc
-@MockitoSpyBean(types = {PaymentGateway.class, OutboxPublisher.class, KafkaTemplate.class})
+@MockitoSpyBean(types = {PaymentGateway.class, OutboxPublisher.class, KafkaTemplate.class, OrderWriter.class,
+        OrderReader.class})
 @Import({TestcontainersConfig.class, TestData.class})
 public @interface IntegrationTest {
 }

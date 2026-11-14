@@ -57,4 +57,9 @@ public class FakePaymentGateway implements PaymentGateway {
     public Optional<PaymentStatus> status(String reference) {
         return Optional.ofNullable(byReference.get(reference));
     }
+
+    /** Forgets every charge. Used by tests that share one fake across many cases with the same references. */
+    public void forgetAll() {
+        byReference.clear();
+    }
 }
