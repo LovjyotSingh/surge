@@ -137,6 +137,32 @@ class PaymentControllerTest {
     }
 
     @Test
+    void refundedPaymentIsNeverReplayedAsApproved() throws Exception {
+        String ref = ref();
+        String id = paymentId(charge(ref, "u-1", "40").andExpect(jsonPath("$.approved").value(true)));
+        mvc.perform(post("/api/payments/" + id + "/refund")).andExpect(status().isOk());
+
+        charge(ref, "u-1", "40").andExpect(status().isOk())
+                .andExpect(jsonPath("$.approved").value(false))
+                .andExpect(jsonPath("$.declineReason").value("refunded"))
+                .andExpect(jsonPath("$.paymentId").value(id));
+    }
+
+    @Test
+    void lookupByReferenceReturnsStatusOr404() throws Exception {
+        String ref = ref();
+        String id = paymentId(charge(ref, "u-1", "50"));
+        mvc.perform(get("/api/payments").param("reference", ref)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.approved").value(true)).andExpect(jsonPath("$.paymentId").value(id))
+                .andExpect(jsonPath("$.refunded").value(false));
+        mvc.perform(post("/api/payments/" + id + "/refund")).andExpect(status().isOk());
+        mvc.perform(get("/api/payments").param("reference", ref)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.refunded").value(true));
+        mvc.perform(get("/api/payments").param("reference", "nope")).andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/payment-not-found"));
+    }
+
+    @Test
     void decliningChaosDeclinesAndDeclinedCannotBeRefunded() throws Exception {
         double before = count("payments_total", "declined");
         setChaos(1, 0, 0, "ADMIN").andExpect(status().isNoContent());

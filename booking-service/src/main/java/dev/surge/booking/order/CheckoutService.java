@@ -12,7 +12,9 @@ import dev.surge.booking.hold.ActiveHold;
 import dev.surge.booking.hold.HoldStore;
 import dev.surge.booking.inventory.EventInventory;
 import dev.surge.booking.inventory.InventoryCache;
+import dev.surge.booking.payment.InDoubtPayments;
 import dev.surge.booking.payment.PaymentGateway;
+import dev.surge.booking.payment.PaymentInDoubtException;
 import dev.surge.booking.payment.PaymentRequest;
 import dev.surge.booking.payment.PaymentResult;
 import dev.surge.booking.stream.SeatEventPublisher;
@@ -49,10 +51,11 @@ public class CheckoutService {
     private final SeatRepository seats;
     private final SeatEventPublisher publisher;
     private final Clock clock;
+    private final InDoubtPayments inDoubt;
 
     public CheckoutService(IdempotencyStore idempotency, HoldStore holds, InventoryCache inventory,
                            PaymentGateway payments, OrderWriter writer, OrderReader reader, SeatRepository seats,
-                           SeatEventPublisher publisher, Clock clock) {
+                           SeatEventPublisher publisher, Clock clock, InDoubtPayments inDoubt) {
         this.idempotency = idempotency;
         this.holds = holds;
         this.inventory = inventory;
@@ -62,6 +65,7 @@ public class CheckoutService {
         this.seats = seats;
         this.publisher = publisher;
         this.clock = clock;
+        this.inDoubt = inDoubt;
     }
 
     public CheckoutOutcome checkout(String userId, String idempotencyKey, String holdId) {
@@ -127,7 +131,14 @@ public class CheckoutService {
 
         // PaymentUnavailableException (open circuit, timeout, 5xx) propagates: checkout() aborts the idempotency key,
         // the hold stays, and there is nothing to refund because no charge is known to have succeeded.
-        PaymentResult payment = payments.charge(new PaymentRequest(userId + ":" + idempotencyKey, userId, total));
+        PaymentResult payment;
+        try {
+            payment = payments.charge(new PaymentRequest(userId + ":" + idempotencyKey, userId, total));
+        } catch (PaymentInDoubtException e) {
+            // The charge may exist at the provider: keep a record so the reconciler can refund it if no order results.
+            inDoubt.record(userId, idempotencyKey, total);
+            throw e;
+        }
         if (!payment.approved()) {
             throw new PaymentFailedException(payment.declineReason());
         }
@@ -136,22 +147,24 @@ public class CheckoutService {
         try {
             order = writer.confirm(hold, prices, idempotencyKey, now.truncatedTo(ChronoUnit.MICROS));
         } catch (RuntimeException e) {
-            if (!(e instanceof SeatConflictException)) {
-                // In-doubt commit: the commit may have succeeded even though an exception surfaced.
-                Optional<OrderResponse> committed = lookupQuietly(userId, idempotencyKey);
-                if (committed.isPresent()) {
+            // One lookup decides everything: the commit may have succeeded even though an exception surfaced, and a
+            // unique violation on (user, idempotency key) means the order already exists.
+            Lookup lookup = lookupQuietly(userId, idempotencyKey);
+            if (lookup.failed()) {
+                // We cannot tell whether the order exists, so refunding could take money for a sold order. Leave the
+                // payment to the reconciler, which checks for an order before refunding.
+                inDoubt.record(userId, idempotencyKey, total);
+                throw e;
+            }
+            if (lookup.order().isPresent()) {
+                if (!(e instanceof SeatConflictException)) {
                     finalizeAfterCommit(hold);
-                    return replay(userId, idempotencyKey, committed.get());
                 }
+                return replay(userId, idempotencyKey, lookup.order().get());
             }
             // Money was taken but the seats were not sold: give it back.
             refundQuietly(payment.paymentId(), e);
             if (e instanceof SeatConflictException) {
-                // A unique violation on (user, idempotency key) also lands here: the order already exists.
-                Optional<OrderResponse> existing = lookupQuietly(userId, idempotencyKey);
-                if (existing.isPresent()) {
-                    return replay(userId, idempotencyKey, existing.get());
-                }
                 // The seats went to another order: give the hold back so the user can pick again right away.
                 releaseAfterConflict(hold);
             }
@@ -214,12 +227,15 @@ public class CheckoutService {
         }
     }
 
-    private Optional<OrderResponse> lookupQuietly(String userId, String key) {
+    private record Lookup(boolean failed, Optional<OrderResponse> order) {
+    }
+
+    private Lookup lookupQuietly(String userId, String key) {
         try {
-            return reader.findByIdempotencyKey(userId, key);
+            return new Lookup(false, reader.findByIdempotencyKey(userId, key));
         } catch (RuntimeException e) {
             log.error("Order lookup failed during recovery: userId={} key={}", userId, key, e);
-            return Optional.empty();
+            return new Lookup(true, Optional.empty());
         }
     }
 

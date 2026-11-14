@@ -17,6 +17,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.jayway.jsonpath.JsonPath;
 import dev.surge.booking.hold.RedisKeys;
 import dev.surge.booking.payment.PaymentGateway;
+import dev.surge.booking.error.IdempotencyKeyReusedException;
+import dev.surge.booking.payment.PaymentInDoubtException;
 import dev.surge.booking.payment.PaymentRequest;
 import dev.surge.booking.payment.PaymentUnavailableException;
 import dev.surge.booking.payment.PaymentResult;
@@ -57,6 +59,7 @@ class CheckoutTest {
     void reset() {
         testData.resetEvent(1L);
         jdbc.update("DELETE FROM outbox");
+        jdbc.update("DELETE FROM payment_in_doubt");
     }
 
     private String hold(String user, String seatIdsJson) throws Exception {
@@ -230,6 +233,43 @@ class CheckoutTest {
 
         Mockito.reset(gateway);
         checkout("u1", "k1", holdId).andExpect(status().isCreated());
+    }
+
+    @Test
+    void chargeInDoubtIsRecordedForReconciliationAndKeepsHold() throws Exception {
+        String holdId = hold("u1", "[1,2]");
+        doThrow(new PaymentInDoubtException("read timeout", null)).when(gateway).charge(any());
+
+        checkout("u1", "k1", holdId).andExpect(status().isServiceUnavailable())
+                .andExpect(header().string("Retry-After", "10"))
+                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/payment-unavailable"))
+                .andExpect(jsonPath("$.detail").value("Payment status unknown — retry with the same Idempotency-Key."));
+
+        assertThat(redis.hasKey(RedisKeys.hold(holdId))).isTrue();
+        assertThat(seatStates("@.id==1 || @.id==2")).containsExactly("HELD", "HELD");
+        assertThat(redis.hasKey(RedisKeys.idempotency("u1", "k1"))).isFalse();
+        Map<String, Object> row = jdbc.queryForMap(
+                "SELECT reference, user_id, idempotency_key, amount_inr FROM payment_in_doubt");
+        assertThat(row).containsEntry("reference", "u1:k1").containsEntry("user_id", "u1")
+                .containsEntry("idempotency_key", "k1");
+        assertThat(((BigDecimal) row.get("amount_inr")).compareTo(new BigDecimal("9998"))).isZero();
+        verify(gateway, never()).refund(any());
+
+        // A repeated in-doubt answer for the same key does not duplicate the record.
+        checkout("u1", "k1", holdId).andExpect(status().isServiceUnavailable());
+        assertThat(count("SELECT COUNT(*) FROM payment_in_doubt")).isEqualTo(1);
+    }
+
+    @Test
+    void paymentServiceRejectingTheReferenceIs409KeyReused() throws Exception {
+        String holdId = hold("u1", "[1,2]");
+        doThrow(new IdempotencyKeyReusedException()).when(gateway).charge(any());
+
+        checkout("u1", "k1", holdId).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/idempotency-key-reused"))
+                .andExpect(jsonPath("$.detail").value(
+                        "This Idempotency-Key was already used for a different payment. Use a new key."));
+        assertThat(redis.hasKey(RedisKeys.hold(holdId))).isTrue();
     }
 
     @Test

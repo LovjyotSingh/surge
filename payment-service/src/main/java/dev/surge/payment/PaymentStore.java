@@ -65,6 +65,10 @@ public class PaymentStore {
         if (!payment.sameRequest(req)) {
             throw new ReferenceConflictException(req.reference());
         }
+        if (payment.refunded.get()) {
+            // A refunded charge must never read as approved again: a same-reference retry would confirm an order on it.
+            return new ChargeResult(false, payment.paymentId, "refunded");
+        }
         return payment.result();
     }
 
@@ -79,5 +83,14 @@ public class PaymentStore {
         if (p.refunded.compareAndSet(false, true)) {
             meters.counter("refunds_total").increment();
         }
+    }
+
+    /** Lookup for reconciliation; unknown reference is a 404. */
+    public PaymentStatus find(String reference) {
+        Payment p = byReference.get(reference);
+        if (p == null) {
+            throw new PaymentNotFoundException(reference);
+        }
+        return new PaymentStatus(p.approved, p.paymentId, p.declineReason, p.refunded.get());
     }
 }

@@ -1,5 +1,6 @@
 package dev.surge.booking.error;
 
+import dev.surge.booking.payment.PaymentInDoubtException;
 import dev.surge.booking.payment.PaymentUnavailableException;
 import dev.surge.common.web.Problems;
 import java.util.LinkedHashMap;
@@ -101,6 +102,22 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         ProblemDetail pd = Problems.of(HttpStatus.PAYMENT_REQUIRED, "payment-failed", "Payment failed", e.getMessage());
         pd.setProperty("reason", e.reason());
         return problem(pd);
+    }
+
+    /** The charge may or may not exist at the provider. It is recorded for reconciliation; retrying with the same key is safe. */
+    @ExceptionHandler(PaymentInDoubtException.class)
+    ResponseEntity<ProblemDetail> paymentInDoubt(PaymentInDoubtException e) {
+        log.warn("Payment in doubt: {}", e.getMessage());
+        ProblemDetail pd = Problems.of(HttpStatus.SERVICE_UNAVAILABLE, "payment-unavailable", "Payment unavailable",
+                "Payment status unknown — retry with the same Idempotency-Key.");
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).contentType(MediaType.APPLICATION_PROBLEM_JSON)
+                .header(HttpHeaders.RETRY_AFTER, "10").body(pd);
+    }
+
+    @ExceptionHandler(IdempotencyKeyReusedException.class)
+    ResponseEntity<ProblemDetail> idempotencyKeyReused(IdempotencyKeyReusedException e) {
+        return problem(Problems.of(HttpStatus.CONFLICT, "idempotency-key-reused", "Idempotency-Key reused",
+                e.getMessage()));
     }
 
     /** The payment service is down or its circuit is open: nothing was charged, the hold is kept, try again shortly. */

@@ -37,6 +37,7 @@ class PaymentResilienceConfigTest {
         // I/O errors, 5xx and read timeouts count; a decline (a normal 200) and 4xx do not.
         assertThat(c.getRecordExceptionPredicate().test(new ResourceAccessException("io"))).isTrue();
         assertThat(c.getRecordExceptionPredicate().test(new PaymentTimeoutException("slow", null))).isTrue();
+        assertThat(c.getRecordExceptionPredicate().test(new PaymentUnreachableException("no instance", null))).isTrue();
         assertThat(c.getRecordExceptionPredicate().test(
                 HttpServerErrorException.create(HttpStatus.BAD_GATEWAY, "x", null, null, null))).isTrue();
         assertThat(c.getRecordExceptionPredicate().test(
@@ -55,5 +56,6 @@ class PaymentResilienceConfigTest {
         assertThat(r.getExceptionPredicate().test(
                 HttpClientErrorException.create(HttpStatus.BAD_REQUEST, "x", null, null, null))).isFalse();
         assertThat(r.getExceptionPredicate().test(new PaymentTimeoutException("slow", null))).isFalse();
+        assertThat(r.getExceptionPredicate().test(new PaymentUnreachableException("no instance", null))).isFalse();
     }
 }

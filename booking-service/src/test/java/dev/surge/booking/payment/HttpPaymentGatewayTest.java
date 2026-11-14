@@ -3,6 +3,7 @@ package dev.surge.booking.payment;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import dev.surge.booking.error.IdempotencyKeyReusedException;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker.State;
@@ -22,6 +23,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
@@ -39,6 +41,8 @@ class HttpPaymentGatewayTest {
     private static final PaymentRequest REQUEST = new PaymentRequest("u1:k1", "u1", new BigDecimal("4999.00"));
 
     private MockWebServer server;
+    private RetryRegistry retries;
+    private JdkClientHttpRequestFactory factory;
     private CircuitBreaker breaker;
     private HttpPaymentGateway gateway;
 
@@ -57,7 +61,7 @@ class HttpPaymentGatewayTest {
                 .waitDurationInOpenState(Duration.ofMillis(500)) // 10 s in the app
                 .permittedNumberOfCallsInHalfOpenState(3)
                 .recordExceptions(ResourceAccessException.class, HttpServerErrorException.class,
-                        PaymentTimeoutException.class)
+                        PaymentTimeoutException.class, PaymentUnreachableException.class)
                 .build();
         RetryConfig retryConfig = RetryConfig.custom()
                 .maxAttempts(2)
@@ -68,10 +72,11 @@ class HttpPaymentGatewayTest {
 
         HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(1))
                 .version(HttpClient.Version.HTTP_1_1).build();
-        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(http);
+        factory = new JdkClientHttpRequestFactory(http);
         factory.setReadTimeout(Duration.ofSeconds(2));
         RestClient client = RestClient.builder().baseUrl(server.url("/").toString()).requestFactory(factory).build();
-        gateway = new HttpPaymentGateway(client, breaker, RetryRegistry.of(retryConfig).retry("payment"));
+        retries = RetryRegistry.of(retryConfig);
+        gateway = new HttpPaymentGateway(client, breaker, retries.retry("payment"));
     }
 
     @AfterEach
@@ -139,7 +144,7 @@ class HttpPaymentGatewayTest {
         assertThat(server.getRequestCount()).isEqualTo(3); // a decline is never retried
 
         enqueue(1, 400, "{}");
-        assertThatThrownBy(() -> gateway.charge(REQUEST)).isNotInstanceOf(PaymentUnavailableException.class);
+        assertThatThrownBy(() -> gateway.charge(REQUEST)).isInstanceOf(HttpClientErrorException.BadRequest.class);
         assertThat(server.getRequestCount()).isEqualTo(4); // a 4xx is never retried
         assertThat(breaker.getMetrics().getNumberOfFailedCalls()).isEqualTo(1); // only the 500
     }
@@ -154,6 +159,8 @@ class HttpPaymentGatewayTest {
 
     @Test
     void slowPaymentTimesOutWithin2s() {
+        enqueue(1, 200, APPROVED);
+        gateway.charge(REQUEST); // warm-up: class loading and the first connection must not count against the budget
         server.enqueue(new MockResponse.Builder().code(200).addHeader("Content-Type", "application/json")
                 .body(APPROVED).headersDelay(5, TimeUnit.SECONDS).build());
 
@@ -206,6 +213,74 @@ class HttpPaymentGatewayTest {
         enqueue(2, 500, "{}");
         assertThatThrownBy(() -> gateway.refund("pay_1")).isInstanceOf(PaymentUnavailableException.class);
     }
+    @Test
+    void readTimeoutIsInDoubtButConnectFailureAndOpenCircuitAreNot() throws Exception {
+        server.enqueue(new MockResponse.Builder().code(200).addHeader("Content-Type", "application/json")
+                .body(APPROVED).headersDelay(5, TimeUnit.SECONDS).build());
+        assertThatThrownBy(() -> gateway.charge(REQUEST)).isInstanceOf(PaymentInDoubtException.class);
+
+        server.close(); // nothing listens: the connection is never made, so nothing was sent
+        assertThatThrownBy(() -> gateway.charge(REQUEST)).isInstanceOf(PaymentUnavailableException.class)
+                .isNotInstanceOf(PaymentInDoubtException.class);
+    }
+
+    @Test
+    void openCircuitIsNotInDoubt() {
+        driveOpen();
+
+        assertThatThrownBy(() -> gateway.charge(REQUEST)).isInstanceOf(PaymentUnavailableException.class)
+                .isNotInstanceOf(PaymentInDoubtException.class);
+    }
+
+    @Test
+    void fiveHundredAfterTheRequestWasAnsweredIsNotInDoubt() {
+        enqueue(2, 500, "{}"); // payment-service stores nothing on a 500, so a failed charge cannot exist
+
+        assertThatThrownBy(() -> gateway.charge(REQUEST)).isInstanceOf(PaymentUnavailableException.class)
+                .isNotInstanceOf(PaymentInDoubtException.class);
+    }
+
+    @Test
+    void loadBalancerWithoutInstancesIsUnavailableAndCountsAsAFailure() {
+        RestClient client = RestClient.builder().baseUrl("http://payment-service")
+                .requestInterceptor((request, body, execution) -> {
+                    throw new IllegalStateException("No instances available for payment-service");
+                }).build();
+        HttpPaymentGateway lb = new HttpPaymentGateway(client, breaker, retries.retry("payment"));
+
+        assertThatThrownBy(() -> lb.charge(REQUEST)).isInstanceOf(PaymentUnavailableException.class)
+                .isNotInstanceOf(PaymentInDoubtException.class)
+                .hasCauseInstanceOf(PaymentUnreachableException.class);
+
+        assertThat(breaker.getMetrics().getNumberOfFailedCalls()).isEqualTo(1); // not retried, one failure
+        assertThat(breaker.getMetrics().getNumberOfSuccessfulCalls()).isZero();
+    }
+
+    @Test
+    void referenceConflictBecomesKeyReusedAndOtherConflictsPropagate() {
+        enqueue(1, 409, "{\"type\":\"https://surge.dev/problems/reference-conflict\",\"status\":409}");
+        assertThatThrownBy(() -> gateway.charge(REQUEST)).isInstanceOf(IdempotencyKeyReusedException.class);
+
+        enqueue(1, 409, "{\"type\":\"https://surge.dev/problems/not-refundable\",\"status\":409}");
+        assertThatThrownBy(() -> gateway.charge(REQUEST)).isInstanceOf(HttpClientErrorException.Conflict.class);
+        assertThat(server.getRequestCount()).isEqualTo(2); // never retried
+        assertThat(breaker.getMetrics().getNumberOfFailedCalls()).isZero();
+    }
+
+    @Test
+    void statusReadsTheStoredPaymentAndTreats404AsNeverSeen() throws Exception {
+        enqueue(1, 200, "{\"approved\":true,\"paymentId\":\"pay_1\",\"declineReason\":null,\"refunded\":false}");
+        PaymentStatus status = gateway.status("u1:k 1").orElseThrow();
+        assertThat(status.approved()).isTrue();
+        assertThat(status.refunded()).isFalse();
+        assertThat(status.paymentId()).isEqualTo("pay_1");
+        assertThat(server.takeRequest().getTarget()).isEqualTo("/api/payments?reference=u1%3Ak%201");
+
+        enqueue(1, 404, "{}");
+        assertThat(gateway.status("u1:nope")).isEmpty();
+        assertThat(breaker.getMetrics().getNumberOfFailedCalls()).isZero();
+    }
+
 
     /** Sends failing charges until the breaker opens (5 recorded failures with a minimum of 5 calls). */
     private void driveOpen() {
