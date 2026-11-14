@@ -1,0 +1,57 @@
+package dev.surge.catalog.importer;
+
+import dev.surge.catalog.error.ForbiddenException;
+import dev.surge.catalog.error.InvalidImportException;
+import dev.surge.catalog.error.UploadTooLargeException;
+import java.io.IOException;
+import java.io.InputStream;
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestPart;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
+
+/**
+ * Admin-only CSV import. The gateway already rejects non-admins on {@code /api/*}{@code /admin/**}; this repeats the
+ * check on the identity header it sets ({@code X-User-Roles}, comma separated) as defence in depth. Paths stay
+ * case-sensitive (Spring MVC's default), matching the gateway, so {@code /api/catalog/ADMIN/...} is simply a 404.
+ */
+@RestController
+@RequestMapping("/api/catalog/admin/events")
+public class ImportController {
+
+    private final CsvEventImporter importer;
+
+    public ImportController(CsvEventImporter importer) {
+        this.importer = importer;
+    }
+
+    @PostMapping(path = "/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ImportResult importEvents(@RequestHeader(value = "X-User-Roles", required = false) String roles,
+                                     @RequestPart("file") MultipartFile file) throws IOException {
+        requireAdmin(roles);
+        if (file.getSize() > CsvEventImporter.MAX_BYTES) {
+            throw new UploadTooLargeException(CsvEventImporter.MAX_BYTES);
+        }
+        if (file.isEmpty()) {
+            throw new InvalidImportException("The file is empty");
+        }
+        try (InputStream in = file.getInputStream()) {
+            return importer.importCsv(in);
+        }
+    }
+
+    /** The role list must contain the exact token {@code ADMIN} (case-sensitive, whitespace around tokens ignored). */
+    static void requireAdmin(String roles) {
+        if (roles != null) {
+            for (String role : roles.split(",")) {
+                if (role.trim().equals("ADMIN")) {
+                    return;
+                }
+            }
+        }
+        throw new ForbiddenException("Administrator access is required");
+    }
+}

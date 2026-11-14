@@ -1,0 +1,64 @@
+server:
+  port: 8083
+
+spring:
+  application:
+    name: catalog-service
+  config:
+    import: optional:configserver:${CONFIG_URL:http://localhost:8888}
+  threads:
+    virtual:
+      enabled: true
+  servlet:
+    multipart:
+      # The CSV import is capped at 5 MB; the importer enforces the same limit itself.
+      max-file-size: 5MB
+      max-request-size: 6MB
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3307/catalog}
+    username: ${MYSQL_USER:surge}
+    password: ${MYSQL_PASSWORD:surge}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    producer:
+      acks: all
+      properties:
+        enable.idempotence: true
+        max.block.ms: 5000
+
+surge:
+  outbox:
+    poll-interval: PT0.5S
+    batch-size: 100
+  pricing:
+    # DUPLICATED from booking-service (surge.pricing.tier-prices): catalog only uses these for the
+    # min/max price shown on an event. Keep both in step; the V2 seed hard-codes the same numbers.
+    tier-prices:
+      PLATINUM: 4999
+      GOLD: 2999
+      SILVER: 1499
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka}
+  instance:
+    prefer-ip-address: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+
+logging:
+  level:
+    org.springframework.cloud.loadbalancer.config.LoadBalancerCacheAutoConfiguration: ERROR
