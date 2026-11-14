@@ -3,6 +3,7 @@ package dev.surge.auth.api;
 import dev.surge.auth.error.BadCredentialsException;
 import dev.surge.auth.error.EmailTakenException;
 import dev.surge.auth.jwt.TokenService;
+import dev.surge.auth.user.AdminSeeder;
 import dev.surge.auth.user.Role;
 import dev.surge.auth.user.User;
 import dev.surge.auth.user.UserRepository;
@@ -36,7 +37,7 @@ public class AuthService {
 
     public TokenResponse signup(SignupRequest req) {
         String email = normalize(req.email());
-        if (users.existsByEmail(email)) {
+        if (AdminSeeder.ADMIN_EMAIL.equals(email) || users.existsByEmail(email)) {
             throw new EmailTakenException();
         }
         User saved;

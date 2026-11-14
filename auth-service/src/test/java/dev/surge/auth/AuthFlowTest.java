@@ -10,7 +10,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.jayway.jsonpath.JsonPath;
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.RSAKey;
+import dev.surge.auth.api.LoginRequest;
+import dev.surge.auth.api.SignupRequest;
 import dev.surge.auth.support.IntegrationTest;
+import dev.surge.auth.user.Role;
+import dev.surge.auth.user.User;
+import dev.surge.auth.user.UserRepository;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -128,7 +133,44 @@ class AuthFlowTest {
         mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
                         .content(creds("admin@surge.local", "surge-admin")))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.user.roles[0]").value("ADMIN"));
+                .andExpect(jsonPath("$.user.roles[0]").value("USER"))
+                .andExpect(jsonPath("$.user.roles[1]").value("ADMIN"));
+    }
+
+    @Test
+    void multibytePasswordOver72BytesIs400NotA500() throws Exception {
+        String pw = "\u00e9".repeat(72);
+        mvc.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+                        .content(body(email(), pw, "Ada")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/validation-failed"))
+                .andExpect(jsonPath("$.errors.password").exists());
+        // 36 x 2 bytes = exactly 72 bytes is fine
+        mvc.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+                        .content(body(email(), "\u00e9".repeat(36), "Ada")))
+                .andExpect(status().isCreated());
+    }
+
+    @Test
+    void signupCannotTakeTheAdminEmail() throws Exception {
+        mvc.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+                        .content(body("Admin@Surge.local", "password-1", "Evil")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/email-taken"));
+    }
+
+    @Test
+    void emailsDifferingOnlyByAccentAreDifferentAccounts(@Autowired UserRepository users) {
+        String tag = UUID.randomUUID().toString();
+        users.saveAndFlush(new User("jose-" + tag + "@example.com", "x", "a", Role.USER, Instant.now()));
+        users.saveAndFlush(new User("jos\u00e9-" + tag + "@example.com", "x", "b", Role.USER, Instant.now()));
+        assertThat(users.findByEmail("jos\u00e9-" + tag + "@example.com")).isPresent();
+    }
+
+    @Test
+    void requestRecordsRedactPassword() {
+        assertThat(new SignupRequest("a@b.c", "secret-pw", "n").toString()).doesNotContain("secret-pw");
+        assertThat(new LoginRequest("a@b.c", "secret-pw").toString()).doesNotContain("secret-pw");
     }
 
     @Test
@@ -150,6 +192,9 @@ class AuthFlowTest {
         assertThat(jwt.getHeaders().get("kid")).isEqualTo(key.getKeyID());
         assertThat(jwt.getHeaders().get("alg")).isEqualTo("RS256");
         assertThat(Duration.between(jwt.getIssuedAt(), jwt.getExpiresAt())).isEqualTo(Duration.ofMinutes(60));
+        assertThat(jwt.getIssuedAt().getNano()).isZero();
+        String expiresAt = JsonPath.read(res.getResponse().getContentAsString(), "$.expiresAt");
+        assertThat(Instant.parse(expiresAt)).isEqualTo(jwt.getExpiresAt());
         assertThat(jwt.getExpiresAt()).isAfter(Instant.now().plus(Duration.ofMinutes(59)));
     }
 

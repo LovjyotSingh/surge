@@ -1,5 +1,6 @@
 package dev.surge.auth.user;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -47,6 +48,7 @@ public class User {
         return email;
     }
 
+    @JsonIgnore
     public String getPasswordHash() {
         return passwordHash;
     }

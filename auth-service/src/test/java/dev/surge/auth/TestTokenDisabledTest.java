@@ -13,6 +13,8 @@ class TestTokenDisabledTest {
 
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withBean(TokenService.class, () -> Mockito.mock(TokenService.class))
+            .withBean(tools.jackson.databind.json.JsonMapper.class, () -> Mockito.mock(tools.jackson.databind.json.JsonMapper.class))
+            .withBean(jakarta.validation.Validator.class, () -> Mockito.mock(jakarta.validation.Validator.class))
             .withUserConfiguration(TestTokenController.class);
 
     @Test

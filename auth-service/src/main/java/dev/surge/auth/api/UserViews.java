@@ -1,5 +1,6 @@
 package dev.surge.auth.api;
 
+import dev.surge.auth.user.Role;
 import dev.surge.auth.user.User;
 import java.util.List;
 
@@ -10,7 +11,12 @@ public final class UserViews {
     }
 
     public static UserView of(User u) {
-        return new UserView(u.publicId(), u.getEmail(), u.getDisplayName(), List.of(u.getRole().name()));
+        return new UserView(u.publicId(), u.getEmail(), u.getDisplayName(), roles(u.getRole()));
+    }
+
+    /** ADMIN accounts are also USERs, so USER-only checks never lock an admin out. */
+    private static List<String> roles(Role role) {
+        return role == Role.ADMIN ? List.of("USER", "ADMIN") : List.of("USER");
     }
 
     public static UserView synthetic(String id) {

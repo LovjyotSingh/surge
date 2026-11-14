@@ -51,6 +51,18 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
                 e.getMessage()));
     }
 
+    @ExceptionHandler(InvalidBodyException.class)
+    ResponseEntity<ProblemDetail> invalidBody(InvalidBodyException e) {
+        ProblemDetail pd;
+        if (e.errors() == null) {
+            pd = Problems.of(HttpStatus.BAD_REQUEST, "malformed-request", "Malformed request body", e.getMessage());
+        } else {
+            pd = Problems.of(HttpStatus.BAD_REQUEST, "validation-failed", "Validation failed", e.getMessage());
+            pd.setProperty("errors", e.errors());
+        }
+        return problem(pd);
+    }
+
     @ExceptionHandler(ForbiddenException.class)
     ResponseEntity<ProblemDetail> forbidden(ForbiddenException e) {
         return problem(Problems.of(HttpStatus.FORBIDDEN, "forbidden", "Forbidden", e.getMessage()));

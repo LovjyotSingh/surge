@@ -9,6 +9,7 @@ import dev.surge.auth.api.UserView;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
 import org.springframework.security.oauth2.jwt.JwsHeader;
 import org.springframework.security.oauth2.jwt.JwtClaimsSet;
@@ -31,7 +32,7 @@ public class TokenService {
     }
 
     public TokenResponse issue(UserView user) {
-        Instant now = clock.instant();
+        Instant now = clock.instant().truncatedTo(ChronoUnit.SECONDS);
         Instant expiresAt = now.plus(LIFETIME);
         JwtClaimsSet claims = JwtClaimsSet.builder()
                 .issuer(ISSUER)

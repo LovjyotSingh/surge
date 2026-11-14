@@ -62,8 +62,16 @@ class TestTokenControllerTest {
     }
 
     @Test
+    void roleIsCheckedBeforeTheBody() throws Exception {
+        mvc.perform(mint("USER", "{\"count\":0}")).andExpect(status().isForbidden());
+        mvc.perform(mint(null, "not json")).andExpect(status().isForbidden());
+    }
+
+    @Test
     void badInputIs400() throws Exception {
         mvc.perform(mint("ADMIN", "{\"prefix\":\"evil\",\"count\":1}")).andExpect(status().isBadRequest());
+        mvc.perform(mint("ADMIN", "{\"count\":1}")).andExpect(status().isBadRequest());
+        mvc.perform(mint("ADMIN", "not json")).andExpect(status().isBadRequest());
         mvc.perform(mint("ADMIN", "{\"prefix\":\"lt-" + "a".repeat(17) + "\",\"count\":1}"))
                 .andExpect(status().isBadRequest());
         mvc.perform(mint("ADMIN", "{\"prefix\":\"lt-ok\",\"count\":0}")).andExpect(status().isBadRequest());
