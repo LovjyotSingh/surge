@@ -6,6 +6,7 @@ import org.springframework.boot.testcontainers.service.connection.ServiceConnect
 import org.springframework.context.annotation.Bean;
 import org.springframework.test.context.DynamicPropertyRegistrar;
 import org.testcontainers.mysql.MySQLContainer;
+import org.testcontainers.rabbitmq.RabbitMQContainer;
 import org.testcontainers.utility.DockerImageName;
 
 @TestConfiguration(proxyBeanMethods = false)
@@ -18,13 +19,28 @@ public class TestcontainersConfig {
     }
 
     @Bean
+    @ServiceConnection
+    RabbitMQContainer rabbit() {
+        return new RabbitMQContainer("rabbitmq:4-management");
+    }
+
+    @Bean
     S3MockContainer s3Mock() {
         return new S3MockContainer(DockerImageName.parse("adobe/s3mock:5.2.3"));
     }
 
-    /** Points the S3 client at the mock (the registrar form of @DynamicPropertySource, usable in a config class). */
     @Bean
-    DynamicPropertyRegistrar s3Properties(S3MockContainer s3Mock) {
-        return registry -> registry.add("surge.s3.endpoint", s3Mock::getHttpEndpoint);
+    MailpitContainer mailpit() {
+        return new MailpitContainer();
+    }
+
+    /** Points the S3 client and the mail sender at the containers (the registrar form of @DynamicPropertySource). */
+    @Bean
+    DynamicPropertyRegistrar containerProperties(S3MockContainer s3Mock, MailpitContainer mailpit) {
+        return registry -> {
+            registry.add("surge.s3.endpoint", s3Mock::getHttpEndpoint);
+            registry.add("spring.mail.host", mailpit::smtpHost);
+            registry.add("spring.mail.port", mailpit::smtpPort);
+        };
     }
 }

@@ -24,6 +24,30 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
 
+    @ExceptionHandler(MissingUserException.class)
+    ResponseEntity<ProblemDetail> missingUser(MissingUserException e) {
+        return problem(Problems.of(HttpStatus.UNAUTHORIZED, "missing-user", "Missing or invalid user", e.getMessage()));
+    }
+
+    @ExceptionHandler(TicketNotFoundException.class)
+    ResponseEntity<ProblemDetail> ticketNotFound(TicketNotFoundException e) {
+        return problem(Problems.of(HttpStatus.NOT_FOUND, "ticket-not-found", "Ticket not found", e.getMessage()));
+    }
+
+    @ExceptionHandler(ForbiddenException.class)
+    ResponseEntity<ProblemDetail> forbidden(ForbiddenException e) {
+        return problem(Problems.of(HttpStatus.FORBIDDEN, "forbidden", "Forbidden", e.getMessage()));
+    }
+
+    @ExceptionHandler(InvalidParameterException.class)
+    ResponseEntity<ProblemDetail> invalidParameter(InvalidParameterException e) {
+        return problem(Problems.of(HttpStatus.BAD_REQUEST, "validation-failed", "Invalid parameter", e.getMessage()));
+    }
+
+    private static ResponseEntity<ProblemDetail> problem(ProblemDetail pd) {
+        return ResponseEntity.status(pd.getStatus()).contentType(MediaType.APPLICATION_PROBLEM_JSON).body(pd);
+    }
+
     /** Last resort: a bug or an infrastructure failure. Logged in full, but the client only sees a generic text. */
     @ExceptionHandler(Exception.class)
     ResponseEntity<ProblemDetail> unexpected(Exception e) {

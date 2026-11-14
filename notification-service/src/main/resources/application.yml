@@ -13,6 +13,30 @@ spring:
     url: ${MYSQL_URL:jdbc:mysql://localhost:3307/notification}
     username: ${MYSQL_USER:surge}
     password: ${MYSQL_PASSWORD:surge}
+  rabbitmq:
+    host: ${RABBIT_HOST:localhost}
+    port: ${RABBIT_PORT:5672}
+    connection-timeout: 5s
+    listener:
+      simple:
+        concurrency: 2
+        max-concurrency: 4
+        # A rejected message is dead-lettered (tickets -> surge.tickets.dlx -> tickets.dlq), never requeued.
+        default-requeue-rejected: false
+        retry:
+          enabled: true
+          # Spring Boot 4 counts retries after the first try (it replaced max-attempts): 1 try + 2 retries = 3 attempts.
+          max-retries: 2
+          initial-interval: 1s
+          multiplier: 2
+  mail:
+    host: ${MAIL_HOST:localhost}
+    port: ${MAIL_PORT:1025}
+    properties:
+      # Mailpit locally; no auth, no TLS. The send happens inside the ticket transaction, so it must not hang.
+      mail.smtp.connectiontimeout: 5000
+      mail.smtp.timeout: 10000
+      mail.smtp.writetimeout: 10000
   jpa:
     open-in-view: false
     hibernate:
@@ -31,10 +55,14 @@ surge:
     # LOCAL-ONLY placeholder credentials: S3Mock accepts anything. Real AWS needs S3_ACCESS_KEY / S3_SECRET_KEY.
     access-key: ${S3_ACCESS_KEY:surge-local}
     secret-key: ${S3_SECRET_KEY:surge-local}
+  notification:
+    # Where the download link in the email points (the web front door, nginx on 8080).
+    public-base-url: ${PUBLIC_BASE_URL:http://localhost:8080}
   clients:
     # Resolved through Eureka by the load-balanced RestClient (service name = host).
     catalog-base-url: ${CATALOG_BASE_URL:http://catalog-service}
     auth-base-url: ${AUTH_BASE_URL:http://auth-service}
+    booking-base-url: ${BOOKING_BASE_URL:http://booking-service}
 
 eureka:
   client:

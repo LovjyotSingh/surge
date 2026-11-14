@@ -164,7 +164,7 @@ public class TicketPdfRenderer {
         return "surge:ticket:" + t.orderId() + ":" + t.userId();
     }
 
-    static String money(BigDecimal inr) {
+    public static String money(BigDecimal inr) {
         boolean whole = inr.stripTrailingZeros().scale() <= 0;
         DecimalFormat format = new DecimalFormat(whole ? "#,##0" : "#,##0.00",
                 DecimalFormatSymbols.getInstance(Locale.US));

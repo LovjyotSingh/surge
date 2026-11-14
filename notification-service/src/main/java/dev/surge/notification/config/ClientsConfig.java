@@ -1,5 +1,6 @@
 package dev.surge.notification.config;
 
+import dev.surge.notification.booking.BookingClient;
 import dev.surge.notification.catalog.CatalogClient;
 import dev.surge.notification.user.UserDirectory;
 import java.net.http.HttpClient;
@@ -42,6 +43,12 @@ public class ClientsConfig {
     CatalogClient catalogClient(@LoadBalanced RestClient.Builder loadBalanced,
                                 @Value("${surge.clients.catalog-base-url:http://catalog-service}") String baseUrl) {
         return new CatalogClient(restClient(loadBalanced, baseUrl, READ_TIMEOUT));
+    }
+
+    @Bean
+    BookingClient bookingClient(@LoadBalanced RestClient.Builder loadBalanced,
+                                @Value("${surge.clients.booking-base-url:http://booking-service}") String baseUrl) {
+        return new BookingClient(restClient(loadBalanced, baseUrl, READ_TIMEOUT));
     }
 
     @Bean
