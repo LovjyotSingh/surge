@@ -8,6 +8,7 @@ import dev.surge.catalog.event.PricingProperties;
 import dev.surge.catalog.event.RowSpecs;
 import dev.surge.catalog.event.Tier;
 import dev.surge.catalog.publish.EventScheduledPublisher;
+import dev.surge.catalog.search.EventIndexer;
 import dev.surge.catalog.venue.Venue;
 import dev.surge.catalog.venue.VenueRepository;
 import dev.surge.common.messaging.RowSpec;
@@ -56,16 +57,18 @@ public class CsvEventImporter {
     private final EventRepository events;
     private final VenueRepository venues;
     private final EventScheduledPublisher publisher;
+    private final EventIndexer indexer;
     private final PricingProperties pricing;
     private final JsonMapper json;
     private final TransactionTemplate tx;
 
-    public CsvEventImporter(EventRepository events, VenueRepository venues, EventScheduledPublisher publisher,
+    public CsvEventImporter(EventRepository events, VenueRepository venues, EventScheduledPublisher publisher, EventIndexer indexer,
                             PricingProperties pricing, JsonMapper json,
                             PlatformTransactionManager transactionManager) {
         this.events = events;
         this.venues = venues;
         this.publisher = publisher;
+        this.indexer = indexer;
         this.pricing = pricing;
         this.json = json;
         this.tx = new TransactionTemplate(transactionManager);
@@ -77,6 +80,11 @@ public class CsvEventImporter {
         List<Event> valid = new ArrayList<>();
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(new LimitedInputStream(upload, MAX_BYTES), StandardCharsets.UTF_8))) {
+            // A UTF-8 byte order mark must go before parsing, or it would sit in front of a quoted header's quote.
+            reader.mark(1);
+            if (reader.read() != 0xFEFF) {
+                reader.reset();
+            }
             CsvReader csv = new CsvReader(reader);
             readHeader(csv);
             int dataRows = 0;
@@ -98,6 +106,12 @@ public class CsvEventImporter {
         }
         if (!valid.isEmpty()) {
             tx.executeWithoutResult(status -> events.saveAll(valid));
+            try {
+                indexer.reindexAll();
+            } catch (RuntimeException e) {
+                // MySQL is the source of truth; the next import or restart rebuilds the index.
+                log.warn("Imported {} events but could not reindex them for search yet", valid.size(), e);
+            }
             try {
                 publisher.publishPending();
             } catch (RuntimeException e) {

@@ -1,0 +1,50 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "analysis": {
+      "normalizer": {
+        "lowercase_norm": {
+          "type": "custom",
+          "filter": ["lowercase", "asciifolding"]
+        }
+      }
+    }
+  },
+  "mappings": {
+    "dynamic": false,
+    "properties": {
+      "id": { "type": "long" },
+      "title": {
+        "type": "text",
+        "analyzer": "english",
+        "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } }
+      },
+      "artist": {
+        "type": "text",
+        "analyzer": "english",
+        "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } }
+      },
+      "venueName": {
+        "type": "text",
+        "analyzer": "english",
+        "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } }
+      },
+      "description": {
+        "type": "text",
+        "analyzer": "english",
+        "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } }
+      },
+      "city": { "type": "keyword", "normalizer": "lowercase_norm" },
+      "category": { "type": "keyword" },
+      "zoneId": { "type": "keyword" },
+      "startsAt": { "type": "date" },
+      "saleOpensAt": { "type": "date" },
+      "minPriceInr": { "type": "scaled_float", "scaling_factor": 100 },
+      "maxPriceInr": { "type": "scaled_float", "scaling_factor": 100 },
+      "location": { "type": "geo_point" },
+      "seatsLeft": { "type": "integer" },
+      "totalSeats": { "type": "integer" }
+    }
+  }
+}

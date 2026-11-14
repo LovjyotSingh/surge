@@ -43,6 +43,12 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(Problems.of(HttpStatus.BAD_REQUEST, "validation-failed", "Validation failed", e.getMessage()));
     }
 
+    @ExceptionHandler(dev.surge.catalog.search.SearchUnavailableException.class)
+    ResponseEntity<ProblemDetail> searchUnavailable(dev.surge.catalog.search.SearchUnavailableException e) {
+        return problem(Problems.of(HttpStatus.SERVICE_UNAVAILABLE, "search-unavailable", "Search unavailable",
+                "Search is temporarily unavailable. Try again shortly."));
+    }
+
     @ExceptionHandler(ForbiddenException.class)
     ResponseEntity<ProblemDetail> forbidden(ForbiddenException e) {
         return problem(Problems.of(HttpStatus.FORBIDDEN, "forbidden", "Forbidden", e.getMessage()));

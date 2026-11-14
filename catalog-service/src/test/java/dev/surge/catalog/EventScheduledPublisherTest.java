@@ -68,7 +68,13 @@ class EventScheduledPublisherTest {
             while (System.currentTimeMillis() < deadline) {
                 consumer.poll(Duration.ofMillis(500)).forEach(all::add);
                 Set<String> seededKeys = new HashSet<>();
-                all.forEach(r -> seededKeys.add(r.key()));
+                // Only the seeded ids 1-30 count: events imported by other tests must not end the wait early.
+                all.forEach(r -> {
+                    long key = Long.parseLong(r.key());
+                    if (key >= 1 && key <= SEEDED) {
+                        seededKeys.add(r.key());
+                    }
+                });
                 if (seededKeys.size() >= atLeastSeededIds) {
                     // Keep polling for a moment so that a duplicate would show up too.
                     if (quietUntil == 0) {

@@ -162,4 +162,19 @@ class CsvEventImporterTest {
         mvc.perform(multipart(IMPORT).header("X-User-Roles", "ADMIN")).andExpect(status().isBadRequest());
     }
 
+    /** Excel saves "CSV UTF-8" with a BOM; it must be skipped before parsing, quoted header or not. */
+    @Test
+    void utf8BomBeforeAQuotedOrPlainHeaderIsSkipped() throws Exception {
+        String row = "Bom Show,Artist,concert,1,2027-02-01T13:30:00Z,2026-11-01T00:00:00Z,A:10:GOLD,x\n";
+        String quoted = "﻿\"title\",\"artist\",\"category\",\"venueId\",\"startsAt\",\"saleOpensAt\",\"rows\","
+                + "\"description\"\n";
+
+        upload(quoted + row, "ADMIN")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.imported").value(1))
+                .andExpect(jsonPath("$.errors.length()").value(0));
+        upload("﻿" + HEADER + row.replace("Bom Show", "Bom Show Plain"), "ADMIN")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.imported").value(1));
+    }
 }
