@@ -34,7 +34,52 @@ class TicketPdfRendererTest {
         String text = new PdfTextExtractor(reader).getTextFromPage(1);
 
         assertThat(text).contains("SURGE", "Coldplay: Music of the Spheres", "Jawaharlal Nehru Stadium",
-                "PLATINUM A1", "PLATINUM A2", "1234", "INR 4,499", "19:30");
+                "PLATINUM A1", "A2 (2 seats)", "1234", "INR 4,499", "19:30");
+    }
+
+    private static TicketData with(String title, List<String> seats) {
+        return new TicketData(77L, "u-1", title, "Venue", ZonedDateTime.of(2027, 1, 18, 19, 30, 0, 0,
+                ZoneId.of("Asia/Kolkata")), seats, new BigDecimal("1499.50"));
+    }
+
+    private static String textOfOnePage(TicketData d) throws Exception {
+        PdfReader reader = new PdfReader(new TicketPdfRenderer().render(d));
+        assertThat(reader.getNumberOfPages()).isEqualTo(1);
+        return new PdfTextExtractor(reader).getTextFromPage(1);
+    }
+
+    @Test
+    void seatsCompactIntoRangesWithATotal() {
+        assertThat(TicketPdfRenderer.seatSummary(List.of("A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "B3")))
+                .isEqualTo("A1–A8, B3 (9 seats)");
+        assertThat(TicketPdfRenderer.seatSummary(List.of("A1"))).isEqualTo("A1 (1 seat)");
+    }
+
+    @Test
+    void thirtyScatteredSeatsStayOnOnePage() throws Exception {
+        List<String> seats = new java.util.ArrayList<>();
+        for (int i = 0; i < 30; i++) {
+            seats.add("ROW" + (char) ('A' + i % 6) + " " + (char) ('A' + i % 6) + (i * 3 + 1));
+        }
+        String text = textOfOnePage(with("Show", seats));
+        assertThat(text).contains("(30 seats)", "77");
+    }
+
+    @Test
+    void veryLongTitleIsTruncatedOnOnePage() throws Exception {
+        String text = textOfOnePage(with("Long ".repeat(40), List.of("A1")));
+        assertThat(text).doesNotContain("Long ".repeat(30));
+        assertThat(TicketPdfRenderer.clip("x".repeat(200), 60)).hasSize(60).endsWith("…");
+    }
+
+    @Test
+    void hindiTitlePrintsQuestionMarksNotNothing() throws Exception {
+        String text = textOfOnePage(with("अरिजीत नाइट्स",
+                List.of("A1")));
+        assertThat(text).contains("?");
+        assertThat(TicketPdfRenderer.pdfSafe("अर")).isEqualTo("??");
+        assertThat(TicketPdfRenderer.pdfSafe("Café 😀")).isEqualTo("Café ?");
+        assertThat(TicketPdfRenderer.qrPayload(with("x", List.of("A1")))).isEqualTo("surge:ticket:77:u-1");
     }
 
     /**

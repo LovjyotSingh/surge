@@ -49,6 +49,14 @@ class CatalogClientTest {
     }
 
     @Test
+    void missingZoneOrStartIsAClearException() {
+        assertThatThrownBy(() -> new CatalogEvent("X", "V", null, java.time.Instant.EPOCH).startsAtLocal())
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("zoneId");
+        assertThatThrownBy(() -> new CatalogEvent("X", "V", "Asia/Kolkata", null).startsAtLocal())
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("startsAt");
+    }
+
+    @Test
     void notFoundIsAClearException() {
         server.enqueue(new MockResponse.Builder().code(404).build());
 

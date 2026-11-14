@@ -1,5 +1,6 @@
 package dev.surge.notification.user;
 
+import java.util.regex.Pattern;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.client.RestClient;
 
@@ -7,6 +8,8 @@ import org.springframework.web.client.RestClient;
 public class UserDirectory {
 
     private static final String LOAD_TEST_PREFIX = "lt-";
+    /** Same shape as auth-service's user id. */
+    private static final Pattern VALID_ID = Pattern.compile("^[A-Za-z0-9_-]{1,64}$");
 
     private final RestClient client;
 
@@ -15,6 +18,10 @@ public class UserDirectory {
     }
 
     public String email(String userId) {
+        // Validate first: the id goes into a URL path, where "." and ".." would be normalised away.
+        if (userId == null || !VALID_ID.matcher(userId).matches()) {
+            throw new IllegalArgumentException("invalid user id");
+        }
         if (userId.startsWith(LOAD_TEST_PREFIX)) {
             return userId + "@loadtest.local";
         }

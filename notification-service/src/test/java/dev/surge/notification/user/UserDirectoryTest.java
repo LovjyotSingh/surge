@@ -58,6 +58,15 @@ class UserDirectoryTest {
     }
 
     @Test
+    void invalidIdsAreRejectedWithoutAnHttpCall() {
+        for (String bad : new String[] {"..", ".", null, "", "a".repeat(65), "a/b", "lt-../x"}) {
+            assertThatThrownBy(() -> directory.email(bad)).isInstanceOf(IllegalArgumentException.class)
+                    .hasMessage("invalid user id");
+        }
+        assertThat(server.getRequestCount()).isZero();
+    }
+
+    @Test
     void loadTestUsersMakeNoHttpCall() {
         assertThat(directory.email("lt-run1-5")).isEqualTo("lt-run1-5@loadtest.local");
         assertThat(server.getRequestCount()).isZero();

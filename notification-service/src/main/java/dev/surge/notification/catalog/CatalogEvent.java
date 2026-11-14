@@ -11,6 +11,9 @@ public record CatalogEvent(String title, String venueName, String zoneId, Instan
 
     /** The start time in the venue's own zone. */
     public ZonedDateTime startsAtLocal() {
+        if (zoneId == null || startsAt == null) {
+            throw new IllegalStateException("Catalog event '" + title + "' has no zoneId or startsAt");
+        }
         return startsAt.atZone(ZoneId.of(zoneId));
     }
 }
