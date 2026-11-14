@@ -1,0 +1,54 @@
+server:
+  port: 8086
+
+spring:
+  application:
+    name: notification-service
+  config:
+    import: optional:configserver:${CONFIG_URL:http://localhost:8888}
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3307/notification}
+    username: ${MYSQL_USER:surge}
+    password: ${MYSQL_PASSWORD:surge}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+surge:
+  s3:
+    # Empty endpoint = real AWS. Locally this is Adobe S3Mock (compose: http://s3mock:9090).
+    endpoint: ${S3_ENDPOINT:}
+    region: ${S3_REGION:ap-south-1}
+    bucket: ${S3_BUCKET:surge-tickets}
+    # LOCAL-ONLY placeholder credentials: S3Mock accepts anything. Real AWS needs S3_ACCESS_KEY / S3_SECRET_KEY.
+    access-key: ${S3_ACCESS_KEY:surge-local}
+    secret-key: ${S3_SECRET_KEY:surge-local}
+  clients:
+    # Resolved through Eureka by the load-balanced RestClient (service name = host).
+    catalog-base-url: ${CATALOG_BASE_URL:http://catalog-service}
+    auth-base-url: ${AUTH_BASE_URL:http://auth-service}
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka}
+  instance:
+    prefer-ip-address: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+
+logging:
+  level:
+    org.springframework.cloud.loadbalancer.config.LoadBalancerCacheAutoConfiguration: ERROR
