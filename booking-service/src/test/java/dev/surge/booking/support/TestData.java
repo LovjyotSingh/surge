@@ -37,6 +37,13 @@ public class TestData {
         });
     }
 
+    /** Removes an event created by a test (seats first) and drops its cached inventory. */
+    public void deleteEvent(long eventId) {
+        jdbc.update("DELETE FROM seat WHERE event_id = ?", eventId);
+        jdbc.update("DELETE FROM event_ref WHERE id = ?", eventId);
+        inventoryCache.evict(eventId);
+    }
+
     public void clearOutbox() {
         jdbc.update("DELETE FROM outbox");
     }

@@ -3,9 +3,11 @@ package dev.surge.booking.messaging;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import dev.surge.booking.support.IntegrationTest;
+import dev.surge.booking.support.TestData;
 import dev.surge.common.messaging.EventScheduled;
 import dev.surge.common.messaging.MessageTypes;
 import dev.surge.common.messaging.RowSpec;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -17,6 +19,7 @@ import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,7 +34,12 @@ import tools.jackson.databind.json.JsonMapper;
 class EventScheduledHandlerTest {
 
     private static final long NEW_EVENT = 40L;
+    private static final long MARKER_EVENT = 41L;
     private static final long WAIT_MILLIS = 10_000;
+    /** Two retries 1 s apart would add at least 2 s between the original send and the DLT publish. */
+    private static final long NO_RETRY_MILLIS = 1_500;
+
+    @Autowired TestData testData;
 
     @Autowired JdbcTemplate jdbc;
     @Autowired JsonMapper json;
@@ -46,11 +54,11 @@ class EventScheduledHandlerTest {
 
     @AfterEach
     void cleanUp() {
-        jdbc.update("DELETE FROM seat WHERE event_id = ?", NEW_EVENT);
-        jdbc.update("DELETE FROM event_ref WHERE id = ?", NEW_EVENT);
+        testData.deleteEvent(NEW_EVENT);
+        testData.deleteEvent(MARKER_EVENT);
         jdbc.update("UPDATE event_ref SET title = 'Neon Nights Live — Flash Sale', "
-                + "venue_name = 'Jawaharlal Nehru Stadium, Delhi', zone_id = 'Asia/Kolkata', "
-                + "sale_opens_at = '2026-01-01 00:00:00' WHERE id = 1");
+                + "venue_name = 'Jawaharlal Nehru Stadium, Delhi', zone_id = 'Asia/Kolkata' WHERE id = 1");
+        testData.setSaleOpensAt(1L, Instant.parse("2026-01-01T00:00:00Z"));
         jdbc.update("DELETE FROM processed_message WHERE consumer = 'booking-catalog'");
     }
 
@@ -118,16 +126,15 @@ class EventScheduledHandlerTest {
     @Test
     void duplicateMessageIsIgnored() throws Exception {
         UUID id = UUID.randomUUID();
+        String key = String.valueOf(NEW_EVENT);
         EventScheduled message = scheduled(id, NEW_EVENT, "Once Only", List.of(new RowSpec("A", 5, "SILVER")));
-        publish(message);
-        publish(message);
-        // a marker message proves both duplicates were consumed (different key, so wait for its effect)
-        publish(scheduled(UUID.randomUUID(), 1L, "Marker", List.of()));
+        send(key, json.writeValueAsString(message));
+        send(key, json.writeValueAsString(message));
+        // The marker uses the SAME record key (same partition), so it is consumed after both duplicates.
+        send(key, json.writeValueAsString(
+                scheduled(UUID.randomUUID(), MARKER_EVENT, "Marker", List.of(new RowSpec("A", 2, "GOLD")))));
 
-        await(() -> "Marker".equals(jdbc.queryForObject("SELECT title FROM event_ref WHERE id = 1", String.class))
-                && count("SELECT COUNT(*) FROM processed_message WHERE message_id = ?", id.toString()) == 1);
-        // the two duplicates share a partition and are consumed in order; give any stray second run a moment
-        Thread.sleep(500);
+        await(() -> count("SELECT COUNT(*) FROM event_ref WHERE id = ?", MARKER_EVENT) == 1);
 
         assertThat(count("SELECT COUNT(*) FROM processed_message WHERE message_id = ?", id.toString())).isEqualTo(1);
         assertThat(count("SELECT COUNT(*) FROM seat WHERE event_id = ?", NEW_EVENT)).isEqualTo(5);
@@ -139,6 +146,47 @@ class EventScheduledHandlerTest {
         String garbage = "{this is not json " + UUID.randomUUID();
         send("garbage", garbage);
 
+        assertThat(awaitDltWithoutRetry(garbage)).isTrue();
+    }
+
+    @Test
+    void emptyLayoutGoesToDltAndCreatesNothing() {
+        assertRejected(scheduled(UUID.randomUUID(), NEW_EVENT, "No Rows", List.of()));
+    }
+
+    @Test
+    void duplicateRowLabelGoesToDltAndCreatesNothing() {
+        assertRejected(scheduled(UUID.randomUUID(), NEW_EVENT, "Dup Rows",
+                List.of(new RowSpec("A", 3, "GOLD"), new RowSpec("A", 3, "SILVER"))));
+    }
+
+    @Test
+    void unknownTierGoesToDltAndCreatesNothing() {
+        assertRejected(scheduled(UUID.randomUUID(), NEW_EVENT, "Bad Tier", List.of(new RowSpec("A", 3, "DIAMOND"))));
+    }
+
+    @Test
+    void zeroSeatRowGoesToDltAndCreatesNothing() {
+        assertRejected(scheduled(UUID.randomUUID(), NEW_EVENT, "Zero Seats", List.of(new RowSpec("A", 0, "GOLD"))));
+    }
+
+    private void assertRejected(EventScheduled message) {
+        String payload = json.writeValueAsString(message);
+        send(String.valueOf(message.eventId()), payload);
+
+        assertThat(awaitDltWithoutRetry(payload)).as("reached the DLT without retries").isTrue();
+        assertThat(count("SELECT COUNT(*) FROM event_ref WHERE id = ?", message.eventId())).isZero();
+        assertThat(count("SELECT COUNT(*) FROM seat WHERE event_id = ?", message.eventId())).isZero();
+        assertThat(count("SELECT COUNT(*) FROM processed_message WHERE message_id = ?",
+                message.messageId().toString())).isZero();
+    }
+
+    /**
+     * Waits for the payload on catalog.v1.DLT. "No retry" is proven from the DLT record itself: Spring stamps the
+     * original record's timestamp in the {@code kafka_dlt-original-timestamp} header, and two retries 1 s apart
+     * would put the DLT record at least 2 s after it. So the gap must stay under {@link #NO_RETRY_MILLIS}.
+     */
+    private boolean awaitDltWithoutRetry(String payload) {
         try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(Map.<String, Object>of(
                 ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers(),
                 ConsumerConfig.GROUP_ID_CONFIG, "test-dlt-" + UUID.randomUUID(),
@@ -147,13 +195,18 @@ class EventScheduledHandlerTest {
                 ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class))) {
             consumer.subscribe(List.of(MessageTypes.CATALOG_TOPIC + ".DLT"));
             long deadline = System.currentTimeMillis() + WAIT_MILLIS;
-            boolean found = false;
-            while (!found && System.currentTimeMillis() < deadline) {
+            while (System.currentTimeMillis() < deadline) {
                 for (ConsumerRecord<String, String> r : consumer.poll(Duration.ofMillis(500))) {
-                    found |= garbage.equals(r.value());
+                    if (payload.equals(r.value())) {
+                        Header original = r.headers().lastHeader("kafka_dlt-original-timestamp");
+                        assertThat(original).as("original-timestamp header").isNotNull();
+                        long gap = r.timestamp() - ByteBuffer.wrap(original.value()).getLong();
+                        assertThat(gap).as("send-to-DLT gap in ms").isLessThan(NO_RETRY_MILLIS);
+                        return true;
+                    }
                 }
             }
-            assertThat(found).as("malformed payload reached catalog.v1.DLT").isTrue();
+            return false;
         }
     }
 }
