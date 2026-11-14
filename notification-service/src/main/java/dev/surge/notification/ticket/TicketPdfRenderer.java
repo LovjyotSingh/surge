@@ -10,6 +10,8 @@ import java.nio.charset.Charset;
 import java.nio.charset.CharsetEncoder;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -84,7 +86,6 @@ public class TicketPdfRenderer {
     private static final int MAX_VENUE = 60;
     /** About two lines of 9 pt text on A6, leaving room for the " (N seats)" suffix. */
     private static final int MAX_SEAT_LIST = 80;
-    private static final CharsetEncoder WIN_ANSI = Charset.forName("windows-1252").newEncoder();
     private static final Pattern SEAT = Pattern.compile("^(.*?)(\\d+)$");
 
     /**
@@ -95,11 +96,13 @@ public class TicketPdfRenderer {
         if (s == null) {
             return "";
         }
+        // CharsetEncoder is not thread-safe, so each call gets its own (renders may run on several threads).
+        CharsetEncoder winAnsi = Charset.forName("windows-1252").newEncoder();
         StringBuilder out = new StringBuilder();
         s.codePoints().forEach(cp -> {
             if (Character.isISOControl(cp)) {
                 out.append(' ');
-            } else if (cp <= 0xFFFF && WIN_ANSI.canEncode((char) cp)) {
+            } else if (cp <= 0xFFFF && winAnsi.canEncode((char) cp)) {
                 out.appendCodePoint(cp);
             } else {
                 out.append('?');
@@ -117,8 +120,11 @@ public class TicketPdfRenderer {
         // group by label prefix (everything before the trailing number), in first-seen order
         Map<String, TreeSet<Integer>> groups = new LinkedHashMap<>();
         List<String> loose = new ArrayList<>();
+        Set<String> distinct = new LinkedHashSet<>();
         for (String raw : seats) {
-            String seat = pdfSafe(raw).trim();
+            distinct.add(pdfSafe(raw).trim());
+        }
+        for (String seat : distinct) {
             Matcher m = SEAT.matcher(seat);
             if (m.matches() && m.group(2).length() < 9) {
                 groups.computeIfAbsent(m.group(1), k -> new TreeSet<>()).add(Integer.parseInt(m.group(2)));
@@ -144,7 +150,8 @@ public class TicketPdfRenderer {
         });
         parts.addAll(loose);
         String list = clip(String.join(", ", parts), MAX_SEAT_LIST);
-        return list + " (" + seats.size() + (seats.size() == 1 ? " seat)" : " seats)");
+        int n = distinct.size();
+        return list + " (" + n + (n == 1 ? " seat)" : " seats)");
     }
 
     private static String range(String prefix, int from, int to) {

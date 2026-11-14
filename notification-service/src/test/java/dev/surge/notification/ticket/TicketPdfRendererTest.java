@@ -56,6 +56,28 @@ class TicketPdfRendererTest {
     }
 
     @Test
+    void duplicateSeatsCountOnce() {
+        assertThat(TicketPdfRenderer.seatSummary(List.of("A1", "A2", "A2", "B3", "B3")))
+                .isEqualTo("A1–A2, B3 (3 seats)");
+    }
+
+    @Test
+    void rendersConcurrentlyOnVirtualThreads() throws Exception {
+        TicketPdfRenderer renderer = new TicketPdfRenderer();
+        try (var pool = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            List<java.util.concurrent.Future<Integer>> pages = new java.util.ArrayList<>();
+            for (int i = 0; i < 50; i++) {
+                String title = i % 2 == 0 ? "Coldplay " + i : "अरिजीत नाइट्स " + i;
+                pages.add(pool.submit(() -> new PdfReader(renderer.render(with(title, List.of("A1", "A2"))))
+                        .getNumberOfPages()));
+            }
+            for (var f : pages) {
+                assertThat(f.get()).isEqualTo(1);
+            }
+        }
+    }
+
+    @Test
     void thirtyScatteredSeatsStayOnOnePage() throws Exception {
         List<String> seats = new java.util.ArrayList<>();
         for (int i = 0; i < 30; i++) {
@@ -68,7 +90,7 @@ class TicketPdfRendererTest {
     @Test
     void veryLongTitleIsTruncatedOnOnePage() throws Exception {
         String text = textOfOnePage(with("Long ".repeat(40), List.of("A1")));
-        assertThat(text).doesNotContain("Long ".repeat(30));
+        assertThat(text).doesNotContain("Long ".repeat(30)).contains("…");
         assertThat(TicketPdfRenderer.clip("x".repeat(200), 60)).hasSize(60).endsWith("…");
     }
 
