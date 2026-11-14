@@ -90,4 +90,5 @@ management:
 
 logging:
   level:
+    # Eureka/LoadBalancer starters make this cache hint fire at every start; no client-side LB cache tuning wanted.
     org.springframework.cloud.loadbalancer.config.LoadBalancerCacheAutoConfiguration: ERROR
