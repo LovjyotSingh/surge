@@ -1,0 +1,55 @@
+server:
+  port: 8085
+
+spring:
+  application:
+    name: gateway
+  config:
+    import: optional:configserver:${CONFIG_URL:http://localhost:8888}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # jwk-set-uri, NEVER issuer-uri: the auth service's issuer is the plain string "surge-auth", not a URL,
+          # so OIDC discovery would fail. The issuer is checked by string comparison in SecurityConfig.
+          jwk-set-uri: ${AUTH_JWKS_URI:http://auth-service:8082/api/auth/.well-known/jwks.json}
+  cloud:
+    gateway:
+      server:
+        webflux:
+          httpclient:
+            connect-timeout: 2000
+            # Idle time waiting for the downstream's bytes. The SSE route overrides it with metadata response-timeout: -1.
+            response-timeout: 30s
+
+surge:
+  security:
+    issuer: surge-auth
+  routes:
+    auth-uri: lb://auth-service
+    catalog-uri: lb://catalog-service
+    booking-uri: lb://booking-service
+    notification-uri: lb://notification-service
+    payment-uri: lb://payment-service
+  gateway:
+    breaker-timeout: 10s
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka}
+  instance:
+    prefer-ip-address: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  level:
+    org.springframework.cloud.loadbalancer.config.LoadBalancerCacheAutoConfiguration: ERROR
