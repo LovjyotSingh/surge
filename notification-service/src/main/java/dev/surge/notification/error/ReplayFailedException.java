@@ -7,6 +7,6 @@ package dev.surge.notification.error;
 public class ReplayFailedException extends RuntimeException {
 
     public ReplayFailedException(String detail, int replayedBefore, Throwable cause) {
-        super(detail + "; " + replayedBefore + " message(s) were replayed before this", cause);
+        super(detail + "; " + replayedBefore + " message(s) replayed", cause);
     }
 }

@@ -106,13 +106,16 @@ public class DlqOperations {
      * exception is a bug: the message is requeued and the exception is rethrown unchanged.
      */
     public int replay(int limit) {
-        Connection connection;
+        Connection connection = null;
         Channel channel;
         try {
             connection = dedicatedConnection();
             channel = openChannel(connection);
         } catch (IOException | TimeoutException | ShutdownSignalException e) {
-            throw replayFailed("Could not reach the broker; nothing was replayed", 0, e);
+            if (connection != null) {
+                connection.abort(); // the channel failed on a live connection: never leak the connection
+            }
+            throw replayFailed("Could not reach the broker", 0, e);
         }
         int replayed = 0;
         try {
@@ -136,7 +139,14 @@ public class DlqOperations {
                         throw replayFailed("The ticket queue is not reachable (message was returned unroutable); "
                                 + "the message is still in tickets.dlq", replayed, null);
                     }
-                    channel.basicAck(tag, false);
+                    try {
+                        channel.basicAck(tag, false);
+                    } catch (IOException | ShutdownSignalException e) {
+                        // The publish was confirmed, so the ticket is already in the queue; the DLQ copy comes back
+                        // when the channel closes and is a harmless duplicate (consumers skip it by messageId).
+                        throw replayFailed("The message was replayed but its DLQ copy could not be removed; "
+                                + "a duplicate stays in tickets.dlq and is skipped if replayed again", replayed + 1, e);
+                    }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     requeue(channel, tag);
@@ -183,17 +193,27 @@ public class DlqOperations {
         return t.getMessage() == null ? t.getClass().getSimpleName() : t.getClass().getSimpleName() + ": " + t.getMessage();
     }
 
-    /** A close failure after the work is done must not turn a successful replay into an error. */
+    /**
+     * A close failure after the work is done must not turn a successful replay into an error. A broker nack, confirm
+     * timeout or shutdown has already closed the channel, so only open resources are closed (no second stack trace),
+     * and a failed close falls back to abort, which never throws. Closing the connection also closes its channels, so
+     * the broker requeues every unacked delivery either way.
+     */
     private static void closeQuietly(Channel channel, Connection connection) {
-        try {
-            channel.close();
-        } catch (IOException | TimeoutException | RuntimeException e) {
-            log.warn("Could not close the DLQ admin channel", e);
+        if (channel.isOpen()) {
+            try {
+                channel.close();
+            } catch (IOException | TimeoutException | RuntimeException e) {
+                log.debug("Could not close the DLQ admin channel", e);
+            }
         }
-        try {
-            connection.close();
-        } catch (IOException | RuntimeException e) {
-            log.warn("Could not close the DLQ admin connection", e);
+        if (connection.isOpen()) {
+            try {
+                connection.close();
+            } catch (IOException | RuntimeException e) {
+                log.debug("Could not close the DLQ admin connection; aborting it", e);
+                connection.abort();
+            }
         }
     }
 
