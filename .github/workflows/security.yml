@@ -1,0 +1,98 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '41 5 * * 1'   # weekly: new advisories appear without any code change
+  workflow_dispatch:
+
+# Read-only everywhere. None of these jobs needs to write to the repo or to code scanning.
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OSV_SCANNER_VERSION: v2.7.1
+  # SHA-256 of osv-scanner_linux_amd64 from the v2.7.1 release's osv-scanner_SHA256SUMS.
+  OSV_SCANNER_SHA256: fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8
+
+jobs:
+  dependency-scan:
+    name: Dependency scan (OSV, npm audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      # The scanner binary is pinned by version and checked against a SHA-256 recorded above.
+      - name: Install osv-scanner
+        run: |
+          curl -fsSL -o osv-scanner \
+            "https://github.com/google/osv-scanner/releases/download/${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SCANNER_SHA256}  osv-scanner" | sha256sum -c -
+          chmod +x osv-scanner
+
+      # Scans every pom.xml (transitive dependencies are resolved) and web/package-lock.json.
+      # osv-scanner has no severity threshold of its own: it exits non-zero on any finding, which
+      # is tolerated here, and the next step fails the job on CVSS >= 7.0 (high or critical).
+      - name: Scan Maven and npm manifests
+        run: |
+          ./osv-scanner scan source --recursive --format json --output osv-results.json . || true
+          test -s osv-results.json
+
+      - name: Fail on high or critical findings
+        run: |
+          jq -r '
+            [.results[]? | .source.path as $src | .packages[]? | .package as $p
+             | .groups[]? | select(((.max_severity // "0") | tonumber? // 0) >= 7)
+             | "\($src): \($p.name)@\($p.version) \(.ids | join(", ")) (CVSS \(.max_severity))"]
+            | unique | .[]' osv-results.json | tee osv-high.txt
+          if [ -s osv-high.txt ]; then
+            echo "::error::High or critical dependency vulnerabilities found (see log)"
+            exit 1
+          fi
+          echo "No high or critical findings."
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24
+
+      - name: npm audit (production dependencies)
+        working-directory: web
+        run: npm audit --omit=dev --audit-level=high
+
+  trivy:
+    name: Trivy (filesystem and config)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      # Filesystem mode today: vulnerabilities in lockfiles and poms, committed secrets, and
+      # misconfiguration in Dockerfiles and compose files. Equivalent to
+      #   trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL --exit-code 1 .
+      - name: Trivy fs
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+
+      # TODO(Task 16): once the images are built in CI, scan each one here (scan-type: image,
+      # image-ref: <name>:<tag>, severity HIGH,CRITICAL, exit-code 1, ignore-unfixed: true).
+      # Targets: booking-service, web (nginx), tools/loadtest, plus every service image added under
+      # docker/ (gateway, auth, catalog, notification, payment, config-server, discovery).
+      # Build them in the `images` job of ci.yml (or here, with needs:) and scan from the local
+      # daemon so the scan covers exactly what is deployed.

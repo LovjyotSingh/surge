@@ -20,9 +20,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
         with:
           distribution: temurin
           java-version: '25'
@@ -41,9 +43,11 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 24
           cache: npm
@@ -64,7 +68,29 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       - name: Build all images (core + loadtest profiles)
         run: docker compose --profile core --profile loadtest build
+
+  config-repo-secrets:
+    name: config-repo holds no secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      # config-repo/ is served to every service by the config server and is committed to git, so
+      # anything in it is readable by all of them. Secrets must come from the environment or a
+      # secret store, never from this directory. Fail on the words password or secret, or on any
+      # "key:" line that carries a value (api-key: abc). Case-insensitive.
+      - name: Reject secrets in config-repo
+        run: |
+          if grep -rniE 'password|secret|key[[:space:]]*:[[:space:]]*[^[:space:]#]' config-repo/; then
+            echo "::error::config-repo/ must not contain passwords, secrets or key values"
+            exit 1
+          fi
