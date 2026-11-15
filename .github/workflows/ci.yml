@@ -86,11 +86,16 @@ jobs:
 
       # config-repo/ is served to every service by the config server and is committed to git, so
       # anything in it is readable by all of them. Secrets must come from the environment or a
-      # secret store, never from this directory. Fail on the words password or secret, or on any
-      # "key:" line that carries a value (api-key: abc). Case-insensitive.
+      # secret store, never from this directory. Fail on password, secret, token, credential or
+      # private-key anywhere, and on any key: or key= line that carries a value. Case-insensitive.
+      # A value that is only a ${...} placeholder is allowed.
       - name: Reject secrets in config-repo
+        shell: bash
         run: |
-          if grep -rniE 'password|secret|key[[:space:]]*:[[:space:]]*[^[:space:]#]' config-repo/; then
-            echo "::error::config-repo/ must not contain passwords, secrets or key values"
+          test -d config-repo || { echo "::error::config-repo missing"; exit 1; }
+          hits=$(grep -rniE 'password|secret|token|credential|private[-_]?key|key[[:space:]]*[:=][[:space:]]*[^[:space:]#]' config-repo/             | grep -vE '[:=][[:space:]]*"?${[^}]*}"?[[:space:]]*$' || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error::config-repo/ must not contain passwords, secrets, tokens or key values"
             exit 1
           fi

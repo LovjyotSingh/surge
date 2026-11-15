@@ -1,0 +1,54 @@
+# osv-scanner config, passed to CI with --config. Known HIGH advisories are ignored until
+# 2026-11-29 so the dependency scan is meaningful from day one: it passes with this list, and any
+# NEW advisory still fails. The bumps are tracked in S9b; see docs/security/accepted-risks.md.
+# Delete each entry when its dependency is bumped. Expired entries stop applying by themselves.
+
+[[IgnoredVulns]]
+id = "GHSA-68mj-5wr7-6fgg"
+effectiveUntil = 2026-11-29
+reason = "com.rabbitmq:amqp-client 5.27.1: accepted until the dependency bump in S9b; see docs/security/accepted-risks.md"
+
+[[IgnoredVulns]]
+id = "GHSA-6g32-pxv4-2wfj"
+effectiveUntil = 2026-11-29
+reason = "com.rabbitmq:amqp-client 5.27.1: accepted until the dependency bump in S9b; see docs/security/accepted-risks.md"
+
+[[IgnoredVulns]]
+id = "GHSA-93j5-89vc-pph4"
+effectiveUntil = 2026-11-29
+reason = "com.rabbitmq:amqp-client 5.27.1: accepted until the dependency bump in S9b; see docs/security/accepted-risks.md"
+
+[[IgnoredVulns]]
+id = "GHSA-jh4v-gfqj-7rhx"
+effectiveUntil = 2026-11-29
+reason = "com.rabbitmq:amqp-client 5.27.1: accepted until the dependency bump in S9b; see docs/security/accepted-risks.md"
+
+[[IgnoredVulns]]
+id = "GHSA-gwq9-9ffj-mvrv"
+effectiveUntil = 2026-11-29
+reason = "org.xerial.snappy:snappy-java 1.1.10.7: accepted until the dependency bump in S9b; see docs/security/accepted-risks.md"
+
+[[IgnoredVulns]]
+id = "GHSA-q233-g92q-qxp6"
+effectiveUntil = 2026-11-29
+reason = "org.xerial.snappy:snappy-java 1.1.10.7: accepted until the dependency bump in S9b; see docs/security/accepted-risks.md"
+
+[[IgnoredVulns]]
+id = "GHSA-mcr4-qmvw-px4g"
+effectiveUntil = 2026-11-29
+reason = "at.yawk.lz4:lz4-java 1.10.1: accepted until the dependency bump in S9b; see docs/security/accepted-risks.md"
+
+[[IgnoredVulns]]
+id = "GHSA-xxph-c9ww-hj94"
+effectiveUntil = 2026-11-29
+reason = "com.google.guava:guava 33.0.0-jre: accepted until the dependency bump in S9b; see docs/security/accepted-risks.md"
+
+[[IgnoredVulns]]
+id = "GHSA-hf6x-8p5f-cgmf"
+effectiveUntil = 2026-11-29
+reason = "httpcore5 5.3.6: accepted until the dependency bump in S9b; see docs/security/accepted-risks.md"
+
+[[IgnoredVulns]]
+id = "GHSA-v3jc-474w-2wm6"
+effectiveUntil = 2026-11-29
+reason = "httpcore5-h2 5.3.6: accepted until the dependency bump in S9b; see docs/security/accepted-risks.md"

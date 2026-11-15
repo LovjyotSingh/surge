@@ -51,6 +51,16 @@ updates:
       docker-minor-patch:
         update-types: [minor, patch]
 
+  # Maven and npm are separate from compose: this tracks the image tags in compose.yaml
+  # (mysql, redis, nginx). The docker-compose ecosystem is supported by Dependabot.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      compose-minor-patch:
+        update-types: [minor, patch]
+
   # Task 16 adds a docker/ directory with more Dockerfiles. Add it here when it lands:
   # - package-ecosystem: docker
   #   directory: /docker
