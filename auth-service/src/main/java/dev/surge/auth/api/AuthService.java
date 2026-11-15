@@ -3,7 +3,6 @@ package dev.surge.auth.api;
 import dev.surge.auth.error.BadCredentialsException;
 import dev.surge.auth.error.EmailTakenException;
 import dev.surge.auth.jwt.TokenService;
-import dev.surge.auth.user.AdminSeeder;
 import dev.surge.auth.user.Role;
 import dev.surge.auth.user.User;
 import dev.surge.auth.user.UserRepository;
@@ -23,7 +22,11 @@ public class AuthService {
     /** Checked against when the email is unknown, so both failure paths cost one BCrypt comparison. */
     private final String dummyHash;
 
-    AuthService(UserRepository users, PasswordEncoder encoder, TokenService tokens, Clock clock) {
+    private final String adminEmail;
+
+    AuthService(UserRepository users, PasswordEncoder encoder, TokenService tokens, Clock clock,
+                @org.springframework.beans.factory.annotation.Value("${surge.auth.admin-email}") String adminEmail) {
+        this.adminEmail = normalize(adminEmail);
         this.users = users;
         this.encoder = encoder;
         this.tokens = tokens;
@@ -37,7 +40,7 @@ public class AuthService {
 
     public TokenResponse signup(SignupRequest req) {
         String email = normalize(req.email());
-        if (AdminSeeder.ADMIN_EMAIL.equals(email) || users.existsByEmail(email)) {
+        if (adminEmail.equals(email) || users.existsByEmail(email)) {
             throw new EmailTakenException();
         }
         User saved;

@@ -11,6 +11,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.jayway.jsonpath.JsonPath;
 import dev.surge.booking.hold.RedisKeys;
+import dev.surge.booking.support.Admin;
 import dev.surge.booking.support.IntegrationTest;
 import dev.surge.booking.support.TestData;
 import java.time.Duration;
@@ -65,9 +66,49 @@ class AdminControllerTest {
     }
 
     @Test
+    void everyAdminEndpointNeedsAnIdentityAndTheAdminRole() throws Exception {
+        record Call(String method, String path) {
+        }
+        for (Call c : java.util.List.of(new Call("POST", "/api/bookings/admin/events/1/reset"),
+                new Call("GET", "/api/bookings/admin/events/1/integrity"),
+                new Call("PUT", "/api/bookings/admin/loadtest-reports/latest"),
+                new Call("GET", "/api/bookings/admin/loadtest-reports/latest"))) {
+            var req = org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                    .request(org.springframework.http.HttpMethod.valueOf(c.method()), c.path());
+            // no identity at all: 401
+            mvc.perform(req).andExpect(status().isUnauthorized())
+                    .andExpect(jsonPath("$.type").value("https://surge.dev/problems/missing-user"));
+            // a role header without a user id is still anonymous
+            mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                            .request(org.springframework.http.HttpMethod.valueOf(c.method()), c.path())
+                            .header("X-User-Roles", "ADMIN"))
+                    .andExpect(status().isUnauthorized());
+            for (String roles : new String[] {null, "", "USER", "admin", "SUPERADMIN", "USER,ADMINISTRATOR"}) {
+                var r = org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .request(org.springframework.http.HttpMethod.valueOf(c.method()), c.path())
+                        .header("X-User-Id", "u-7");
+                mvc.perform(roles == null ? r : r.header("X-User-Roles", roles))
+                        .andExpect(status().isForbidden())
+                        .andExpect(jsonPath("$.type").value("https://surge.dev/problems/forbidden"));
+            }
+        }
+    }
+
+    @Test
+    void resetWithoutAdminDeletesNothing() throws Exception {
+        buy("u1", "k1", "[1]");
+        mvc.perform(post("/api/bookings/admin/events/1/reset").header("X-User-Id", "u1").header("X-User-Roles", "USER"))
+                .andExpect(status().isForbidden());
+        assertThat(count("SELECT COUNT(*) FROM orders WHERE event_id = 1")).isEqualTo(1);
+        mvc.perform(post("/api/bookings/admin/events/1/reset").header("X-User-Id", "u-admin")
+                        .header("X-User-Roles", "USER, ADMIN"))
+                .andExpect(status().isNoContent());
+    }
+
+    @Test
     void integrityAfterSales() throws Exception {
         buy("u1", "k1", "[1,2]");
-        mvc.perform(get("/api/bookings/admin/events/1/integrity")).andExpect(status().isOk())
+        mvc.perform(Admin.as(get("/api/bookings/admin/events/1/integrity"))).andExpect(status().isOk())
                 .andExpect(jsonPath("$.eventId").value(1))
                 .andExpect(jsonPath("$.totalSeats").value(500))
                 .andExpect(jsonPath("$.soldSeats").value(2))
@@ -81,7 +122,7 @@ class AdminControllerTest {
     void integrityFlagsASoldSeatWithoutAnOrder() throws Exception {
         buy("u1", "k1", "[1]");
         jdbc.update("UPDATE seat SET status = 'SOLD' WHERE id = 10");
-        mvc.perform(get("/api/bookings/admin/events/1/integrity")).andExpect(status().isOk())
+        mvc.perform(Admin.as(get("/api/bookings/admin/events/1/integrity"))).andExpect(status().isOk())
                 .andExpect(jsonPath("$.soldSeats").value(2))
                 .andExpect(jsonPath("$.distinctSeatsSold").value(1))
                 .andExpect(jsonPath("$.oversold").value(0))
@@ -93,7 +134,7 @@ class AdminControllerTest {
     void sameIdempotencyKeyBuysAgainAfterReset() throws Exception {
         int firstOrder = buy("u1", "K", "[1]");
 
-        mvc.perform(post("/api/bookings/admin/events/1/reset")).andExpect(status().isNoContent());
+        mvc.perform(Admin.as(post("/api/bookings/admin/events/1/reset"))).andExpect(status().isNoContent());
         String key = RedisKeys.idempotency("u1", "K");
         assertThat(redis.opsForValue().get(key)).isEqualTo(String.valueOf(firstOrder)); // reset keeps idem keys
 
@@ -116,7 +157,7 @@ class AdminControllerTest {
 
     @Test
     void integrityUnknownEventIs404() throws Exception {
-        mvc.perform(get("/api/bookings/admin/events/999/integrity")).andExpect(status().isNotFound())
+        mvc.perform(Admin.as(get("/api/bookings/admin/events/999/integrity"))).andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/event-not-found"));
     }
 
@@ -128,7 +169,7 @@ class AdminControllerTest {
         // An unrelated event's hold member must survive.
         redis.opsForZSet().add(RedisKeys.HOLD_EXPIRY, "2:otherhold:9", 1.0);
 
-        mvc.perform(post("/api/bookings/admin/events/1/reset").param("opensInSeconds", "60"))
+        mvc.perform(Admin.as(post("/api/bookings/admin/events/1/reset")).param("opensInSeconds", "60"))
                 .andExpect(status().isNoContent());
 
         assertThat(count("SELECT COUNT(*) FROM seat WHERE event_id = 1 AND status <> 'AVAILABLE'")).isZero();
@@ -154,46 +195,46 @@ class AdminControllerTest {
     @Test
     void resetDefaultsToOpenNow() throws Exception {
         testData.setSaleOpensAt(1L, Instant.now().plusSeconds(3600));
-        mvc.perform(post("/api/bookings/admin/events/1/reset")).andExpect(status().isNoContent());
+        mvc.perform(Admin.as(post("/api/bookings/admin/events/1/reset"))).andExpect(status().isNoContent());
         hold("u1", "[1]");
     }
 
     @Test
     void resetUnknownEventIs404() throws Exception {
-        mvc.perform(post("/api/bookings/admin/events/999/reset")).andExpect(status().isNotFound())
+        mvc.perform(Admin.as(post("/api/bookings/admin/events/999/reset"))).andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/event-not-found"));
     }
 
     @Test
     void resetRejectsOutOfRangeOpensIn() throws Exception {
-        mvc.perform(post("/api/bookings/admin/events/1/reset").param("opensInSeconds", "86401"))
+        mvc.perform(Admin.as(post("/api/bookings/admin/events/1/reset")).param("opensInSeconds", "86401"))
                 .andExpect(status().isBadRequest());
-        mvc.perform(post("/api/bookings/admin/events/1/reset").param("opensInSeconds", "-1"))
+        mvc.perform(Admin.as(post("/api/bookings/admin/events/1/reset")).param("opensInSeconds", "-1"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/validation-failed"));
-        mvc.perform(post("/api/bookings/admin/events/1/reset").param("opensInSeconds", "86400"))
+        mvc.perform(Admin.as(post("/api/bookings/admin/events/1/reset")).param("opensInSeconds", "86400"))
                 .andExpect(status().isNoContent());
     }
 
     @Test
     void loadtestReportRoundTrip() throws Exception {
-        mvc.perform(get("/api/bookings/admin/loadtest-reports/latest")).andExpect(status().isNotFound())
+        mvc.perform(Admin.as(get("/api/bookings/admin/loadtest-reports/latest"))).andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/report-not-found"));
-        mvc.perform(put("/api/bookings/admin/loadtest-reports/latest").contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(Admin.as(put("/api/bookings/admin/loadtest-reports/latest")).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"sold\":500}"))
                 .andExpect(status().isNoContent());
-        mvc.perform(get("/api/bookings/admin/loadtest-reports/latest")).andExpect(status().isOk())
+        mvc.perform(Admin.as(get("/api/bookings/admin/loadtest-reports/latest"))).andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(content().json("{\"sold\":500}"));
     }
 
     @Test
     void invalidReportJsonIs400() throws Exception {
-        mvc.perform(put("/api/bookings/admin/loadtest-reports/latest").contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(Admin.as(put("/api/bookings/admin/loadtest-reports/latest")).contentType(MediaType.APPLICATION_JSON)
                         .content("{not json"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/malformed-request"));
-        mvc.perform(put("/api/bookings/admin/loadtest-reports/latest").contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(Admin.as(put("/api/bookings/admin/loadtest-reports/latest")).contentType(MediaType.APPLICATION_JSON)
                         .content(""))
                 .andExpect(status().isBadRequest());
     }
@@ -201,7 +242,7 @@ class AdminControllerTest {
     @Test
     void oversizedReportIs413() throws Exception {
         String big = "{\"x\":\"" + "a".repeat(300 * 1024) + "\"}";
-        mvc.perform(put("/api/bookings/admin/loadtest-reports/latest").contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(Admin.as(put("/api/bookings/admin/loadtest-reports/latest")).contentType(MediaType.APPLICATION_JSON)
                         .content(big))
                 .andExpect(status().isContentTooLarge())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/report-too-large"));

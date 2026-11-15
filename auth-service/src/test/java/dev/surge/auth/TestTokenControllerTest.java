@@ -51,6 +51,9 @@ class TestTokenControllerTest {
             assertThat(jwt.<String>getClaim("email")).isEqualTo(t.get("userId") + "@loadtest.local");
             assertThat(jwt.<List<String>>getClaim("roles")).containsExactly("USER");
             assertThat(jwt.getClaimAsString("iss")).isEqualTo("surge-auth");
+            assertThat(jwt.<Boolean>getClaim("lt")).isTrue();
+            assertThat(java.time.Duration.between(jwt.getIssuedAt(), jwt.getExpiresAt()))
+                    .isEqualTo(java.time.Duration.ofMinutes(15));
         }
     }
 

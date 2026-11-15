@@ -7,6 +7,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.jayway.jsonpath.JsonPath;
+import dev.surge.booking.support.Admin;
 import dev.surge.booking.support.IntegrationTest;
 import dev.surge.booking.support.TestData;
 import dev.surge.outbox.OutboxRelay;
@@ -208,7 +209,7 @@ class OutboxBrokerPublishingTest {
     @Test
     void resetPublishesSalesReset() throws Exception {
         try (var consumer = consumerAtEnd()) {
-            mvc.perform(post("/api/bookings/admin/events/1/reset")).andExpect(status().isNoContent());
+            mvc.perform(Admin.as(post("/api/bookings/admin/events/1/reset"))).andExpect(status().isNoContent());
 
             assertThat(relay.relayBatch()).isEqualTo(1);
 

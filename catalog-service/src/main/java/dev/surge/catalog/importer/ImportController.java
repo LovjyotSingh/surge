@@ -1,5 +1,6 @@
 package dev.surge.catalog.importer;
 
+import dev.surge.catalog.web.AdminAccess;
 import dev.surge.catalog.error.ForbiddenException;
 import dev.surge.catalog.error.InvalidImportException;
 import dev.surge.catalog.error.UploadTooLargeException;
@@ -31,7 +32,7 @@ public class ImportController {
     @PostMapping(path = "/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ImportResult importEvents(@RequestHeader(value = "X-User-Roles", required = false) String roles,
                                      @RequestPart("file") MultipartFile file) throws IOException {
-        requireAdmin(roles);
+        AdminAccess.requireAdmin(roles);
         if (file.getSize() > CsvEventImporter.MAX_BYTES) {
             throw new UploadTooLargeException(CsvEventImporter.MAX_BYTES);
         }
@@ -41,17 +42,5 @@ public class ImportController {
         try (InputStream in = file.getInputStream()) {
             return importer.importCsv(in);
         }
-    }
-
-    /** The role list must contain the exact token {@code ADMIN} (case-sensitive, whitespace around tokens ignored). */
-    static void requireAdmin(String roles) {
-        if (roles != null) {
-            for (String role : roles.split(",")) {
-                if (role.trim().equals("ADMIN")) {
-                    return;
-                }
-            }
-        }
-        throw new ForbiddenException("Administrator access is required");
     }
 }

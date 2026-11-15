@@ -291,7 +291,7 @@ class SalesHandlerTest {
                 order(c, eventId, 1, "1499.00", Instant.parse("2026-12-01T21:00:00Z")));
         awaitProcessed(c);
 
-        mvc.perform(get("/api/catalog/stats/daily").param("eventId", "2"))
+        mvc.perform(get("/api/catalog/admin/stats/daily").header("X-User-Roles", "USER,ADMIN").param("eventId", "2"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(2))
                 .andExpect(jsonPath("$[0].date").value("2026-12-01"))
@@ -302,15 +302,28 @@ class SalesHandlerTest {
                 .andExpect(jsonPath("$[1].revenueInr").value(1499.0));
 
         // an event with no sales has an empty list; a missing, malformed or unknown id is a client error
-        mvc.perform(get("/api/catalog/stats/daily").param("eventId", "3"))
+        mvc.perform(get("/api/catalog/admin/stats/daily").header("X-User-Roles", "USER,ADMIN").param("eventId", "3"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(0));
-        mvc.perform(get("/api/catalog/stats/daily"))
+        mvc.perform(get("/api/catalog/admin/stats/daily").header("X-User-Roles", "USER,ADMIN"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/validation-failed"));
-        mvc.perform(get("/api/catalog/stats/daily").param("eventId", "abc")).andExpect(status().isBadRequest());
-        mvc.perform(get("/api/catalog/stats/daily").param("eventId", "999999"))
+        mvc.perform(get("/api/catalog/admin/stats/daily").header("X-User-Roles", "USER,ADMIN").param("eventId", "abc")).andExpect(status().isBadRequest());
+        mvc.perform(get("/api/catalog/admin/stats/daily").header("X-User-Roles", "USER,ADMIN").param("eventId", "999999"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/event-not-found"));
+    }
+
+    @Test
+    void dailyStatsNeedTheAdminRoleAndTheOldPublicPathIsGone() throws Exception {
+        mvc.perform(get("/api/catalog/admin/stats/daily").param("eventId", "2"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/forbidden"));
+        for (String roles : new String[] {"USER", "admin", "SUPERADMIN"}) {
+            mvc.perform(get("/api/catalog/admin/stats/daily").param("eventId", "2").header("X-User-Roles", roles))
+                    .andExpect(status().isForbidden());
+        }
+        mvc.perform(get("/api/catalog/stats/daily").param("eventId", "2").header("X-User-Roles", "ADMIN"))
+                .andExpect(status().isNotFound());
     }
 
     // ---- poison messages ----

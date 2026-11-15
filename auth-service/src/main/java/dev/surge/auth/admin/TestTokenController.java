@@ -58,7 +58,7 @@ public class TestTokenController {
         List<MintedToken> out = new ArrayList<>(req.count());
         for (int n = 0; n < req.count(); n++) {
             UserView user = UserViews.synthetic(req.prefix() + "-" + n);
-            out.add(new MintedToken(user.id(), tokens.issue(user).token()));
+            out.add(new MintedToken(user.id(), tokens.issueLoadTest(user).token()));
         }
         return new MintedTokens(out);
     }

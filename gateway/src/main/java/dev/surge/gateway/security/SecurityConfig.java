@@ -88,7 +88,8 @@ class SecurityConfig {
     @Bean
     ReactiveJwtDecoder jwtDecoder(
             @Value("${spring.security.oauth2.resourceserver.jwt.jwk-set-uri}") String jwkSetUri,
-            @Value("${surge.security.issuer:surge-auth}") String issuer) {
+            @Value("${surge.security.issuer:surge-auth}") String issuer,
+            @Value("${surge.security.allow-loadtest-subjects:false}") boolean allowLoadtestSubjects) {
         // A hanging auth-service must not hang the gateway: bounded connect and response time, then fail closed.
         HttpClient http = HttpClient.create().option(io.netty.channel.ChannelOption.CONNECT_TIMEOUT_MILLIS, 2000)
                 .responseTimeout(java.time.Duration.ofSeconds(2));
@@ -98,7 +99,7 @@ class SecurityConfig {
                 .build();
         decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
                 JwtValidators.createDefaultWithIssuer(issuer),
-                requireClaims()));
+                requireClaims(allowLoadtestSubjects)));
         // Anything other than "this token is bad" (key set unreachable, timed out) is a service failure, not a 401: fail closed, 503.
         return token -> decoder.decode(token).onErrorMap(
                 e -> !(e instanceof org.springframework.security.oauth2.jwt.JwtException),
@@ -107,13 +108,16 @@ class SecurityConfig {
     }
 
     /** exp must be present (the default timestamp validator lets a token without exp live forever) and sub must be safe. */
-    private static OAuth2TokenValidator<Jwt> requireClaims() {
+    static OAuth2TokenValidator<Jwt> requireClaims(boolean allowLoadtest) {
         return jwt -> {
             if (jwt.getExpiresAt() == null) {
                 return failure("Token has no expiry");
             }
             if (!JwtClaims.validUserId(jwt.getSubject())) {
                 return failure("Token subject is not a valid user id");
+            }
+            if (!allowLoadtest && JwtClaims.isLoadtest(jwt)) {
+                return failure("Load-test tokens are not accepted");
             }
             return OAuth2TokenValidatorResult.success();
         };

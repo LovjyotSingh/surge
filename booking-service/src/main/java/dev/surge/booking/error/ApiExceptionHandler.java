@@ -46,6 +46,11 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(Problems.of(HttpStatus.UNAUTHORIZED, "missing-user", "Missing or invalid user", e.getMessage()));
     }
 
+    @ExceptionHandler(ForbiddenException.class)
+    ResponseEntity<ProblemDetail> forbidden(ForbiddenException e) {
+        return problem(Problems.of(HttpStatus.FORBIDDEN, "forbidden", "Forbidden", e.getMessage()));
+    }
+
     @ExceptionHandler(InvalidSeatsException.class)
     ResponseEntity<ProblemDetail> invalidSeats(InvalidSeatsException e) {
         ProblemDetail pd = Problems.of(HttpStatus.BAD_REQUEST, "invalid-seats", "Invalid seats", e.getMessage());

@@ -2,6 +2,7 @@ package dev.surge.catalog.stats;
 
 import dev.surge.catalog.error.EventNotFoundException;
 import dev.surge.catalog.event.EventRepository;
+import dev.surge.catalog.web.AdminAccess;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
@@ -9,12 +10,13 @@ import java.util.TreeMap;
 import java.util.stream.Collectors;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
-@RequestMapping("/api/catalog/stats")
+@RequestMapping("/api/catalog/admin/stats")
 public class StatsController {
 
     record SalesRow(LocalDate day, long ticketsSold, BigDecimal revenueInr) {
@@ -29,7 +31,9 @@ public class StatsController {
     }
 
     @GetMapping("/daily")
-    public List<DailySales> daily(@RequestParam long eventId) {
+    public List<DailySales> daily(@RequestHeader(value = "X-User-Roles", required = false) String roles,
+                                  @RequestParam long eventId) {
+        AdminAccess.requireAdmin(roles);
         if (!events.existsById(eventId)) {
             throw new EventNotFoundException(eventId);
         }

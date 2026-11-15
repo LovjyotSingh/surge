@@ -65,6 +65,20 @@ class GatewaySecurityTest extends GatewayTestBase {
     }
 
     @Test
+    void loadtestSubjectsAndTokensAre401UnlessAllowed() throws Exception {
+        Instant exp = Instant.now().plus(15, ChronoUnit.MINUTES);
+        String ltSubject = token("lt-x-1", "lt-x-1@loadtest.local", List.of("USER"), ISSUER, exp, KEY);
+        String ltClaim = token("u-5", "u-5@surge.test", java.util.Map.of("lt", true), List.of("USER"), ISSUER, exp,
+                KEY);
+        for (String bad : List.of(ltSubject, ltClaim)) {
+            client.post().uri("/api/bookings/holds").header(HttpHeaders.AUTHORIZATION, bearer(bad))
+                    .bodyValue("{}").exchange().expectStatus().isUnauthorized()
+                    .expectBody().jsonPath("$.type").isEqualTo(PROBLEM + "unauthorized");
+        }
+        assertThat(BOOKING.sawNothing()).isTrue();
+    }
+
+    @Test
     void lookalikeOrMalformedRolesDoNotGrantAdmin() throws Exception {
         List<Object> notAdmin = List.of(List.of("ADMINISTRATOR"), "admin", "ADMIN", List.of("admin"),
                 List.of("ROLE_ADMIN"), List.of("USER", " ADMIN"), List.of("ADMIN,USER"), List.of(1, 2));
@@ -115,6 +129,20 @@ class GatewaySecurityTest extends GatewayTestBase {
         client.get().uri("/api/payments/admin/chaos").header(HttpHeaders.AUTHORIZATION,
                 bearer(adminToken("u-admin"))).exchange().expectStatus().isOk();
         assertThat(PAYMENT.next().getTarget()).isEqualTo("/api/payments/admin/chaos");
+    }
+
+    @Test
+    void dailySalesStatsAreAdminOnly() throws Exception {
+        String uri = "/api/catalog/admin/stats/daily?eventId=1";
+        client.get().uri(uri).exchange().expectStatus().isUnauthorized();
+        client.get().uri(uri).header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-8"))).exchange()
+                .expectStatus().isForbidden();
+        assertThat(CATALOG.sawNothing()).isTrue();
+        client.get().uri(uri).header(HttpHeaders.AUTHORIZATION, bearer(adminToken("u-admin"))).exchange()
+                .expectStatus().isOk();
+        RecordedRequest seen = CATALOG.next();
+        assertThat(seen.getTarget()).isEqualTo(uri);
+        assertThat(seen.getHeaders().values("X-User-Roles")).hasSize(1).first().asString().contains("ADMIN");
     }
 
     @Test

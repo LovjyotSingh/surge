@@ -28,6 +28,8 @@ spring:
 surge:
   security:
     issuer: surge-auth
+    # Synthetic load-test identities (sub "lt-*" or claim lt=true) are refused unless a loadtest overlay sets this.
+    allow-loadtest-subjects: ${SURGE_ALLOW_LOADTEST_SUBJECTS:false}
   routes:
     auth-uri: lb://auth-service
     catalog-uri: lb://catalog-service

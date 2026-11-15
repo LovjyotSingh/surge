@@ -23,11 +23,14 @@ spring:
           time_zone: UTC
 
 surge:
+  # dev (default, local) or prod. Compose's prod overlay sets SURGE_ENV=prod, which turns on the startup guards.
+  env: ${SURGE_ENV:dev}
   auth:
-    # Local-only default. Real deployments must set SURGE_ADMIN_PASSWORD.
-    admin-password: ${SURGE_ADMIN_PASSWORD:surge-admin}
+    # Empty means "not configured": dev falls back to the local default, prod refuses to start (StartupGuards).
+    admin-password: ${SURGE_ADMIN_PASSWORD:}
+    admin-email: ${SURGE_ADMIN_EMAIL:admin@surge.local}
     test-tokens:
-      # Mints JWTs for synthetic load-test users. Off unless explicitly enabled (compose enables it).
+      # Mints JWTs for synthetic load-test users. Off unless a loadtest overlay enables it; never with SURGE_ENV=prod.
       enabled: false
 
 eureka:

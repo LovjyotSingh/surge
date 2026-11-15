@@ -22,6 +22,9 @@ import org.springframework.stereotype.Service;
 public class TokenService {
     public static final String ISSUER = "surge-auth";
     public static final Duration LIFETIME = Duration.ofMinutes(60);
+    /** Load-test tokens are short-lived and flagged so the gateway can refuse them in production. */
+    public static final Duration LOADTEST_LIFETIME = Duration.ofMinutes(15);
+    public static final String LOADTEST_CLAIM = "lt";
 
     private final JwtEncoder encoder;
     private final Clock clock;
@@ -32,15 +35,28 @@ public class TokenService {
     }
 
     public TokenResponse issue(UserView user) {
+        return issue(user, LIFETIME, false);
+    }
+
+    /** A synthetic load-test token: claim {@code lt: true} and a 15 minute lifetime. */
+    public TokenResponse issueLoadTest(UserView user) {
+        return issue(user, LOADTEST_LIFETIME, true);
+    }
+
+    private TokenResponse issue(UserView user, Duration lifetime, boolean loadTest) {
         Instant now = clock.instant().truncatedTo(ChronoUnit.SECONDS);
-        Instant expiresAt = now.plus(LIFETIME);
-        JwtClaimsSet claims = JwtClaimsSet.builder()
+        Instant expiresAt = now.plus(lifetime);
+        JwtClaimsSet.Builder builder = JwtClaimsSet.builder()
                 .issuer(ISSUER)
                 .subject(user.id())
                 .issuedAt(now)
                 .expiresAt(expiresAt)
                 .claim("email", user.email())
-                .claim("roles", user.roles())
+                .claim("roles", user.roles());
+        if (loadTest) {
+            builder.claim(LOADTEST_CLAIM, true);
+        }
+        JwtClaimsSet claims = builder
                 .build();
         JwsHeader header = JwsHeader.with(SignatureAlgorithm.RS256).build();
         String token = encoder.encode(JwtEncoderParameters.from(header, claims)).getTokenValue();

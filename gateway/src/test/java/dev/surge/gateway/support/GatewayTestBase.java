@@ -101,11 +101,23 @@ public abstract class GatewayTestBase {
         return token(sub, sub + "@surge.test", roles, ISSUER, Instant.now().plus(1, ChronoUnit.HOURS), KEY);
     }
 
+    protected static String token(String sub, String email, java.util.Map<String, Object> extra, Object roles,
+            String issuer, Instant expires, RSAKey signWith) {
+        return sign(sub, email, extra, roles, issuer, expires, signWith);
+    }
+
     /** {@code roles} may be a list, a plain string or null (claim omitted); {@code expires} null omits {@code exp}. */
     protected static String token(String sub, String email, Object roles, String issuer, Instant expires,
             RSAKey signWith) {
+        return sign(sub, email, java.util.Map.of(), roles, issuer, expires, signWith);
+    }
+
+    private static String sign(String sub, String email, java.util.Map<String, Object> extra, Object roles,
+            String issuer, Instant expires,
+            RSAKey signWith) {
         JWTClaimsSet.Builder claims = new JWTClaimsSet.Builder().subject(sub).issuer(issuer)
                 .issueTime(Date.from(Instant.now().minus(10, ChronoUnit.MINUTES))).claim("email", email);
+        extra.forEach(claims::claim);
         if (roles != null) {
             claims.claim("roles", roles);
         }

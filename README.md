@@ -89,7 +89,7 @@ docker compose --profile core --profile loadtest run --rm loadtest --users 10000
 It resets event 1, runs, prints the report, shows it on the **Ops** page (http://localhost:8080/ops) and writes it to `reports/`. It exits with code 1 unless every check passes: 0 oversold, sold seats matching order lines, and as many `201`s as seats sold. Each run uses fresh idempotency keys (`<runId>-<userId>`), so you can run it again right away. On native Linux, run `export UID` first (or `chmod o+w reports`) so the container can write `reports/`; otherwise it only prints a warning. The run leaves event 1 sold out; reset it from the Ops page or with:
 
 ```bash
-curl -X POST "http://localhost:8080/api/bookings/admin/events/1/reset?opensInSeconds=0"
+curl -X POST -H "X-User-Id: u-admin" -H "X-User-Roles: ADMIN" "http://localhost:8080/api/bookings/admin/events/1/reset?opensInSeconds=0"
 ```
 
 Stop everything with `docker compose --profile core down` (add `-v` to also delete the database data).
@@ -119,7 +119,7 @@ Idempotency keys: a repeat of a completed checkout returns the same order for 24
 
 Health and metrics are on the service port: http://localhost:8081/actuator/health and http://localhost:8081/actuator/prometheus.
 
-**Phase 1 limits, stated plainly:** there is no login yet. The web app sends a demo user id in the `X-User-Id` header, and the admin endpoints are open. Payment is a fake in-process gateway. Outbox messages are logged, not yet sent to a broker. Run it locally only: every published port is bound to `127.0.0.1`, so Redis (no password), MySQL and the admin API are not reachable from your network. A hold lives only in the open page, so refreshing the page loses its Pay button until the hold expires.
+**Phase 1 limits, stated plainly:** there is no login yet. The web app sends a demo user id in the `X-User-Id` header, and the admin endpoints check the `ADMIN` role in the service (`X-User-Roles`, set by the gateway). Payment is a fake in-process gateway. Outbox messages are logged, not yet sent to a broker. Run it locally only: every published port is bound to `127.0.0.1`, so Redis (no password), MySQL and the admin API are not reachable from your network. A hold lives only in the open page, so refreshing the page loses its Pay button until the hold expires.
 
 ## Run the tests
 

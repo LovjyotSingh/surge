@@ -138,6 +138,16 @@ class AuthFlowTest {
     }
 
     @Test
+    void ordinaryLoginTokensAreNotLoadTestTokens() throws Exception {
+        String json = mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+                        .content(creds("admin@surge.local", "surge-admin")))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        String token = JsonPath.read(json, "$.token");
+        String payload = new String(java.util.Base64.getUrlDecoder().decode(token.split("\\.")[1]));
+        assertThat(payload).doesNotContain("\"lt\"");
+    }
+
+    @Test
     void multibytePasswordOver72BytesIs400NotA500() throws Exception {
         String pw = "\u00e9".repeat(72);
         mvc.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)

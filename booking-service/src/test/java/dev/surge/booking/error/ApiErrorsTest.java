@@ -14,6 +14,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.jayway.jsonpath.JsonPath;
 import dev.surge.booking.hold.RedisKeys;
 import dev.surge.booking.payment.PaymentGateway;
+import dev.surge.booking.support.Admin;
 import dev.surge.booking.support.IntegrationTest;
 import dev.surge.booking.support.TestData;
 import org.hamcrest.Matchers;
@@ -64,7 +65,7 @@ class ApiErrorsTest {
 
     @Test
     void nonNumericQueryParameterIs400() throws Exception {
-        perform(post("/api/bookings/admin/events/1/reset").param("opensInSeconds", "abc"),
+        perform(Admin.as(post("/api/bookings/admin/events/1/reset")).param("opensInSeconds", "abc"),
                 HttpStatus.BAD_REQUEST, "validation-failed")
                 .andExpect(jsonPath("$.detail").value("Invalid value for 'opensInSeconds'"));
     }
