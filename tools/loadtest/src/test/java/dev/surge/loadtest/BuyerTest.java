@@ -37,7 +37,7 @@ class BuyerTest {
 
     private BuyerOutcome run() throws Exception {
         CountDownLatch gate = new CountDownLatch(0);
-        return new Buyer("lt-0", "tok-0", "run-1-lt-0", 1, List.of(1L, 2L, 3L, 4L, 5L), api, gate, 0.7, 10,
+        return new Buyer("tok-0", "run-1-lt-0", 1, List.of(1L, 2L, 3L, 4L, 5L), api, gate, 0.7, 10,
             new Random(1), sleeps::add).call();
     }
 

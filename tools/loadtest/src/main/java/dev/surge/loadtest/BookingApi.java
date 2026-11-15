@@ -30,6 +30,15 @@ public final class BookingApi implements AutoCloseable {
     /** The auth service's {@code @Max} on {@code count} for one test-token request. */
     static final int MAX_TOKENS_PER_CALL = 20000;
 
+    /**
+     * Tokens per mint request. The server needs about 1 s per 1000 tokens (signing) and the gateway cuts a response off
+     * after 30 s, so one 20000-token request is too close to the limit; the hard cap stays {@link #MAX_TOKENS_PER_CALL}.
+     */
+    static final int MINT_BATCH = 2000;
+
+    /** "lt-" plus at most 16 alphanumeric characters (the server pattern). */
+    private static final int MAX_PREFIX_LENGTH = 19;
+
     /** A minted buyer: the user id the gateway will see (the token's subject) and its bearer token. */
     public record TestToken(String userId, String token) {
         @Override
@@ -79,9 +88,9 @@ public final class BookingApi implements AutoCloseable {
         adminToken = token.asString();
     }
 
-    /** Mints {@code count} buyer tokens; asks for at most {@link #MAX_TOKENS_PER_CALL} per request. */
+    /** Mints {@code count} buyer tokens; asks for {@link #MINT_BATCH} per request. */
     public List<TestToken> mintTokens(String prefix, int count) {
-        return mintTokens(prefix, count, MAX_TOKENS_PER_CALL);
+        return mintTokens(prefix, count, MINT_BATCH);
     }
 
     /**
@@ -92,8 +101,11 @@ public final class BookingApi implements AutoCloseable {
         List<TestToken> all = new ArrayList<>(count);
         int batch = 0;
         while (all.size() < count) {
-            int n = Math.min(maxPerCall, count - all.size());
+            int n = Math.min(Math.min(maxPerCall, MAX_TOKENS_PER_CALL), count - all.size());
             String batchPrefix = batch == 0 ? prefix : prefix + "b" + batch;
+            if (batchPrefix.length() > MAX_PREFIX_LENGTH) {
+                throw new SetupException("too many buyers to mint under one prefix");
+            }
             all.addAll(mintBatch(batchPrefix, n));
             batch++;
         }
@@ -108,7 +120,8 @@ public final class BookingApi implements AutoCloseable {
         int status = r.statusCode();
         if (status == 403 || status == 404) {
             throw new SetupException("test tokens are disabled on this deployment "
-                + "(enable them only for load tests)");
+                + "(enable them only for load tests) "
+                + "— or the admin account lacks the ADMIN role");
         }
         if (status == 401) {
             throw new SetupException("admin login failed (token rejected)");
@@ -117,11 +130,21 @@ public final class BookingApi implements AutoCloseable {
             throw new SetupException("minting test tokens failed (HTTP " + status + ")");
         }
         List<TestToken> out = new ArrayList<>(count);
-        for (JsonNode t : JSON.readTree(r.body()).get("tokens")) {
-            out.add(new TestToken(t.get("userId").asString(), t.get("token").asString()));
+        try {
+            for (JsonNode t : JSON.readTree(r.body()).get("tokens")) {
+                String userId = t.get("userId").asString();
+                String token = t.get("token").asString();
+                if (userId.isBlank() || token.isBlank()) {
+                    throw new IllegalArgumentException("blank");
+                }
+                out.add(new TestToken(userId, token));
+            }
+        } catch (RuntimeException e) {
+            throw new SetupException("minting test tokens failed (malformed response)");
         }
         if (out.size() != count) {
-            throw new IllegalStateException("minting returned " + out.size() + " tokens, expected " + count);
+            throw new SetupException("minting test tokens failed (got " + out.size() + " tokens, expected "
+                + count + ")");
         }
         return out;
     }
@@ -205,7 +228,7 @@ public final class BookingApi implements AutoCloseable {
 
     private static void requireStatus(HttpResponse<String> r, int expected, String what) {
         if (r.statusCode() != expected) {
-            throw new IllegalStateException(what + " failed: HTTP " + r.statusCode() + " " + r.body());
+            throw new IllegalStateException(what + " failed: HTTP " + r.statusCode());
         }
     }
 

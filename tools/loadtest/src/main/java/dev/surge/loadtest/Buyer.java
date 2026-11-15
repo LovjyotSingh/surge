@@ -15,8 +15,6 @@ public final class Buyer implements Callable<BuyerOutcome> {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final int MAX_RATE_LIMIT_WAITS = 30;
 
-    @SuppressWarnings("unused") // identifies the buyer when debugging; the server reads identity from the bearer
-    private final String userId;
     private final String bearer;
     private final String idempotencyKey;
     private final long eventId;
@@ -35,16 +33,15 @@ public final class Buyer implements Callable<BuyerOutcome> {
     }
 
     /** {@code idempotencyKey} is sent on the checkout; it must be unique per run (see LoadTestMain). */
-    public Buyer(String userId, String bearer, String idempotencyKey, long eventId, List<Long> seatIds, BookingApi api,
+    public Buyer(String bearer, String idempotencyKey, long eventId, List<Long> seatIds, BookingApi api,
                  CountDownLatch startGate, double hotShare, int maxAttempts, RandomGenerator rnd) {
-        this(userId, bearer, idempotencyKey, eventId, seatIds, api, startGate, hotShare, maxAttempts, rnd,
+        this(bearer, idempotencyKey, eventId, seatIds, api, startGate, hotShare, maxAttempts, rnd,
             Thread::sleep);
     }
 
-    Buyer(String userId, String bearer, String idempotencyKey, long eventId, List<Long> seatIds, BookingApi api,
+    Buyer(String bearer, String idempotencyKey, long eventId, List<Long> seatIds, BookingApi api,
           CountDownLatch startGate, double hotShare, int maxAttempts, RandomGenerator rnd, Sleeper sleeper) {
         this.sleeper = sleeper;
-        this.userId = userId;
         this.bearer = bearer;
         this.idempotencyKey = idempotencyKey;
         this.eventId = eventId;
@@ -62,6 +59,7 @@ public final class Buyer implements Callable<BuyerOutcome> {
         int conflicts = 0;
         int rateLimited = 0;
         int errors = 0;
+        int unauthorized = 0;
         List<Long> holdLat = new ArrayList<>();
         List<Long> checkoutLat = new ArrayList<>();
         try {
@@ -81,6 +79,9 @@ public final class Buyer implements Callable<BuyerOutcome> {
                         break;
                     }
                     sleeper.sleep(retryAfterSeconds(r) * 1000L);
+                } else if (status == 401 || status == 403) {
+                    unauthorized++;
+                    break;
                 } else if (status == 409 && problemType(r).endsWith("/seat-taken")) {
                     conflicts++;
                     attempts++;
@@ -93,15 +94,17 @@ public final class Buyer implements Callable<BuyerOutcome> {
                 }
             }
             if (holdId == null) {
-                return new BuyerOutcome(false, conflicts, rateLimited, errors, holdLat, checkoutLat);
+                return new BuyerOutcome(false, conflicts, rateLimited, errors, unauthorized, holdLat, checkoutLat);
             }
             long t0 = System.nanoTime();
             HttpResponse<String> order = api.checkout(bearer, idempotencyKey, holdId);
             checkoutLat.add(elapsedMs(t0));
             if (order.statusCode() == 201) {
-                return new BuyerOutcome(true, conflicts, rateLimited, errors, holdLat, checkoutLat);
+                return new BuyerOutcome(true, conflicts, rateLimited, errors, unauthorized, holdLat, checkoutLat);
             }
-            if (order.statusCode() == 409) {
+            if (order.statusCode() == 401 || order.statusCode() == 403) {
+                unauthorized++;
+            } else if (order.statusCode() == 409) {
                 conflicts++;
             } else {
                 errors++;
@@ -109,7 +112,7 @@ public final class Buyer implements Callable<BuyerOutcome> {
         } catch (RuntimeException e) {
             errors++;
         }
-        return new BuyerOutcome(false, conflicts, rateLimited, errors, holdLat, checkoutLat);
+        return new BuyerOutcome(false, conflicts, rateLimited, errors, unauthorized, holdLat, checkoutLat);
     }
 
     private static long elapsedMs(long startNanos) {

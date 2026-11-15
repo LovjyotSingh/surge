@@ -226,12 +226,105 @@ class GatewayAuthTest {
     }
 
     @Test
+    void defaultBatchIs2000AndPrefixesStayValidForOneHundredBatches() throws Exception {
+        try (StubServer s = stub(); BookingApi api = new BookingApi(s.baseUrl())) {
+            api.login("a@b.c", PASSWORD);
+            List<BookingApi.TestToken> tokens = api.mintTokens("lt-abcd1234", 4500);
+            assertThat(tokens).hasSize(4500);
+            assertThat(tokens.stream().map(BookingApi.TestToken::userId).collect(Collectors.toSet())).hasSize(4500);
+            assertThat(BookingApi.MINT_BATCH).isEqualTo(2000);
+            List<Integer> counts = new ArrayList<>();
+            for (int i = 0; i < s.received.size(); i++) {
+                if (s.received.get(i).equals(MINT)) {
+                    counts.add(JSON.readTree(s.receivedBodies.get(i)).get("count").asInt());
+                }
+            }
+            assertThat(counts).containsExactly(2000, 2000, 500);
+        }
+        try (StubServer s = stub(); BookingApi api = new BookingApi(s.baseUrl())) {
+            api.login("a@b.c", PASSWORD);
+            List<BookingApi.TestToken> tokens = api.mintTokens("lt-abcd1234", 100, 1); // 100 batches
+            assertThat(tokens.stream().map(BookingApi.TestToken::userId).collect(Collectors.toSet())).hasSize(100);
+            assertThat(tokens).allMatch(t -> t.userId().matches("lt-[A-Za-z0-9]{1,16}-\\d+"));
+            assertThat(tokens).allMatch(t -> (UUID_LEN + 1 + t.userId().length()) <= 64);
+        }
+    }
+
+    private static final int UUID_LEN = 36;
+
+    @Test
+    void everyBuyerRejectedExitsTwoAndNeverPasses(@TempDir Path out) throws Exception {
+        try (StubServer s = stub()) {
+            s.on(HOLDS, Reply.of(401, ""));
+            Run r = run(config(s, out, "--admin-password", PASSWORD));
+
+            assertThat(r.exit()).isEqualTo(2);
+            assertThat(r.stderr()).contains("the gateway rejected 3 buyer tokens "
+                + "(expired, or load-test subjects not enabled)");
+            assertThat(r.stdout() + r.stderr()).doesNotContain("PASS");
+        }
+    }
+
+    @Test
+    void mintUnauthorizedEvenAfterReLoginExitsTwo(@TempDir Path out) throws Exception {
+        try (StubServer s = stub()) {
+            s.on(MINT, Reply.of(401, ""));
+            Run r = run(config(s, out, "--admin-password", PASSWORD));
+
+            assertThat(r.exit()).isEqualTo(2);
+            assertThat(r.stderr()).contains("admin login failed");
+            assertThat(count(s, LOGIN)).isEqualTo(2);
+            assertThat(count(s, HOLDS)).isZero();
+        }
+    }
+
+    @Test
+    void malformedMintResponseExitsTwo(@TempDir Path out) throws Exception {
+        for (String body : new String[] {"{\"tokens\":[{\"userId\":\"x\"}]}", "{\"nope\":1}", "not json",
+            "{\"tokens\":[]}"}) {
+            try (StubServer s = stub()) {
+                s.on(MINT, Reply.of(200, body));
+                Run r = run(config(s, out, "--admin-password", PASSWORD));
+
+                assertThat(r.exit()).isEqualTo(2);
+                assertThat(r.stderr()).contains("minting test tokens failed");
+                assertThat(count(s, HOLDS)).isZero();
+            }
+        }
+    }
+
+    @Test
+    void mint403MentionsTheAdminRole(@TempDir Path out) throws Exception {
+        try (StubServer s = stub()) {
+            s.on(MINT, Reply.of(403, ""));
+            assertThat(run(config(s, out, "--admin-password", PASSWORD)).stderr())
+                .contains("(enable them only for load tests) — or the admin account lacks the ADMIN role");
+        }
+    }
+
+    @Test
+    void reportFilesAreWrittenEvenWhenPublishingFails(@TempDir Path out) throws Exception {
+        try (StubServer s = stub()) {
+            // the token is rejected on the PUT and the second login fails too
+            s.on(LOGIN, Reply.of(200, "{\"token\":\"" + ADMIN_TOKEN + "\"}"), Reply.of(401, ""));
+            s.on(PUT_REPORT, Reply.of(401, ""));
+            Run r = run(config(s, out, "--admin-password", PASSWORD));
+
+            assertThat(r.exit()).isEqualTo(2);
+            assertThat(r.stderr()).contains("the report could not be sent");
+            try (java.util.stream.Stream<Path> files = java.nio.file.Files.list(out)) {
+                assertThat(files.map(p -> p.getFileName().toString())).anyMatch(n -> n.endsWith(".json"));
+            }
+        }
+    }
+
+    @Test
     void shortMintResponseIsRejected() throws Exception {
         try (StubServer s = stub(); BookingApi api = new BookingApi(s.baseUrl())) {
             s.on(MINT, Reply.of(200, "{\"tokens\":[]}"));
             api.login("a@b.c", PASSWORD);
             assertThatThrownBy(() -> api.mintTokens("lt-abcd1234", 3, 2))
-                .isInstanceOf(IllegalStateException.class);
+                .isInstanceOf(SetupException.class);
         }
     }
 }

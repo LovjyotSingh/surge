@@ -34,9 +34,9 @@ public final class LoadTestMain {
 
     /**
      * Idempotency key for one buyer in one run. A fresh run id per run means a re-run never reuses the keys of an
-     * earlier run (whose orders a reset has deleted). A UUID (36) + "-" + the user id stays under
-     * the server's 64-character limit. (Minted ids are "lt-" + 8 hex + optional batch suffix + "-" + an int: at
-     * most 20 characters, so the key is at most 57.)
+     * earlier run (whose orders a reset has deleted). A UUID (36) + "-" + the user id stays under the server's
+     * 64-character limit: minted ids are "lt-" + 8 hex + an optional batch suffix ("b" + up to 2 digits) + "-" + an
+     * index below 2000, so the worst case is a 24-character user id and a 61-character key.
      */
     static String idempotencyKey(String runId, String userId) {
         return runId + "-" + userId;
@@ -64,14 +64,15 @@ public final class LoadTestMain {
         String runId = UUID.randomUUID().toString();
         try (BookingApi api = new BookingApi(cfg.baseUrl())) {
             api.login(cfg.adminEmail(), cfg.adminPassword());
-            // One synthetic user per buyer. Tokens live 60 minutes (TokenService.LIFETIME), far longer than a run.
-            List<BookingApi.TestToken> buyers = api.mintTokens("lt-" + runId.substring(0, 8), cfg.users());
             if (cfg.reset()) {
                 api.reset(cfg.eventId());
             }
             List<Long> seatIds = api.seatIds(cfg.eventId());
             out.println("Run " + runId + ": " + cfg.users() + " buyers, event " + cfg.eventId()
                 + ", Idempotency-Key = " + idempotencyKey(runId, "<userId>"));
+            // One synthetic user per buyer, minted as late as possible: test tokens live only 15 minutes, so the whole
+            // run (from here to the last buyer) must finish within 15 minutes.
+            List<BookingApi.TestToken> buyers = api.mintTokens("lt-" + runId.substring(0, 8), cfg.users());
             CountDownLatch gate = new CountDownLatch(1);
             List<Future<BuyerOutcome>> futures = new ArrayList<>(cfg.users());
             Instant startedAt = Instant.now();
@@ -80,14 +81,15 @@ public final class LoadTestMain {
             int conflicts = 0;
             int rateLimited = 0;
             int errors = 0;
+            int unauthorized = 0;
             List<Long> holdLat = new ArrayList<>();
             List<Long> checkoutLat = new ArrayList<>();
             try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
                 for (int n = 0; n < cfg.users(); n++) {
                     BookingApi.TestToken buyer = buyers.get(n);
-                    futures.add(pool.submit(new Buyer(buyer.userId(), buyer.token(),
-                        idempotencyKey(runId, buyer.userId()), cfg.eventId(), seatIds,
-                        api, gate, cfg.hotShare(), cfg.maxAttempts(), RandomGenerator.getDefault())));
+                    futures.add(pool.submit(new Buyer(buyer.token(), idempotencyKey(runId, buyer.userId()),
+                        cfg.eventId(), seatIds, api, gate, cfg.hotShare(), cfg.maxAttempts(),
+                        RandomGenerator.getDefault())));
                 }
                 gate.countDown();
                 for (Future<BuyerOutcome> f : futures) {
@@ -98,11 +100,17 @@ public final class LoadTestMain {
                     conflicts += o.conflicts();
                     rateLimited += o.rateLimited();
                     errors += o.errors();
+                    unauthorized += o.unauthorized();
                     holdLat.addAll(o.holdLatenciesMs());
                     checkoutLat.addAll(o.checkoutLatenciesMs());
                 }
             }
             long durationMs = (System.nanoTime() - t0) / 1_000_000;
+            if (unauthorized > 0) {
+                err.println("ERROR: the gateway rejected " + unauthorized
+                    + " buyer tokens (expired, or load-test subjects not enabled)");
+                return 2;
+            }
 
             JsonNode integrity = api.integrity(cfg.eventId());
             LoadTestReport report = new LoadTestReport(startedAt, cfg.users(), cfg.eventId(),
@@ -111,10 +119,15 @@ public final class LoadTestMain {
                 holdLat.size() + checkoutLat.size(), conflicts, rateLimited, errors,
                 durationMs, LatencyStats.of(holdLat), LatencyStats.of(checkoutLat));
 
-            // Show and publish the result first: a read-only report folder must not lose a finished run.
+            // Show the result and save the local files first: a failing publish must not lose a finished run.
             out.println(ReportWriter.markdown(report));
-            api.putReport(ReportWriter.json(report));
             writeFiles(cfg.outDir(), report, out, err);
+            try {
+                api.putReport(ReportWriter.json(report));
+            } catch (RuntimeException e) {
+                err.println("ERROR: the report could not be sent to the Ops page: " + e.getMessage());
+                return 2;
+            }
             return report.passed() ? 0 : 1;
         }
     }
@@ -126,7 +139,7 @@ public final class LoadTestMain {
             out.println("Report files: " + files);
         } catch (IOException e) {
             err.println("WARN: could not write the report files to " + dir + " (" + e + ").");
-            err.println("WARN: the report above was printed and sent to the Ops page, so the run is not lost.");
+            err.println("WARN: the report above was printed, so the run is not lost.");
             err.println("WARN: hint for Linux: the container user (uid 10001 unless UID is exported) may not be "
                 + "allowed to write ./reports. Run `chmod o+w reports`, or `export UID` before docker compose "
                 + "so the container runs as you.");
