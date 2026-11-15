@@ -256,12 +256,13 @@ class GatewayAuthTest {
     void everyBuyerRejectedExitsTwoAndNeverPasses(@TempDir Path out) throws Exception {
         try (StubServer s = stub()) {
             s.on(HOLDS, Reply.of(401, ""));
+            s.on(INTEGRITY, Reply.of(200, INTEGRITY_OK.replace("\"soldSeats\":3", "\"soldSeats\":0")));
             Run r = run(config(s, out, "--admin-password", PASSWORD));
 
             assertThat(r.exit()).isEqualTo(2);
             assertThat(r.stderr()).contains("the gateway rejected 3 buyer tokens "
                 + "(expired, or load-test subjects not enabled)");
-            assertThat(r.stdout() + r.stderr()).doesNotContain("PASS");
+            assertThat(r.stdout()).contains("# Surge load test"); // the full report is still printed
         }
     }
 
@@ -299,6 +300,7 @@ class GatewayAuthTest {
             s.on(MINT, Reply.of(403, ""));
             assertThat(run(config(s, out, "--admin-password", PASSWORD)).stderr())
                 .contains("(enable them only for load tests) — or the admin account lacks the ADMIN role");
+            assertThat(count(s, RESET)).isZero();
         }
     }
 
@@ -318,6 +320,77 @@ class GatewayAuthTest {
         }
     }
 
+
+    @Test
+    void mintForbiddenNeverResetsTheEvent(@TempDir Path out) throws Exception {
+        try (StubServer s = stub()) {
+            s.on(MINT, Reply.of(403, ""));
+            Run r = run(config(s, out, "--admin-password", PASSWORD));
+
+            assertThat(r.exit()).isEqualTo(2);
+            assertThat(r.stderr()).contains("lacks the ADMIN role").doesNotContain("Exception");
+            assertThat(s.received).doesNotContain(RESET, "GET /api/bookings/events/1");
+        }
+    }
+
+    @Test
+    void connectionRefusedExitsTwoWithoutAStackTrace(@TempDir Path out) throws Exception {
+        LoadTestConfig cfg;
+        try (StubServer s = stub()) {
+            cfg = config(s, out, "--admin-password", PASSWORD);
+        }
+        Run r = run(cfg);
+        assertThat(r.exit()).isEqualTo(2);
+        assertThat(r.stderr()).contains("ERROR: cannot talk to the gateway").doesNotContain("\tat ");
+    }
+
+    @Test
+    void resetServerErrorExitsTwo(@TempDir Path out) throws Exception {
+        try (StubServer s = stub()) {
+            s.on(RESET, Reply.of(500, "secret-body"));
+            Run r = run(config(s, out, "--admin-password", PASSWORD));
+
+            assertThat(r.exit()).isEqualTo(2);
+            assertThat(r.stderr()).contains("reset failed: HTTP 500").doesNotContain("secret-body");
+            assertThat(count(s, HOLDS)).isZero();
+        }
+    }
+
+    @Test
+    void integrityServerErrorExitsTwo(@TempDir Path out) throws Exception {
+        try (StubServer s = stub()) {
+            s.on(INTEGRITY, Reply.of(401, ""));
+            Run r = run(config(s, out, "--admin-password", PASSWORD));
+
+            assertThat(r.exit()).isEqualTo(2); // a second 401 after the re-login
+            assertThat(r.stderr()).contains("integrity failed: HTTP 401");
+        }
+    }
+
+    @Test
+    void partlyRejectedBuyersWithAnOversellExitOneAndStillPrintTheReport(@TempDir Path out) throws Exception {
+        try (StubServer s = stub()) {
+            s.on(HOLDS, Reply.of(401, ""));
+            s.on(INTEGRITY, Reply.of(200, INTEGRITY_OK.replace("\"oversold\":0", "\"oversold\":1")));
+            Run r = run(config(s, out, "--admin-password", PASSWORD));
+
+            assertThat(r.exit()).isEqualTo(1);
+            assertThat(r.stdout()).contains("# Surge load test");
+            assertThat(r.stderr()).contains("the gateway rejected 3 buyer tokens");
+        }
+    }
+
+    @Test
+    void publishFailureAfterAFailedVerdictStillExitsOne(@TempDir Path out) throws Exception {
+        try (StubServer s = stub()) {
+            s.on(INTEGRITY, Reply.of(200, INTEGRITY_OK.replace("\"oversold\":0", "\"oversold\":1")));
+            s.on(PUT_REPORT, Reply.of(500, ""));
+            Run r = run(config(s, out, "--admin-password", PASSWORD));
+
+            assertThat(r.exit()).isEqualTo(1);
+            assertThat(r.stderr()).contains("the report could not be sent");
+        }
+    }
     @Test
     void shortMintResponseIsRejected() throws Exception {
         try (StubServer s = stub(); BookingApi api = new BookingApi(s.baseUrl())) {

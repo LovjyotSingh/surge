@@ -2,6 +2,7 @@ package dev.surge.loadtest;
 
 import java.io.IOException;
 import java.io.PrintStream;
+import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -35,8 +36,9 @@ public final class LoadTestMain {
     /**
      * Idempotency key for one buyer in one run. A fresh run id per run means a re-run never reuses the keys of an
      * earlier run (whose orders a reset has deleted). A UUID (36) + "-" + the user id stays under the server's
-     * 64-character limit: minted ids are "lt-" + 8 hex + an optional batch suffix ("b" + up to 2 digits) + "-" + an
-     * index below 2000, so the worst case is a 24-character user id and a 61-character key.
+     * 64-character limit: the mint prefix is "lt-" + 8 hex + an optional batch suffix and is capped at 19 characters,
+     * and the index is below 2000 (at most 4 digits), so the worst case is a 24-character user id and a
+     * 61-character key.
      */
     static String idempotencyKey(String runId, String userId) {
         return runId + "-" + userId;
@@ -46,7 +48,7 @@ public final class LoadTestMain {
         return run(cfg, System.out, System.err);
     }
 
-    /** Exit codes: 0 pass, 1 verdict failed, 2 the run could not start (no password, login or minting failed). */
+    /** Exit codes: 0 pass, 1 verdict failed, 2 setup, auth or infrastructure problem (never a stack trace). */
     static int run(LoadTestConfig cfg, PrintStream out, PrintStream err) throws Exception {
         if (cfg.adminPassword() == null || cfg.adminPassword().isEmpty()) {
             err.println("Set " + LoadTestConfig.PASSWORD_ENV + " or pass --admin-password");
@@ -54,25 +56,31 @@ public final class LoadTestMain {
         }
         try {
             return execute(cfg, out, err);
-        } catch (SetupException e) {
+        } catch (SetupException | IllegalStateException e) {
             err.println("ERROR: " + e.getMessage());
             return 2;
+        } catch (UncheckedIOException e) {
+            err.println("ERROR: cannot talk to the gateway at " + cfg.baseUrl() + " ("
+                + (e.getCause() == null ? e : e.getCause()).getClass().getSimpleName() + ")");
         }
+            return 2;
     }
 
     private static int execute(LoadTestConfig cfg, PrintStream out, PrintStream err) throws Exception {
         String runId = UUID.randomUUID().toString();
         try (BookingApi api = new BookingApi(cfg.baseUrl())) {
             api.login(cfg.adminEmail(), cfg.adminPassword());
+            // One synthetic user per buyer. Minted BEFORE the reset so that a deployment without test tokens, or an
+            // account that is not an admin, stops the run before anything destructive happens. Tokens live 60 minutes
+            // today (15 once the load-test claim lands), so the run, counted from this mint, must finish within the
+            // token lifetime.
+            List<BookingApi.TestToken> buyers = api.mintTokens("lt-" + runId.substring(0, 8), cfg.users());
             if (cfg.reset()) {
                 api.reset(cfg.eventId());
             }
             List<Long> seatIds = api.seatIds(cfg.eventId());
             out.println("Run " + runId + ": " + cfg.users() + " buyers, event " + cfg.eventId()
                 + ", Idempotency-Key = " + idempotencyKey(runId, "<userId>"));
-            // One synthetic user per buyer, minted as late as possible: test tokens live only 15 minutes, so the whole
-            // run (from here to the last buyer) must finish within 15 minutes.
-            List<BookingApi.TestToken> buyers = api.mintTokens("lt-" + runId.substring(0, 8), cfg.users());
             CountDownLatch gate = new CountDownLatch(1);
             List<Future<BuyerOutcome>> futures = new ArrayList<>(cfg.users());
             Instant startedAt = Instant.now();
@@ -106,11 +114,6 @@ public final class LoadTestMain {
                 }
             }
             long durationMs = (System.nanoTime() - t0) / 1_000_000;
-            if (unauthorized > 0) {
-                err.println("ERROR: the gateway rejected " + unauthorized
-                    + " buyer tokens (expired, or load-test subjects not enabled)");
-                return 2;
-            }
 
             JsonNode integrity = api.integrity(cfg.eventId());
             LoadTestReport report = new LoadTestReport(startedAt, cfg.users(), cfg.eventId(),
@@ -122,13 +125,22 @@ public final class LoadTestMain {
             // Show the result and save the local files first: a failing publish must not lose a finished run.
             out.println(ReportWriter.markdown(report));
             writeFiles(cfg.outDir(), report, out, err);
+            if (unauthorized > 0) {
+                err.println("ERROR: the gateway rejected " + unauthorized
+                    + " buyer tokens (expired, or load-test subjects not enabled)");
+            }
+            boolean published = true;
             try {
                 api.putReport(ReportWriter.json(report));
             } catch (RuntimeException e) {
+                published = false;
                 err.println("ERROR: the report could not be sent to the Ops page: " + e.getMessage());
-                return 2;
             }
-            return report.passed() ? 0 : 1;
+            // A failed verdict always wins (1); otherwise any auth or publishing problem is a setup problem (2).
+            if (!report.passed()) {
+                return 1;
+            }
+            return unauthorized > 0 || !published ? 2 : 0;
         }
     }
 

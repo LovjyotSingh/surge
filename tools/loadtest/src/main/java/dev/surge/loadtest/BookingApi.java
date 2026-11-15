@@ -135,10 +135,12 @@ public final class BookingApi implements AutoCloseable {
                 String userId = t.get("userId").asString();
                 String token = t.get("token").asString();
                 if (userId.isBlank() || token.isBlank()) {
-                    throw new IllegalArgumentException("blank");
+                    throw new SetupException("minting test tokens failed (malformed response)");
                 }
                 out.add(new TestToken(userId, token));
             }
+        } catch (SetupException e) {
+            throw e;
         } catch (RuntimeException e) {
             throw new SetupException("minting test tokens failed (malformed response)");
         }
