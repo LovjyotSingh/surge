@@ -3,6 +3,7 @@ package dev.surge.notification.messaging;
 import com.rabbitmq.client.Channel;
 import com.rabbitmq.client.Connection;
 import com.rabbitmq.client.GetResponse;
+import com.rabbitmq.client.ShutdownSignalException;
 import dev.surge.common.messaging.MessageTypes;
 import dev.surge.notification.error.ReplayFailedException;
 import java.io.IOException;
@@ -11,6 +12,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.connection.CachingConnectionFactory;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Component;
@@ -18,7 +21,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
-& {@code tickets.dlq} and moving messages back. Both use {@code basicGet} with manual acks, so a
+ * Looking into {@code tickets.dlq} and moving messages back. Both use {@code basicGet} with manual acks, so a
  * message is only ever removed after it has been safely handled.
  *
  * <p>Listing takes up to N messages without acknowledging them and then {@code nack}s them with requeue, which
@@ -30,6 +33,7 @@ import tools.jackson.databind.json.JsonMapper;
 @Component
 public class DlqOperations {
 
+    private static final Logger log = LoggerFactory.getLogger(DlqOperations.class);
     private static final JsonMapper JSON = JsonMapper.builder().build();
     private static final long CONFIRM_TIMEOUT_MILLIS = 5_000;
 
@@ -51,6 +55,7 @@ public class DlqOperations {
         if (!(rabbit.getConnectionFactory() instanceof CachingConnectionFactory caching)) {
             throw new IllegalStateException("Expected a CachingConnectionFactory");
         }
+        // The raw connection uses the first configured address only: fine for the single-broker setup.
         return caching.getRabbitConnectionFactory().newConnection("notification-dlq-admin");
     }
 
@@ -95,13 +100,22 @@ public class DlqOperations {
      * Republishes up to {@code limit} messages (body and headers kept) to {@code surge.tickets} with the original
      * routing key. The DLQ copy is acked only when the broker confirmed the publish AND no {@code basic.return}
      * came back: for an unroutable mandatory message RabbitMQ sends the return first and then still acks, so a
-     * confirm alone proves nothing. Any failure after the message was taken (return, broker nack, confirm timeout,
-     * dead channel, any runtime error) puts it back in the DLQ and fails the call with {@link ReplayFailedException}:
-     * nothing is lost, the broker or its topology is unhealthy.
+     * confirm alone proves nothing. A broker or channel failure (return, broker nack, confirm timeout, closed
+     * channel, I/O error, interrupt) puts the message back in the DLQ and fails the call with
+     * {@link ReplayFailedException}: nothing is lost, the broker or its topology is unhealthy. Any other runtime
+     * exception is a bug: the message is requeued and the exception is rethrown unchanged.
      */
     public int replay(int limit) {
+        Connection connection;
+        Channel channel;
+        try {
+            connection = dedicatedConnection();
+            channel = openChannel(connection);
+        } catch (IOException | TimeoutException | ShutdownSignalException e) {
+            throw replayFailed("Could not reach the broker; nothing was replayed", 0, e);
+        }
         int replayed = 0;
-        try (Connection connection = dedicatedConnection(); Channel channel = connection.createChannel()) {
+        try {
             AtomicBoolean returned = new AtomicBoolean();
             channel.addReturnListener((code, text, exchange, key, props, body) -> returned.set(true));
             channel.confirmSelect();
@@ -118,28 +132,69 @@ public class DlqOperations {
                     channel.waitForConfirmsOrDie(CONFIRM_TIMEOUT_MILLIS);
                     // The return is delivered before the confirm on the same channel, so the flag is final here.
                     if (returned.get()) {
-                        throw new ReplayFailedException(
-                                "The ticket queue is not reachable (message was returned unroutable)", replayed);
+                        requeue(channel, tag);
+                        throw replayFailed("The ticket queue is not reachable (message was returned unroutable); "
+                                + "the message is still in tickets.dlq", replayed, null);
                     }
                     channel.basicAck(tag, false);
-                } catch (ReplayFailedException e) {
-                    requeue(channel, tag);
-                    throw e;
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     requeue(channel, tag);
-                    throw new ReplayFailedException("Interrupted while replaying", replayed);
-                } catch (IOException | TimeoutException | RuntimeException e) {
+                    throw replayFailed("Interrupted while replaying; the message is still in tickets.dlq", replayed, e);
+                } catch (TimeoutException e) {
                     requeue(channel, tag);
-                    throw new ReplayFailedException("The broker did not confirm the replay (" + e.getMessage() + ")",
-                            replayed);
+                    throw replayFailed("The broker confirm timed out; the message is still in tickets.dlq",
+                            replayed, e);
+                } catch (IOException | ShutdownSignalException e) {
+                    requeue(channel, tag);
+                    throw replayFailed("The broker did not confirm the replay (" + describe(e)
+                            + "); the message is still in tickets.dlq", replayed, e);
+                } catch (RuntimeException e) {
+                    if (e instanceof ReplayFailedException) {
+                        throw e;
+                    }
+                    requeue(channel, tag);
+                    throw e;
                 }
                 replayed++;
             }
-        } catch (IOException | TimeoutException e) {
-            throw new ReplayFailedException("Could not reach the broker (" + e.getMessage() + ")", replayed);
+        } catch (IOException | ShutdownSignalException e) {
+            // Channel setup or basicGet failed: nothing was taken, so there is nothing to requeue.
+            throw replayFailed("The broker connection failed before the next message was taken", replayed, e);
+        } finally {
+            closeQuietly(channel, connection);
         }
         return replayed;
+    }
+
+    private static Channel openChannel(Connection connection) throws IOException {
+        return connection.createChannel();
+    }
+
+    /** Logs once, with the stack trace, and returns the exception to throw. */
+    private static ReplayFailedException replayFailed(String detail, int replayed, Throwable cause) {
+        ReplayFailedException failure = new ReplayFailedException(detail, replayed, cause);
+        log.warn("DLQ replay failed: {}", failure.getMessage(), cause);
+        return failure;
+    }
+
+    /** Never null, even for exceptions without a message. */
+    private static String describe(Throwable t) {
+        return t.getMessage() == null ? t.getClass().getSimpleName() : t.getClass().getSimpleName() + ": " + t.getMessage();
+    }
+
+    /** A close failure after the work is done must not turn a successful replay into an error. */
+    private static void closeQuietly(Channel channel, Connection connection) {
+        try {
+            channel.close();
+        } catch (IOException | TimeoutException | RuntimeException e) {
+            log.warn("Could not close the DLQ admin channel", e);
+        }
+        try {
+            connection.close();
+        } catch (IOException | RuntimeException e) {
+            log.warn("Could not close the DLQ admin connection", e);
+        }
     }
 
     private static DlqMessage describe(GetResponse response) {

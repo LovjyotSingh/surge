@@ -1,9 +1,12 @@
 package dev.surge.notification.error;
 
-/** A dead-lettered message could not be put back on the ticket queue (unroutable or not confirmed). It stays in the DLQ. */
+/**
+ * A replay could not be completed because the broker or its topology is unhealthy. Nothing is lost: the detail
+ * says where the message in question is. The cause (when there is one) is kept for the log.
+ */
 public class ReplayFailedException extends RuntimeException {
 
-    public ReplayFailedException(String message, int replayedBefore) {
-        super(message + " (" + replayedBefore + " replayed before the failure; the failed message is still in tickets.dlq)");
+    public ReplayFailedException(String detail, int replayedBefore, Throwable cause) {
+        super(detail + "; " + replayedBefore + " message(s) were replayed before this", cause);
     }
 }

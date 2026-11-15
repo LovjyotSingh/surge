@@ -158,7 +158,8 @@ class TicketWorkflowTest extends TicketTestBase {
 
         bodies.forEach(this::publishRaw);
         // A body that is not JSON by content type: the spring-messaging conversion error, never reaches the workflow.
-        rabbit.send("surge.tickets", "ticket.requested", org.springframework.amqp.core.MessageBuilder
+        rabbit.send(dev.surge.common.messaging.MessageTypes.TICKETS_EXCHANGE,
+                dev.surge.common.messaging.MessageTypes.TICKET_REQUESTED_KEY, org.springframework.amqp.core.MessageBuilder
                 .withBody("plain text, not a ticket".getBytes()).setContentType("text/plain").build());
 
         // A retry would take 1 s + 2 s per message: all of them being dead-lettered fast means none was retried.
