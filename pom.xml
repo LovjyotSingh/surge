@@ -17,6 +17,11 @@
     <properties>
         <java.version>25</java.version>
         <springdoc.version>3.0.3</springdoc.version>
+
+        <!-- S9b: security overrides of Spring Boot managed versions (see docs/security/accepted-risks.md) -->
+        <rabbit-amqp-client.version>5.37.1</rabbit-amqp-client.version>
+        <httpcore5.version>5.4.3</httpcore5.version>
+        <httpclient5.version>5.6.3</httpclient5.version>
     </properties>
 
     <modules>
@@ -35,6 +40,27 @@
 
     <dependencyManagement>
         <dependencies>
+            <!-- S9b: not managed by the Boot BOM; pinned here, declared before the BOM imports. -->
+            <dependency>
+                <groupId>org.xerial.snappy</groupId>
+                <artifactId>snappy-java</artifactId>
+                <version>1.1.10.9</version>
+            </dependency>
+            <dependency>
+                <groupId>at.yawk.lz4</groupId>
+                <artifactId>lz4-java</artifactId>
+                <version>1.11.4</version>
+            </dependency>
+            <dependency>
+                <groupId>com.google.guava</groupId>
+                <artifactId>guava</artifactId>
+                <version>33.7.2-jre</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.httpcomponents</groupId>
+                <artifactId>httpclient</artifactId>
+                <version>4.5.14</version>
+            </dependency>
             <dependency>
                 <groupId>org.springframework.cloud</groupId>
                 <artifactId>spring-cloud-dependencies</artifactId>
