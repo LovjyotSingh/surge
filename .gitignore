@@ -7,3 +7,5 @@ dist/
 .superpowers/
 reports/*
 !reports/.gitkeep
+/audit/
+/notification-service/audit/

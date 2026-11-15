@@ -39,7 +39,7 @@ public class DlqController {
     }
 
     /** The exact token ADMIN in a comma-separated list; "SUPERADMIN" or "admin" do not count. */
-    static void requireAdmin(String roles) {
+    public static void requireAdmin(String roles) {
         if (roles != null) {
             for (String role : roles.split(",")) {
                 if (role.trim().equals("ADMIN")) {

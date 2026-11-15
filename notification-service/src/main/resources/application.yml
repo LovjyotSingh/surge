@@ -30,6 +30,11 @@ spring:
           max-retries: 2
           initial-interval: 1s
           multiplier: 2
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    producer:
+      # Only used to dead-letter poison audit records (orders.v1.audit.DLT).
+      acks: all
   mail:
     host: ${MAIL_HOST:localhost}
     port: ${MAIL_PORT:1025}
@@ -57,6 +62,8 @@ surge:
     access-key: ${S3_ACCESS_KEY:surge-local}
     secret-key: ${S3_SECRET_KEY:surge-local}
   notification:
+    # Daily orders-YYYY-MM-DD.jsonl files (IST dates). In compose this must be a mounted volume to survive restarts.
+    audit-dir: ${AUDIT_DIR:./audit}
     # Where the download link in the email points (the web front door, nginx on 8080).
     public-base-url: ${PUBLIC_BASE_URL:http://localhost:8080}
   clients:

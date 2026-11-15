@@ -1,8 +1,8 @@
 package dev.surge.notification.ticket;
 
 import jakarta.persistence.Column;
+import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.Instant;
 
@@ -11,22 +11,24 @@ import java.time.Instant;
 @Table(name = "processed_message")
 public class ProcessedMessage {
 
-    @Id
-    @Column(name = "message_id", length = 36)
-    private String messageId;
-    private String consumer;
+    @EmbeddedId
+    private ProcessedMessageId id;
     @Column(name = "processed_at")
     private Instant processedAt;
 
     protected ProcessedMessage() {
     }
 
+    public ProcessedMessageId getId() {
+        return id;
+    }
+
     public String getMessageId() {
-        return messageId;
+        return id.messageId();
     }
 
     public String getConsumer() {
-        return consumer;
+        return id.consumer();
     }
 
     public Instant getProcessedAt() {
