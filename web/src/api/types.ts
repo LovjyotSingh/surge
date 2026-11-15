@@ -112,3 +112,78 @@ export interface Problem {
   requestId?: string
   [k: string]: unknown
 }
+
+/** The auth service's view of a user; `roles` is a list such as `["USER"]` or `["ADMIN"]`. */
+export interface UserView {
+  id: string
+  email: string
+  displayName: string
+  roles: string[]
+}
+
+export interface TokenResponse {
+  token: string
+  expiresAt: string
+  user: UserView
+}
+
+/** An event as the catalog describes it (list, detail and search share this shape). */
+export interface CatalogEvent {
+  id: number
+  title: string
+  artist: string | null
+  category: string
+  venueName: string
+  city: string
+  zoneId: string
+  startsAt: string
+  saleOpensAt: string
+  minPriceInr: number
+  maxPriceInr: number
+  totalSeats: number
+  seatsLeft: number
+  description: string | null
+}
+
+export interface CatalogPage {
+  content: CatalogEvent[]
+  page: number
+  size: number
+  totalElements: number
+  totalPages: number
+}
+
+export interface SearchPage {
+  items: CatalogEvent[]
+  /** Every match, not just this page. */
+  total: number
+  page: number
+  size: number
+}
+
+export interface SearchParams {
+  q?: string
+  city?: string
+  category?: string
+  /** ISO instant. */
+  from?: string
+  /** ISO instant. */
+  to?: string
+  maxPrice?: string
+  page?: number
+  size?: number
+}
+
+/** failureRate and errorRate are fractions from 0 to 1; latencyMs is 0 to 10000. */
+export interface Chaos {
+  failureRate: number
+  latencyMs: number
+  errorRate: number
+}
+
+export interface DlqMessage {
+  messageId: string
+  orderId: number | null
+  deaths: number
+  reason: string
+}

@@ -1,9 +1,12 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, api } from '../api/client'
-import type { EventDetail, Problem } from '../api/types'
+import type { CatalogEvent, EventDetail, Problem } from '../api/types'
+import { AuthProvider } from '../auth/AuthContext'
+import { clearSession } from '../auth/session'
+import { signIn } from '../test-utils'
 import EventPage from './EventPage'
 
 vi.mock('../hooks/useSeatStream', () => ({ default: vi.fn() }))
@@ -11,7 +14,7 @@ vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>()
   return {
     ...actual,
-    api: { event: vi.fn(), hold: vi.fn(), checkout: vi.fn() },
+    api: { event: vi.fn(), catalogEvent: vi.fn(), hold: vi.fn(), checkout: vi.fn(), fetchTicket: vi.fn() },
   }
 })
 
@@ -42,14 +45,39 @@ function problem(slug: string, status: number): Problem {
   return { type: `https://surge.dev/problems/${slug}`, title: slug, status }
 }
 
-function renderPage() {
+function Where() {
+  const loc = useLocation()
+  return <p data-testid="where">{loc.pathname + loc.search}</p>
+}
+
+function renderPage(path = '/events/1') {
   return render(
-    <MemoryRouter initialEntries={['/events/1']}>
-      <Routes>
-        <Route path="/events/:id" element={<EventPage />} />
-      </Routes>
+    <MemoryRouter initialEntries={[path]}>
+      <AuthProvider>
+        <Routes>
+          <Route path="/events/:id" element={<EventPage />} />
+          <Route path="*" element={<Where />} />
+        </Routes>
+      </AuthProvider>
     </MemoryRouter>,
   )
+}
+
+const catalogEvent: CatalogEvent = {
+  id: 1,
+  title: 'Coldplay: Music of the Spheres',
+  artist: 'Coldplay',
+  category: 'concert',
+  venueName: 'Wankhede Stadium',
+  city: 'Mumbai',
+  zoneId: 'Asia/Kolkata',
+  startsAt: '2026-12-05T14:00:00Z',
+  saleOpensAt: '2026-11-01T04:30:00Z',
+  minPriceInr: 1800,
+  maxPriceInr: 9000,
+  totalSeats: 3,
+  seatsLeft: 3,
+  description: '',
 }
 
 // The quote (1800, an early-bird price) differs from the seat's base price (2000) on purpose: the Pay button must
@@ -70,7 +98,16 @@ async function pickSeatAndHold(user: ReturnType<typeof userEvent.setup>) {
 
 beforeEach(() => {
   vi.resetAllMocks()
+  signIn()
   mocked.event.mockResolvedValue(detail(past()))
+  mocked.catalogEvent.mockResolvedValue(catalogEvent)
+  mocked.fetchTicket.mockResolvedValue(null)
+  vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: () => 'blob:t', revokeObjectURL: () => {} }))
+})
+afterEach(() => {
+  vi.unstubAllGlobals()
+  clearSession()
+  sessionStorage.clear()
 })
 
 describe('EventPage', () => {
@@ -102,7 +139,49 @@ describe('EventPage', () => {
     const [first, second] = mocked.checkout.mock.calls
     expect(first[0]).toBe('h-1')
     expect(first[1]).toBeTruthy()
-    expect(second[1]).toBe(first[1])
+    // A declined payment retires the key: the retry is a new attempt, not a replay of the declined one.
+    expect(second[1]).toBeTruthy()
+    expect(second[1]).not.toBe(first[1])
+    expect(await screen.findByText('Preparing your ticket…')).toBeInTheDocument()
+    expect(mocked.fetchTicket).toHaveBeenCalledWith(42)
+  })
+
+  it('reuses the key when a checkout is retried after a network error', async () => {
+    const user = userEvent.setup()
+    mocked.hold.mockResolvedValue(hold)
+    mocked.checkout
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce({ orderId: 42, eventId: 1, status: 'CONFIRMED', totalInr: 1800, lines: [], createdAt: '' })
+    renderPage()
+    await pickSeatAndHold(user)
+    const pay = await screen.findByRole('button', { name: 'Pay ₹1800' })
+    await user.click(pay)
+    await screen.findByText('Something went wrong — please try again.')
+    await user.click(pay)
+    await screen.findByText('Booked! Order #42 — ₹1800')
+    const [first, second] = mocked.checkout.mock.calls
+    expect(second[1]).toBe(first[1]) // the first attempt may have succeeded: replay, do not double-charge
+  })
+
+  it('shows title and venue from the catalog', async () => {
+    renderPage()
+    expect(await screen.findByRole('heading', { name: 'Coldplay: Music of the Spheres' })).toBeInTheDocument()
+    expect(screen.getByText(/Wankhede Stadium · Mumbai/)).toBeInTheDocument()
+  })
+
+  it('falls back to the booking title when the catalog is unavailable', async () => {
+    mocked.catalogEvent.mockRejectedValue(new TypeError('Failed to fetch'))
+    renderPage()
+    expect(await screen.findByRole('heading', { name: 'Coldplay Live' })).toBeInTheDocument()
+  })
+
+  it('sends a logged-out visitor to login instead of holding', async () => {
+    clearSession()
+    const user = userEvent.setup()
+    renderPage()
+    await pickSeatAndHold(user)
+    expect(await screen.findByTestId('where')).toHaveTextContent('/login?next=/events/1')
+    expect(mocked.hold).not.toHaveBeenCalled()
   })
 
   it('keeps hold after payment failure', async () => {
@@ -179,13 +258,7 @@ describe('EventPage', () => {
   })
 
   it('shows not found for a non-numeric id without fetching', () => {
-    render(
-      <MemoryRouter initialEntries={['/events/abc']}>
-        <Routes>
-          <Route path="/events/:id" element={<EventPage />} />
-        </Routes>
-      </MemoryRouter>,
-    )
+    renderPage('/events/abc')
     expect(screen.getByText('Event not found.')).toBeInTheDocument()
     expect(mocked.event).not.toHaveBeenCalled()
   })

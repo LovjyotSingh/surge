@@ -6,7 +6,8 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   plugins: [react()],
   server: {
-    proxy: { '/api': 'http://localhost:8081' },
+    // Everything goes through the gateway, which authenticates and routes (SSE streams pass through unbuffered).
+    proxy: { '/api': { target: 'http://localhost:8085', changeOrigin: true } },
   },
   test: {
     environment: 'jsdom',

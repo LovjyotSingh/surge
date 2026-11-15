@@ -1,9 +1,24 @@
 import { useEffect, useRef, useState } from 'react'
-import { api } from '../api/client'
-import type { EventSummary, IntegrityReport, LoadTestReport } from '../api/types'
+import { ApiError, api } from '../api/client'
+import type { CatalogEvent, DlqMessage, IntegrityReport, LoadTestReport } from '../api/types'
 import { GENERIC_ERROR } from '../format'
 
 type Report = LoadTestReport | null | undefined // undefined = loading
+
+const DLQ_LIMIT = 100 // the most the API returns or replays in one call
+const CHAOS_ERROR = 'Rates are 0 to 100 and latency is 0 to 10000 ms.'
+
+/** 0.07 * 100 is 7.000000000000001: show what the admin would type. */
+const pct = (fraction: number) => String(Number((fraction * 100).toFixed(2)))
+
+function parseChaos(failurePct: string, latency: string, errorPct: string) {
+  const rate = (text: string) => (/^\d+(\.\d+)?$/.test(text.trim()) && Number(text) <= 100 ? Number(text) / 100 : null)
+  const failureRate = rate(failurePct)
+  const errorRate = rate(errorPct)
+  const latencyMs = /^\d+$/.test(latency.trim()) ? Number(latency) : null
+  if (failureRate === null || errorRate === null || latencyMs === null || latencyMs > 10_000) return null
+  return { failureRate, latencyMs, errorRate }
+}
 
 // Both profiles: the loadtest service depends on web, which lives in the core profile.
 const LOADTEST_COMMAND =
@@ -15,7 +30,7 @@ function passed(r: LoadTestReport): boolean {
 }
 
 export default function OpsPage() {
-  const [events, setEvents] = useState<EventSummary[]>([])
+  const [events, setEvents] = useState<CatalogEvent[]>([])
   const [eventId, setEventId] = useState<number | null>(null)
   const [integrity, setIntegrity] = useState<IntegrityReport | null>(null)
   const [report, setReport] = useState<Report>(undefined)
@@ -27,14 +42,89 @@ export default function OpsPage() {
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  const [failurePct, setFailurePct] = useState('')
+  const [latency, setLatency] = useState('')
+  const [errorPct, setErrorPct] = useState('')
+  const [chaosLoaded, setChaosLoaded] = useState(false)
+  const [chaosError, setChaosError] = useState<string | null>(null)
+  const [chaosMessage, setChaosMessage] = useState<string | null>(null)
+  const [chaosSaving, setChaosSaving] = useState(false)
+
+  const [dlq, setDlq] = useState<DlqMessage[] | null>(null)
+  const [dlqError, setDlqError] = useState<string | null>(null)
+  const [dlqMessage, setDlqMessage] = useState<string | null>(null)
+  const [replaying, setReplaying] = useState(false)
+
   useEffect(() => {
     let cancelled = false
     api
-      .events()
-      .then((list) => {
+      .chaos()
+      .then((c) => {
         if (cancelled) return
-        setEvents(list)
-        setEventId((cur) => cur ?? list[0]?.id ?? null)
+        setFailurePct(pct(c.failureRate))
+        setLatency(String(c.latencyMs))
+        setErrorPct(pct(c.errorRate))
+        setChaosLoaded(true)
+      })
+      .catch(() => {
+        if (!cancelled) setChaosError(GENERIC_ERROR)
+      })
+    api
+      .dlq(DLQ_LIMIT)
+      .then((list) => {
+        if (!cancelled) setDlq(list)
+      })
+      .catch(() => {
+        if (!cancelled) setDlqError(GENERIC_ERROR)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const saveChaos = async () => {
+    setChaosMessage(null)
+    const chaos = parseChaos(failurePct, latency, errorPct)
+    if (!chaos) {
+      setChaosError(CHAOS_ERROR)
+      return
+    }
+    setChaosError(null)
+    setChaosSaving(true)
+    try {
+      await api.setChaos(chaos)
+      setChaosMessage('Chaos settings saved.')
+    } catch {
+      setChaosError(GENERIC_ERROR)
+    } finally {
+      setChaosSaving(false)
+    }
+  }
+
+  const replay = async () => {
+    setDlqMessage(null)
+    setDlqError(null)
+    setReplaying(true)
+    try {
+      const { replayed } = await api.replayDlq(DLQ_LIMIT)
+      setDlqMessage(`Replayed ${replayed} ${replayed === 1 ? 'message' : 'messages'}.`)
+      setDlq(await api.dlq(DLQ_LIMIT))
+    } catch (err) {
+      const failed = err instanceof ApiError && err.problem.type.endsWith('/replay-failed')
+      setDlqError(failed && err.problem.detail ? err.problem.detail : GENERIC_ERROR)
+    } finally {
+      setReplaying(false)
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    api
+      .catalogEvents()
+      .then((page) => {
+        if (cancelled) return
+        setEvents(page.content)
+        setEventId((cur) => cur ?? page.content[0]?.id ?? null)
       })
       .catch(() => {
         if (!cancelled) setError(GENERIC_ERROR)
@@ -210,6 +300,93 @@ export default function OpsPage() {
         {message && (
           <p role="status" className="notice success">
             {message}
+          </p>
+        )}
+      </section>
+
+      <section className="card" aria-label="Payment chaos">
+        <h3>Payment chaos</h3>
+        <label className="field">
+          Failure rate (%)
+          <input
+            type="number"
+            min={0}
+            max={100}
+            step="any"
+            value={failurePct}
+            disabled={!chaosLoaded}
+            onChange={(e) => setFailurePct(e.target.value)}
+          />
+        </label>
+        <label className="field">
+          Latency (ms)
+          <input
+            type="number"
+            min={0}
+            max={10000}
+            inputMode="numeric"
+            value={latency}
+            disabled={!chaosLoaded}
+            onChange={(e) => setLatency(e.target.value)}
+          />
+        </label>
+        <label className="field">
+          Error rate (%)
+          <input
+            type="number"
+            min={0}
+            max={100}
+            step="any"
+            value={errorPct}
+            disabled={!chaosLoaded}
+            onChange={(e) => setErrorPct(e.target.value)}
+          />
+        </label>
+        {chaosError && (
+          <p role="alert" className="field-error">
+            {chaosError}
+          </p>
+        )}
+        <button type="button" className="primary" disabled={!chaosLoaded || chaosSaving} onClick={saveChaos}>
+          Save chaos settings
+        </button>
+        {chaosMessage && (
+          <p role="status" className="notice success">
+            {chaosMessage}
+          </p>
+        )}
+      </section>
+
+      <section className="card" aria-label="Dead letters">
+        <h3>Dead letters</h3>
+        {dlq === null ? (
+          <p className="muted">{dlqError ? 'No data.' : 'Loading…'}</p>
+        ) : (
+          <>
+            <p>
+              Dead letters: {dlq.length}
+              {dlq.length >= DLQ_LIMIT ? '+' : ''}
+            </p>
+            <ul className="plain">
+              {dlq.slice(0, 5).map((m) => (
+                <li key={m.messageId} className="muted">
+                  order {m.orderId ?? 'unknown'} · {m.reason}
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+        {dlqError && (
+          <p role="alert" className="field-error">
+            {dlqError}
+          </p>
+        )}
+        <button type="button" className="primary" disabled={replaying || !dlq?.length} onClick={replay}>
+          Replay dead letters
+        </button>
+        {dlqMessage && (
+          <p role="status" className="notice success">
+            {dlqMessage}
           </p>
         )}
       </section>

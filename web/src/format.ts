@@ -17,3 +17,13 @@ export function formatSaleTime(iso: string, zoneId: string): string {
 }
 
 export const GENERIC_ERROR = 'Something went wrong — please try again.'
+
+/** Rupee amount as the UI shows it everywhere: no grouping, no trailing zeros. */
+export function formatInr(amount: number): string {
+  return `₹${amount}`
+}
+
+export function seatsLeftText(n: number): string {
+  if (n <= 0) return 'Sold out'
+  return n === 1 ? '1 seat left' : `${n} seats left`
+}

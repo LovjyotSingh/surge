@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useParams } from 'react-router'
+import { useNavigate, useParams } from 'react-router'
 import { ApiError, api } from '../api/client'
-import type { EventDetail, HoldResponse, OrderResponse, SeatStateChange } from '../api/types'
+import type { CatalogEvent, EventDetail, HoldResponse, OrderResponse, SeatStateChange } from '../api/types'
+import { useAuth } from '../auth/context'
+import { loginPath } from '../auth/redirect'
 import Countdown from '../components/Countdown'
 import SeatMap from '../components/SeatMap'
-import { GENERIC_ERROR, formatSaleTime } from '../format'
+import TicketLink from '../components/TicketLink'
+import { GENERIC_ERROR, formatInr, formatSaleTime } from '../format'
 import useSeatStream from '../hooks/useSeatStream'
 
 type Notice = { kind: 'error' | 'info'; text: string }
@@ -51,8 +54,16 @@ export default function EventPage() {
   return <EventView key={eventId} eventId={eventId} />
 }
 
+/** The seat map is the booking service's; title and venue come from the catalog (the map's own copy is the fallback). */
+function fetchEvent(eventId: number): Promise<[EventDetail, CatalogEvent | null]> {
+  return Promise.all([api.event(eventId), api.catalogEvent(eventId).catch(() => null)])
+}
+
 function EventView({ eventId }: { eventId: number }) {
+  const { user } = useAuth()
+  const navigate = useNavigate()
   const [event, setEvent] = useState<EventDetail | null>(null)
+  const [catalog, setCatalog] = useState<CatalogEvent | null>(null)
   const [loadFailed, setLoadFailed] = useState(false)
   const [saleOpen, setSaleOpen] = useState(false)
   const [selected, setSelected] = useState<ReadonlySet<number>>(new Set())
@@ -64,10 +75,10 @@ function EventView({ eventId }: { eventId: number }) {
 
   const load = useCallback(
     () =>
-      api
-        .event(eventId)
-        .then((e) => {
+      fetchEvent(eventId)
+        .then(([e, c]) => {
           setEvent(e)
+          setCatalog((prev) => c ?? prev)
           setSaleOpen(new Date(e.saleOpensAt).getTime() <= Date.now())
           setLoadFailed(false)
         })
@@ -77,11 +88,11 @@ function EventView({ eventId }: { eventId: number }) {
 
   useEffect(() => {
     let cancelled = false
-    api
-      .event(eventId)
-      .then((e) => {
+    fetchEvent(eventId)
+      .then(([e, c]) => {
         if (cancelled) return
         setEvent(e)
+        setCatalog(c)
         setSaleOpen(new Date(e.saleOpensAt).getTime() <= Date.now())
         setLoadFailed(false)
       })
@@ -127,6 +138,10 @@ function EventView({ eventId }: { eventId: number }) {
   }
 
   const doHold = async () => {
+    if (!user) {
+      navigate(loginPath(`/events/${eventId}`))
+      return
+    }
     setBusy(true)
     setNotice(null)
     try {
@@ -157,6 +172,8 @@ function EventView({ eventId }: { eventId: number }) {
       setSelected(new Set())
     } catch (err) {
       setNotice(describe(err))
+      // A declined payment is a finished attempt: the next try must not replay it under the same key.
+      if (err instanceof ApiError && err.status === 402) idempotencyKey.current = crypto.randomUUID()
       // The hold is gone: it expired, or another order got the seats (the server released the hold).
       if (err instanceof ApiError && ['hold-not-found', 'seat-taken'].includes(slugOf(err))) {
         setHold(null)
@@ -194,9 +211,9 @@ function EventView({ eventId }: { eventId: number }) {
 
   return (
     <main>
-      <h2>{event.title}</h2>
+      <h2>{catalog?.title ?? event.title}</h2>
       <p className="muted">
-        {event.venueName} · Sale opens {formatSaleTime(event.saleOpensAt, event.zoneId)}
+        {catalog ? `${catalog.venueName} · ${catalog.city}` : event.venueName} · Sale opens {formatSaleTime(event.saleOpensAt, event.zoneId)}
       </p>
 
       {!saleOpen && (
@@ -215,16 +232,19 @@ function EventView({ eventId }: { eventId: number }) {
         )}
 
         {order ? (
-          <p role="status" className="notice success">
-            Booked! Order #{order.orderId} — ₹{order.totalInr}
-          </p>
+          <>
+            <p role="status" className="notice success">
+              Booked! Order #{order.orderId} — {formatInr(order.totalInr)}
+            </p>
+            <TicketLink orderId={order.orderId} />
+          </>
         ) : hold ? (
           <>
             <p>
               Seats held for you <Countdown target={hold.expiresAt} onDone={onHoldExpired} />
             </p>
             <button type="button" className="primary" disabled={busy} onClick={doPay}>
-              Pay ₹{hold.quotedTotalInr}
+              Pay {formatInr(hold.quotedTotalInr)}
             </button>
           </>
         ) : (

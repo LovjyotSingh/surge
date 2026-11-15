@@ -1,15 +1,24 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { api } from '../api/client'
-import type { LoadTestReport } from '../api/types'
+import { ApiError, api } from '../api/client'
+import type { CatalogEvent, LoadTestReport } from '../api/types'
 import OpsPage from './OpsPage'
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>()
   return {
     ...actual,
-    api: { events: vi.fn(), integrity: vi.fn(), latestReport: vi.fn(), reset: vi.fn() },
+    api: {
+      catalogEvents: vi.fn(),
+      integrity: vi.fn(),
+      latestReport: vi.fn(),
+      reset: vi.fn(),
+      chaos: vi.fn(),
+      setChaos: vi.fn(),
+      dlq: vi.fn(),
+      replayDlq: vi.fn(),
+    },
   }
 })
 
@@ -35,17 +44,26 @@ const report: LoadTestReport = {
 
 beforeEach(() => {
   vi.resetAllMocks()
-  mocked.events.mockResolvedValue([
-    {
-      id: 1,
-      title: 'Coldplay Live',
-      venueName: 'Wankhede',
-      zoneId: 'Asia/Kolkata',
-      saleOpensAt: '2026-11-20T10:00:00Z',
-      totalSeats: 500,
-      soldSeats: 500,
-    },
-  ])
+  const ev: CatalogEvent = {
+    id: 1,
+    title: 'Coldplay Live',
+    artist: 'Coldplay',
+    category: 'concert',
+    venueName: 'Wankhede',
+    city: 'Mumbai',
+    zoneId: 'Asia/Kolkata',
+    startsAt: '2026-12-05T14:00:00Z',
+    saleOpensAt: '2026-11-20T10:00:00Z',
+    minPriceInr: 1800,
+    maxPriceInr: 9000,
+    totalSeats: 500,
+    seatsLeft: 0,
+    description: '',
+  }
+  mocked.catalogEvents.mockResolvedValue({ content: [ev], page: 0, size: 100, totalElements: 1, totalPages: 1 })
+  mocked.chaos.mockResolvedValue({ failureRate: 0.25, latencyMs: 150, errorRate: 0.05 })
+  mocked.setChaos.mockResolvedValue(undefined)
+  mocked.dlq.mockResolvedValue([])
   mocked.integrity.mockResolvedValue({
     eventId: 1,
     totalSeats: 500,
@@ -128,5 +146,72 @@ describe('OpsPage', () => {
     finish()
     expect(await screen.findByText('Event reset.')).toBeInTheDocument()
     await waitFor(() => expect(mocked.integrity).toHaveBeenCalledTimes(2))
+  })
+
+  it('shows chaos settings as percentages and saves edits', async () => {
+    const user = userEvent.setup()
+    mocked.latestReport.mockResolvedValue(null)
+    render(<OpsPage />)
+    const failure = await screen.findByLabelText('Failure rate (%)')
+    await waitFor(() => expect(failure).toHaveValue(25))
+    expect(screen.getByLabelText('Latency (ms)')).toHaveValue(150)
+    expect(screen.getByLabelText('Error rate (%)')).toHaveValue(5)
+
+    await user.clear(failure)
+    await user.type(failure, '40')
+    await user.clear(screen.getByLabelText('Latency (ms)'))
+    await user.type(screen.getByLabelText('Latency (ms)'), '800')
+    await user.click(screen.getByRole('button', { name: 'Save chaos settings' }))
+    expect(await screen.findByText('Chaos settings saved.')).toBeInTheDocument()
+    expect(mocked.setChaos).toHaveBeenCalledWith({ failureRate: 0.4, latencyMs: 800, errorRate: 0.05 })
+  })
+
+  it('rejects out-of-range chaos values without calling the API', async () => {
+    const user = userEvent.setup()
+    mocked.latestReport.mockResolvedValue(null)
+    render(<OpsPage />)
+    const failure = await screen.findByLabelText('Failure rate (%)')
+    await waitFor(() => expect(failure).toHaveValue(25))
+    await user.clear(failure)
+    await user.type(failure, '150')
+    await user.click(screen.getByRole('button', { name: 'Save chaos settings' }))
+    expect(await screen.findByText(/Rates are 0 to 100 and latency is 0 to 10000/)).toBeInTheDocument()
+    expect(mocked.setChaos).not.toHaveBeenCalled()
+  })
+
+  it('shows the dead-letter count and replays', async () => {
+    const user = userEvent.setup()
+    mocked.latestReport.mockResolvedValue(null)
+    mocked.dlq
+      .mockResolvedValueOnce([
+        { messageId: 'm1', orderId: 11, deaths: 3, reason: 'smtp down' },
+        { messageId: 'm2', orderId: 12, deaths: 3, reason: 'smtp down' },
+      ])
+      .mockResolvedValueOnce([])
+    mocked.replayDlq.mockResolvedValue({ replayed: 2 })
+    render(<OpsPage />)
+    expect(await screen.findByText('Dead letters: 2')).toBeInTheDocument()
+    expect(screen.getByText(/order 11/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Replay dead letters' }))
+    expect(await screen.findByText('Replayed 2 messages.')).toBeInTheDocument()
+    expect(mocked.replayDlq).toHaveBeenCalledWith(100)
+    expect(await screen.findByText('Dead letters: 0')).toBeInTheDocument()
+  })
+
+  it('shows the problem detail when a replay fails', async () => {
+    const user = userEvent.setup()
+    mocked.latestReport.mockResolvedValue(null)
+    mocked.dlq.mockResolvedValue([{ messageId: 'm1', orderId: 11, deaths: 3, reason: 'x' }])
+    mocked.replayDlq.mockRejectedValue(
+      new ApiError({
+        type: 'https://surge.dev/problems/replay-failed',
+        title: 'Replay failed',
+        status: 503,
+        detail: 'Broker connection refused',
+      }),
+    )
+    render(<OpsPage />)
+    await user.click(await screen.findByRole('button', { name: 'Replay dead letters' }))
+    expect(await screen.findByText('Broker connection refused')).toBeInTheDocument()
   })
 })
