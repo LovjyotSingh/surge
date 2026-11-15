@@ -17,7 +17,7 @@ const NO_FILTERS: Filters = { q: '', city: '', category: '', maxPrice: '', from:
 const CATEGORIES = ['concert', 'comedy', 'sports', 'theatre']
 const CITIES = ['Delhi', 'Dubai', 'Singapore']
 const DEBOUNCE_MS = 300
-const DATE_ORDER_ERROR = 'Start date must be before end date.'
+const DATE_ORDER_ERROR = 'Start date must be on or before end date.'
 
 function instant(day: string, time: string): string | undefined {
   const d = new Date(`${day}T${time}`) // local time: the day the user picked, in their zone
@@ -61,9 +61,13 @@ export default function SearchPage() {
   const dateOrderBad = filters.from !== '' && filters.to !== '' && filters.from > filters.to
 
   useEffect(() => {
-    const mine = ++generation.current
+    // A filter change invalidates anything in flight at once...
+    ++generation.current
     if (dateOrderBad) return
     const timer = setTimeout(() => {
+      // ...and the search itself starts a fresh generation, so a "Load more" clicked during the debounce window (it
+      // asks for the old filters' next page) can never be applied on top of this search's results.
+      const mine = ++generation.current
       setResults((r) => ({ ...r, status: 'loading' }))
       api
         .search(toParams(filters, 0))
@@ -170,7 +174,10 @@ export default function SearchPage() {
           <EventCard key={e.id} event={e} />
         ))}
       </ul>
-      {results.items.length > 0 && results.items.length < results.total && results.status !== 'loading' && (
+      {results.items.length > 0 &&
+        results.items.length < results.total &&
+        results.status !== 'loading' &&
+        results.filters === filters && (
         <button type="button" disabled={loadingMore} onClick={loadMore}>
           Load more
         </button>

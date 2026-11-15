@@ -25,6 +25,15 @@ function authErrorText(err: unknown, mode: AuthMode): string {
   return GENERIC_ERROR
 }
 
+/** Only errors about what was typed flag inputs; a 429 or a network failure is not the fields' fault. */
+function invalidFieldsFor(err: unknown, mode: AuthMode): ReadonlySet<Field> {
+  if (err instanceof ApiError) {
+    if (mode === 'login' && err.status === 401) return new Set<Field>(['email', 'password'])
+    if (mode === 'signup' && err.status === 409) return new Set<Field>(['email'])
+  }
+  return new Set<Field>()
+}
+
 /** One form for both pages: signup adds a name and a password-length check. */
 export default function AuthForm({ mode }: { mode: AuthMode }) {
   const { user, login, signup } = useAuth()
@@ -77,7 +86,7 @@ export default function AuthForm({ mode }: { mode: AuthMode }) {
       }
     } catch (err) {
       setError(authErrorText(err, mode))
-      setInvalid(new Set<Field>(['email', 'password']))
+      setInvalid(invalidFieldsFor(err, mode))
     } finally {
       setBusy(false)
     }

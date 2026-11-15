@@ -102,8 +102,10 @@ export default function OpsPage() {
     }
   }, [])
 
+  // Only a validation problem marks the inputs invalid; a failed load or save is not the fields' fault.
+  const chaosInvalid = chaosError === CHAOS_ERROR
   const chaosAria = {
-    'aria-invalid': chaosError !== null,
+    'aria-invalid': chaosInvalid,
     'aria-describedby': chaosError !== null ? 'chaos-error' : undefined,
   }
 

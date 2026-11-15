@@ -7,6 +7,9 @@ it.each([
   '/\\evil',
   '\\\\evil',
   '//evil',
+  '/.//evil.example',
+  '/..//evil.example',
+  '/././/evil.example',
   'https://evil',
   'javascript:alert(1)',
   '',
@@ -16,7 +19,15 @@ it.each([
 })
 
 it('rejects values decoded from the query string', () => {
-  for (const q of ['%2F%09%2Fevil.example', '/%09/evil.example', '/%0A/evil', '/%5Cevil', '%5C%5Cevil']) {
+  for (const q of [
+    '%2F%09%2Fevil.example',
+    '/%09/evil.example',
+    '/%0A/evil',
+    '/%5Cevil',
+    '%5C%5Cevil',
+    '/.%2E//evil.example',
+    '/%2E%2E//evil.example',
+  ]) {
     const next = new URLSearchParams(`next=${q}`).get('next')
     expect(safeNext(next)).toBe('/')
   }

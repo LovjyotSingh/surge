@@ -146,6 +146,17 @@ describe('SearchPage', () => {
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument()
   })
 
+  it('hides Load more as soon as the filters change, before the debounced search runs', async () => {
+    mocked.search
+      .mockResolvedValueOnce({ items: [hit()], total: 2, page: 0, size: 1 })
+      .mockReturnValueOnce(new Promise(() => {}))
+    renderPage()
+    await screen.findByRole('button', { name: 'Load more' })
+    // Still inside the 300 ms debounce window: a Load more here would ask for the OLD filters' next page.
+    fireEvent.change(screen.getByLabelText('City'), { target: { value: 'Dubai' } })
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument()
+  })
+
   it('disables Load more while it is loading', async () => {
     const user = userEvent.setup()
     mocked.search
@@ -165,7 +176,7 @@ describe('SearchPage', () => {
     mocked.search.mockClear()
     await user.type(screen.getByLabelText('From'), '2026-12-31')
     await user.type(screen.getByLabelText('To'), '2026-12-01')
-    expect(await screen.findByText('Start date must be before end date.')).toBeInTheDocument()
+    expect(await screen.findByText('Start date must be on or before end date.')).toBeInTheDocument()
     await new Promise((r) => setTimeout(r, 450))
     const sent = mocked.search.mock.calls.filter(([p]) => p.from && p.to)
     expect(sent).toHaveLength(0)

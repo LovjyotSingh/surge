@@ -17,6 +17,9 @@ export function safeNext(raw: string | null): string {
   try {
     const url = new URL(raw, window.location.origin)
     if (url.origin !== window.location.origin) return '/'
+    // Dot segments are normalised away by the parser, so "/.//evil.example" parses same-origin but its pathname is
+    // "//evil.example": a protocol-relative URL to another host. Never hand that back.
+    if (url.pathname.startsWith('//')) return '/'
     return url.pathname + url.search + url.hash
   } catch {
     return '/'
