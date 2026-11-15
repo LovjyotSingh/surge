@@ -19,17 +19,20 @@ public final class CurrentIdentity {
                 SecurityContextHolder.getContext().getAuthentication());
     }
 
-    /** The signed-in user's id; 401 {@code missing-user} for an anonymous or missing identity. */
+    /**
+     * The signed-in user's id, as stated by the gateway; 401 {@code missing-user} for an anonymous or missing
+     * identity, and for a service identity ({@code svc:*}), which is never a user.
+     */
     public static String requireUser() {
-        return get().filter(identity -> !identity.isAnonymous())
+        return get().filter(InternalIdentity::isUser)
                 .map(InternalIdentity::subject)
                 .orElseThrow(InternalIdentityException::missingUser);
     }
 
     /**
      * The identity of a signed-in user routed by the gateway with the exact {@code ADMIN} role. 401
-     * {@code missing-user} when there is no user; 403 {@code forbidden} for anyone else, including a service token
-     * that claims {@code ADMIN} and roles such as {@code admin} or {@code SUPERADMIN}.
+     * {@code missing-user} when there is no identity or it is anonymous; 403 {@code forbidden} for anyone else,
+     * including a service identity and roles such as {@code SUPERADMIN}.
      */
     public static InternalIdentity requireAdmin() {
         InternalIdentity identity = get().filter(i -> !i.isAnonymous())

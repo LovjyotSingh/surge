@@ -42,6 +42,10 @@ spring:
         max.block.ms: 5000
 
 surge:
+  # dev (default, local) or prod; SURGE_PUBLIC_DEPLOYMENT=true (prod overlay) refuses dev. Checked by common (SurgeEnv).
+  env: ${SURGE_ENV:dev}
+  security:
+    public-deployment: ${SURGE_PUBLIC_DEPLOYMENT:false}
   outbox:
     poll-interval: PT0.5S
     batch-size: 100

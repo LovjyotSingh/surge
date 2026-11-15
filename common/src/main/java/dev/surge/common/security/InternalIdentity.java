@@ -32,6 +32,14 @@ public record InternalIdentity(String issuer, String subject, Set<String> roles,
         return InternalTokens.GATEWAY.equals(issuer);
     }
 
+    /**
+     * A signed-in user's request, which only the gateway can state. A service identity ({@code svc:*}) is never a
+     * user, whatever its subject says.
+     */
+    public boolean isUser() {
+        return fromGateway() && !isAnonymous();
+    }
+
     /** Exact token match: {@code admin} or {@code SUPERADMIN} do not count as {@code ADMIN}. */
     public boolean hasRole(String role) {
         return roles.contains(role);
@@ -39,6 +47,6 @@ public record InternalIdentity(String issuer, String subject, Set<String> roles,
 
     /** A signed-in user's request routed by the gateway with the exact {@code ADMIN} role. */
     public boolean isGatewayAdmin() {
-        return fromGateway() && !isAnonymous() && hasRole(InternalTokens.ADMIN);
+        return isUser() && hasRole(InternalTokens.ADMIN);
     }
 }

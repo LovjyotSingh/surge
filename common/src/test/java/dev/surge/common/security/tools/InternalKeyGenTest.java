@@ -51,6 +51,14 @@ class InternalKeyGenTest {
 
         InternalKeyGen.generate(dir, true, false);
         assertThat(Files.readString(dir.resolve("gateway.jwk"))).isNotEqualTo(before);
+        // the replacement set is consistent (staged together) and the staging directory is gone
+        JWKSet jwks = JWKSet.parse(Files.readString(dir.resolve("internal-jwks.json")));
+        assertThat(jwks.getKeyByKeyId("gateway").computeThumbprint())
+                .isEqualTo(ECKey.parse(Files.readString(dir.resolve("gateway.jwk"))).computeThumbprint());
+        try (var entries = Files.list(dir)) {
+            assertThat(entries.map(p -> p.getFileName().toString()).toList()).containsExactlyInAnyOrder(
+                    "gateway.jwk", "booking.jwk", "notification.jwk", "internal-jwks.json");
+        }
     }
 
     @Test

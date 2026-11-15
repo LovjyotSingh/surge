@@ -23,8 +23,11 @@ public class InternalIdentityProperties {
     /** The name this service signs as ({@code gateway}, {@code svc:booking}, ...); unset = this service never signs. */
     private String issuer;
 
-    /** Issuers whose tokens this service accepts. */
-    private Set<String> allowedIssuers = new LinkedHashSet<>(InternalTokens.KNOWN_ISSUERS);
+    /**
+     * Issuers whose tokens this service accepts: the gateway only, by default. A service that receives
+     * service-to-service calls opts in explicitly, e.g. booking adds {@code svc:notification}.
+     */
+    private Set<String> allowedIssuers = new LinkedHashSet<>(Set.of(InternalTokens.GATEWAY));
 
     public boolean isEnforce() {
         return enforce;

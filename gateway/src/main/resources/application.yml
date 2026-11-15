@@ -34,6 +34,8 @@ surge:
     issuer: gateway
     signing-key-location: ${SURGE_INTERNAL_SIGNING_KEY:}
   security:
+    # The prod overlay sets SURGE_PUBLIC_DEPLOYMENT=true: then SURGE_ENV=dev refuses to start (common's SurgeEnv).
+    public-deployment: ${SURGE_PUBLIC_DEPLOYMENT:false}
     issuer: surge-auth
     # Synthetic load-test identities (sub "lt-*" or claim lt=true) are refused unless a loadtest overlay sets this.
     allow-loadtest-subjects: ${SURGE_ALLOW_LOADTEST_SUBJECTS:false}

@@ -1,7 +1,6 @@
 package dev.surge.common.security;
 
 import jakarta.servlet.DispatcherType;
-import java.time.Clock;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -46,7 +45,7 @@ public class InternalSecurityAutoConfiguration {
 
     @Bean
     InternalTokenVerifier internalTokenVerifier(InternalIdentityProperties properties, Environment environment,
-            ResourceLoader resourceLoader, ObjectProvider<Clock> clock) {
+            ResourceLoader resourceLoader) {
         String audience = environment.getProperty("spring.application.name");
         if (audience == null || audience.isBlank()) {
             throw new IllegalStateException("spring.application.name must be set: internal identity tokens are "
@@ -55,7 +54,7 @@ public class InternalSecurityAutoConfiguration {
         SurgeEnv env = SurgeEnv.from(environment);
         return new InternalTokenVerifier(
                 InternalKeys.loadVerificationKeys(properties.getJwksLocation(), env, resourceLoader),
-                properties.getAllowedIssuers(), audience, clock.getIfUnique(Clock::systemUTC));
+                properties.getAllowedIssuers(), audience);
     }
 
     /** Also a bean so Boot's resource-server and in-memory-user auto-configuration see a decoder and back off. */

@@ -53,6 +53,10 @@ spring:
           time_zone: UTC
 
 surge:
+  # dev (default, local) or prod; SURGE_PUBLIC_DEPLOYMENT=true (prod overlay) refuses dev. Checked by common (SurgeEnv).
+  env: ${SURGE_ENV:dev}
+  security:
+    public-deployment: ${SURGE_PUBLIC_DEPLOYMENT:false}
   s3:
     # Empty endpoint = real AWS. Locally this is Adobe S3Mock (compose: http://s3mock:9090).
     endpoint: ${S3_ENDPOINT:}

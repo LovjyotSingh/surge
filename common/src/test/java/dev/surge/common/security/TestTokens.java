@@ -1,6 +1,7 @@
 package dev.surge.common.security;
 
 import com.nimbusds.jose.JOSEException;
+import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.JWSSigner;
@@ -18,8 +19,13 @@ import java.util.Date;
 import java.util.List;
 import java.util.UUID;
 
-/** Builds keys and arbitrary (also deliberately broken) tokens for the internal-identity tests. */
+/**
+ * Builds keys and arbitrary (also deliberately broken) tokens for the internal-identity tests. Headers carry the
+ * right {@code typ} unless a test removes it, so each attack test fails for its own reason only.
+ */
 final class TestTokens {
+
+    static final JOSEObjectType TYPE = new JOSEObjectType(InternalTokens.TYPE);
 
     private TestTokens() {
     }
@@ -33,15 +39,20 @@ final class TestTokens {
         }
     }
 
-    /** A well-formed claim set: iss, aud, iat, exp, jti and roles [USER] for subject u-1. */
+    /** A well-formed gateway claim set: iss, aud, iat, exp, jti, rid and roles [USER] for subject u-1. */
     static JWTClaimsSet.Builder claims(String issuer, String audience, Instant issuedAt, Instant expiresAt) {
         return new JWTClaimsSet.Builder().issuer(issuer).audience(audience).subject("u-1")
                 .claim("roles", List.of("USER")).issueTime(Date.from(issuedAt)).expirationTime(Date.from(expiresAt))
                 .jwtID(UUID.randomUUID().toString()).claim("rid", "req-1");
     }
 
+    /** ES256 header with the internal {@code typ} and this {@code kid}. */
+    static JWSHeader.Builder header(String kid) {
+        return new JWSHeader.Builder(JWSAlgorithm.ES256).type(TYPE).keyID(kid);
+    }
+
     static String es256(ECKey key, String kid, JWTClaimsSet claims) {
-        return sign(new JWSHeader.Builder(JWSAlgorithm.ES256).keyID(kid).build(), claims, signer(key));
+        return sign(header(kid).build(), claims, signer(key));
     }
 
     static String sign(JWSHeader header, JWTClaimsSet claims, JWSSigner signer) {

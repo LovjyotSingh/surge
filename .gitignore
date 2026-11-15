@@ -9,3 +9,8 @@ reports/*
 !reports/.gitkeep
 /audit/
 /notification-service/audit/
+# Internal identity keys (docker/gen-internal-keys.sh) never go into git; only the labelled DEV keys do.
+*.jwk
+internal-jwks.json
+!common/src/main/resources/surge-dev-keys/*.jwk
+!common/src/main/resources/surge-dev-keys/internal-jwks.json

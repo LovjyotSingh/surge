@@ -1,5 +1,6 @@
 package dev.surge.gateway.security;
 
+import dev.surge.common.security.InternalTokens;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -10,11 +11,13 @@ import org.springframework.security.oauth2.jwt.Jwt;
  * Strict reading of the claims the gateway trusts. Anything malformed is treated as absent, never guessed at: a
  * {@code roles} claim that is not a JSON array grants nothing, a role that is not an exact upper-case token grants
  * nothing, and an {@code X-User-Id}/{@code X-User-Email} that downstream could not parse safely is never emitted.
+ * The user-id and role rules are common's ({@link InternalTokens#USER_ID}, {@link InternalTokens#ROLE}): exactly what
+ * the gateway accepts here is what it can sign into {@code X-Surge-Identity}, and services verify the same rules.
  */
 final class JwtClaims {
 
-    static final Pattern USER_ID = Pattern.compile("^[A-Za-z0-9_-]{1,64}$");
-    private static final Pattern ROLE = Pattern.compile("^[A-Z][A-Z_]{0,31}$");
+    static final Pattern USER_ID = InternalTokens.USER_ID;
+    private static final Pattern ROLE = InternalTokens.ROLE;
     private static final Pattern EMAIL = Pattern.compile("^[\\x21-\\x7E]{1,254}$");
 
     private JwtClaims() {

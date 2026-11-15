@@ -8,9 +8,11 @@ import com.nimbusds.jose.jwk.KeyUse;
 import com.nimbusds.jose.jwk.gen.ECKeyGenerator;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.PosixFileAttributeView;
@@ -25,9 +27,10 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * Generates the internal identity keys (run through {@code docker/gen-internal-keys.sh}):
  * {@code gateway.jwk}, {@code booking.jwk}, {@code notification.jwk} (private P-256 JWKs, {@code kid} = issuer name,
- * owner-only where the file system supports it) and {@code internal-jwks.json} (every public half). Existing files are
- * never overwritten unless {@code --force} is given; {@code --dev} labels the files DEV ONLY. Key material is written
- * to the files only, never to the console.
+ * owner-only where the file system supports POSIX permissions; on Windows they get the directory's default ACL) and
+ * {@code internal-jwks.json} (every public half). Existing files are never overwritten unless {@code --force} is given,
+ * and then all four are staged first and moved into place together; {@code --dev} labels the files DEV ONLY. Key
+ * material is written to the files only, never to the console.
  *
  * <pre>InternalKeyGen [--force] [--dev] &lt;output-dir&gt;</pre>
  */
@@ -91,41 +94,77 @@ public final class InternalKeyGen {
         return 2;
     }
 
-    /** Writes all four files, or none when one exists and {@code force} is off. Returns the paths written. */
+    /**
+     * Writes all four files, or none when one exists and {@code force} is off. Everything is generated and written in
+     * a private staging directory next to the targets first, then moved into place (atomically per file where the
+     * file system can), so a failure half-way never leaves a mix of old and new keys. Returns the paths written.
+     */
     static List<Path> generate(Path dir, boolean force, boolean dev) throws IOException, JOSEException {
         Files.createDirectories(dir);
-        List<Path> targets = new ArrayList<>();
+        List<String> names = new ArrayList<>();
         for (String issuer : ISSUERS) {
-            targets.add(dir.resolve(FILES.get(issuer)));
+            names.add(FILES.get(issuer));
         }
-        targets.add(dir.resolve(JWKS_FILE));
+        names.add(JWKS_FILE);
         if (!force) {
-            for (Path target : targets) {
-                if (Files.exists(target)) {
-                    throw new FileAlreadyExistsException(target.toString());
+            for (String name : names) {
+                if (Files.exists(dir.resolve(name))) {
+                    throw new FileAlreadyExistsException(dir.resolve(name).toString());
                 }
             }
         }
 
-        List<Map<String, Object>> publicKeys = new ArrayList<>();
-        List<Path> written = new ArrayList<>();
-        for (String issuer : ISSUERS) {
-            ECKey key = new ECKeyGenerator(Curve.P_256).keyID(issuer).keyUse(KeyUse.SIGNATURE)
-                    .algorithm(JWSAlgorithm.ES256).generate();
-            Path file = dir.resolve(FILES.get(issuer));
-            write(file, labelled(key.toJSONObject(), dev), "rw-------");
-            written.add(file);
-            publicKeys.add(key.toPublicJWK().toJSONObject());
+        boolean posix = Files.getFileAttributeView(dir, PosixFileAttributeView.class) != null;
+        Path staging = posix
+                ? Files.createTempDirectory(dir, ".internal-keys-",
+                        PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")))
+                : Files.createTempDirectory(dir, ".internal-keys-");
+        try {
+            List<Map<String, Object>> publicKeys = new ArrayList<>();
+            for (String issuer : ISSUERS) {
+                ECKey key = new ECKeyGenerator(Curve.P_256).keyID(issuer).keyUse(KeyUse.SIGNATURE)
+                        .algorithm(JWSAlgorithm.ES256).generate();
+                write(staging.resolve(FILES.get(issuer)), labelled(key.toJSONObject(), dev), "rw-------");
+                publicKeys.add(key.toPublicJWK().toJSONObject());
+            }
+            Map<String, Object> jwks = new LinkedHashMap<>();
+            if (dev) {
+                jwks.put("x-surge-note", DEV_NOTE);
+            }
+            jwks.put("keys", publicKeys);
+            write(staging.resolve(JWKS_FILE), jwks, "rw-r--r--");
+
+            List<Path> written = new ArrayList<>();
+            for (String name : names) {
+                Path target = dir.resolve(name);
+                moveIntoPlace(staging.resolve(name), target, force);
+                written.add(target);
+            }
+            return written;
+        } finally {
+            try (var leftovers = Files.list(staging)) {
+                for (Path leftover : leftovers.toList()) {
+                    Files.deleteIfExists(leftover);
+                }
+            }
+            Files.deleteIfExists(staging);
         }
-        Map<String, Object> jwks = new LinkedHashMap<>();
-        if (dev) {
-            jwks.put("x-surge-note", DEV_NOTE);
+    }
+
+    private static void moveIntoPlace(Path source, Path target, boolean replace) throws IOException {
+        try {
+            if (replace) {
+                Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } else {
+                Files.move(source, target, StandardCopyOption.ATOMIC_MOVE);
+            }
+        } catch (AtomicMoveNotSupportedException e) {
+            if (replace) {
+                Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+            } else {
+                Files.move(source, target);
+            }
         }
-        jwks.put("keys", publicKeys);
-        Path jwksFile = dir.resolve(JWKS_FILE);
-        write(jwksFile, jwks, "rw-r--r--");
-        written.add(jwksFile);
-        return written;
     }
 
     private static Map<String, Object> labelled(Map<String, Object> jwk, boolean dev) {
@@ -141,7 +180,6 @@ public final class InternalKeyGen {
     private static void write(Path file, Map<String, Object> json, String posixPermissions) throws IOException {
         byte[] bytes = (JSON.writeValueAsString(json) + "\n").getBytes(StandardCharsets.UTF_8);
         boolean posix = Files.getFileAttributeView(file.getParent(), PosixFileAttributeView.class) != null;
-        Files.deleteIfExists(file);
         if (posix) {
             // created with its final permissions: a private key is never readable by others, not even briefly
             FileAttribute<?> permissions = PosixFilePermissions.asFileAttribute(

@@ -1,6 +1,7 @@
 package dev.surge.common.security;
 
 import com.nimbusds.jose.JOSEException;
+import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.crypto.ECDSASigner;
@@ -19,9 +20,16 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Mints internal identity tokens with this issuer's private P-256 key (ES256, {@code kid} = issuer, 60 s lifetime).
+ * Mints internal identity tokens with this issuer's private P-256 key (ES256, {@code typ} {@value InternalTokens#TYPE},
+ * {@code kid} = issuer, 60 s lifetime). It refuses to mint anything a verifier would reject:
+ * <ul>
+ *   <li>the gateway signs a user id or nothing (anonymous) plus that user's roles;</li>
+ *   <li>a service ({@code svc:*}) signs only itself: {@code sub} = its issuer name, no roles. A service can never
+ *       speak for a user.</li>
+ * </ul>
  * Thread-safe and stateless per call: nothing about one caller is kept for the next. Pure Nimbus, no servlet or
- * reactive types, so the gateway and the servlet services share it.
+ * reactive types, so the gateway and the servlet services share it. Time is always the system UTC clock, never an
+ * application {@code Clock} bean that tests may have frozen.
  */
 public final class InternalTokenSigner {
 
@@ -30,7 +38,12 @@ public final class InternalTokenSigner {
     private final JWSHeader header;
     private final Clock clock;
 
-    public InternalTokenSigner(ECKey key, String issuer, Clock clock) {
+    public InternalTokenSigner(ECKey key, String issuer) {
+        this(key, issuer, Clock.systemUTC());
+    }
+
+    /** For tests that need a fixed time. */
+    InternalTokenSigner(ECKey key, String issuer, Clock clock) {
         Objects.requireNonNull(key, "key");
         Objects.requireNonNull(clock, "clock");
         if (!InternalTokens.validIssuer(issuer)) {
@@ -53,7 +66,8 @@ public final class InternalTokenSigner {
         }
         this.issuer = issuer;
         this.clock = clock;
-        this.header = new JWSHeader.Builder(JWSAlgorithm.ES256).keyID(issuer).build();
+        this.header = new JWSHeader.Builder(JWSAlgorithm.ES256).type(new JOSEObjectType(InternalTokens.TYPE))
+                .keyID(issuer).build();
     }
 
     public String issuer() {
@@ -62,25 +76,30 @@ public final class InternalTokenSigner {
 
     /**
      * @param audience  the target service's {@code spring.application.name}
-     * @param subject   user id or {@code svc:<name>}; null for an anonymous token
-     * @param roles     exact upper-case role tokens; empty for anonymous
+     * @param subject   gateway: the user id, or null for an anonymous token; a service: its own issuer name
+     * @param roles     gateway: exact upper-case role tokens (empty for anonymous); a service: must be empty
      * @param requestId the current request id; left out when null or not a well-formed id
      */
     public String sign(String audience, String subject, Collection<String> roles, String requestId) {
         if (audience == null || !InternalTokens.AUDIENCE.matcher(audience).matches()) {
             throw new IllegalArgumentException("Not a service name: " + audience);
         }
-        if (subject != null && !InternalTokens.SUBJECT.matcher(subject).matches()) {
-            throw new IllegalArgumentException("Refusing to sign a malformed subject");
-        }
         List<String> roleList = new ArrayList<>();
         for (String role : roles == null ? List.<String>of() : roles) {
-            if (role == null || !InternalTokens.ROLE.matcher(role).matches()) {
+            if (!InternalTokens.isRole(role)) {
                 throw new IllegalArgumentException("Refusing to sign a malformed role");
             }
             if (!roleList.contains(role)) {
                 roleList.add(role);
             }
+        }
+        if (InternalTokens.GATEWAY.equals(issuer)) {
+            if (subject != null && !InternalTokens.isUserId(subject)) {
+                throw new IllegalArgumentException("The gateway signs a user id or no subject");
+            }
+        } else if (!issuer.equals(subject) || !roleList.isEmpty()) {
+            throw new IllegalArgumentException("A service token speaks only for the service: sub must be '" + issuer
+                    + "' and roles empty");
         }
         // NumericDate has second precision; truncating here keeps exp - iat exactly MAX_LIFETIME.
         Instant now = clock.instant().truncatedTo(ChronoUnit.SECONDS);
@@ -104,6 +123,11 @@ public final class InternalTokenSigner {
             throw new IllegalStateException("Could not sign an internal identity token", e);
         }
         return jwt.serialize();
+    }
+
+    /** A service's own token for a call to {@code audience}: {@code sub} = this issuer, no roles. */
+    public String signForService(String audience, String requestId) {
+        return sign(audience, issuer, List.of(), requestId);
     }
 
     /** Signs {@code identity}, whose issuer must be this signer's. */

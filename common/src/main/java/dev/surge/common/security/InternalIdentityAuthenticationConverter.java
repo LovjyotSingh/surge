@@ -13,9 +13,12 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 
 /**
- * Turns a verified token into the request's authentication: a {@link JwtAuthenticationToken} whose authorities are
- * {@code ROLE_<role>} for each exact role, whose name is the subject (or {@code anonymous}), and whose details are the
- * {@link InternalIdentity} (issuer included) that {@link CurrentIdentity} and {@link InternalAccess} read.
+ * Turns a verified token into the request's authentication: a {@link JwtAuthenticationToken} whose name is the
+ * subject (or {@code anonymous}) and whose details are the {@link InternalIdentity} (issuer included) that
+ * {@link CurrentIdentity} and {@link InternalAccess} read. Authorities are {@code ROLE_<role>} for each exact role of a
+ * <em>gateway</em> token only; a service token gets no authorities at all (the verifier already refuses service
+ * tokens with roles; this is the second lock). Service-to-service rules use {@link InternalAccess#service(String)},
+ * which checks issuer and subject, so no {@code SERVICE_*} authority is minted.
  */
 public final class InternalIdentityAuthenticationConverter implements Converter<Jwt, AbstractAuthenticationToken> {
 
@@ -34,7 +37,9 @@ public final class InternalIdentityAuthenticationConverter implements Converter<
                 roles == null ? null : new LinkedHashSet<>(roles), jwt.getClaimAsString(InternalTokens.REQUEST_ID),
                 audience);
         List<GrantedAuthority> authorities = new ArrayList<>();
-        identity.roles().forEach(role -> authorities.add(new SimpleGrantedAuthority("ROLE_" + role)));
+        if (identity.fromGateway()) {
+            identity.roles().forEach(role -> authorities.add(new SimpleGrantedAuthority("ROLE_" + role)));
+        }
         JwtAuthenticationToken authentication = new JwtAuthenticationToken(jwt, authorities,
                 identity.isAnonymous() ? ANONYMOUS_NAME : identity.subject());
         authentication.setDetails(identity);

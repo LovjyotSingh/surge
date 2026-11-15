@@ -14,7 +14,6 @@ import dev.surge.gateway.config.RouteAudiences;
 import dev.surge.gateway.security.InternalIdentityFilter;
 import dev.surge.gateway.support.Downstream;
 import dev.surge.gateway.support.GatewayTestBase;
-import java.time.Clock;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -49,13 +48,12 @@ class InternalIdentityTest extends GatewayTestBase {
         assertThat(seen).as("the downstream service received the request").isNotNull();
         List<String> values = seen.getHeaders().values(HEADER);
         assertThat(values).hasSize(1);
-        return new InternalTokenVerifier(DEV_JWKS, Set.of("gateway"), audience, Clock.systemUTC())
-                .verify(values.get(0));
+        return new InternalTokenVerifier(DEV_JWKS, Set.of("gateway"), audience).verify(values.get(0));
     }
 
     private static InternalTokenSigner devSigner(String issuer) {
         return new InternalTokenSigner(InternalKeys.loadSigningKey(null, issuer, SurgeEnv.DEV,
-                new DefaultResourceLoader()), issuer, Clock.systemUTC());
+                new DefaultResourceLoader()), issuer);
     }
 
     @Test
@@ -75,8 +73,8 @@ class InternalIdentityTest extends GatewayTestBase {
 
         // the same token is useless anywhere else
         String token = seen.getHeaders().get(HEADER);
-        assertThatThrownBy(() -> new InternalTokenVerifier(DEV_JWKS, Set.of("gateway"), "payment-service",
-                Clock.systemUTC()).verify(token)).isInstanceOf(InvalidInternalTokenException.class);
+        assertThatThrownBy(() -> new InternalTokenVerifier(DEV_JWKS, Set.of("gateway"), "payment-service")
+                .verify(token)).isInstanceOf(InvalidInternalTokenException.class);
     }
 
     @Test
@@ -177,5 +175,39 @@ class InternalIdentityTest extends GatewayTestBase {
         exchange.getAttributes().put(ServerWebExchangeUtils.GATEWAY_ROUTE_ATTR, naked);
         assertThatThrownBy(() -> filter.filter(exchange, e -> Mono.empty()).block())
                 .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void aMistypedOrMismatchedAudienceFailsFast() {
+        Route typo = route("typo", "lb://booking-service", "bookings-service");
+        Route mismatch = route("mismatch", "lb://booking-service", RouteAudiences.CATALOG);
+        assertThatThrownBy(() -> RouteAudiences.requireAll(() -> Flux.just(typo)))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("typo")
+                .hasMessageContaining("unknown audience 'bookings-service'");
+        assertThatThrownBy(() -> RouteAudiences.requireAll(() -> Flux.just(mismatch)))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("mismatch")
+                .hasMessageContaining("lb://booking-service");
+
+        // the right service passes, and so does a non-lb target (tests point routes at local stubs)
+        RouteLocator ok = () -> Flux.just(route("lb", "lb://booking-service", RouteAudiences.BOOKING),
+                route("stub", "http://localhost:1", RouteAudiences.PAYMENT));
+        assertThat(RouteAudiences.requireAll(ok)).isSameAs(ok);
+    }
+
+    @Test
+    void anInvalidBearerOnAPublicRouteIs401BeforeAnythingIsSigned() throws Exception {
+        client.get().uri("/api/catalog/events").header(HttpHeaders.AUTHORIZATION, bearer("not-a-jwt")).exchange()
+                .expectStatus().isUnauthorized()
+                .expectBody().jsonPath("$.type").isEqualTo("https://surge.dev/problems/unauthorized");
+        String expired = token("u-s2a-4", "u-s2a-4@surge.test", List.of("USER"), ISSUER,
+                java.time.Instant.now().minusSeconds(60), KEY);
+        client.get().uri("/api/catalog/events").header(HttpHeaders.AUTHORIZATION, bearer(expired)).exchange()
+                .expectStatus().isUnauthorized();
+        assertThat(CATALOG.sawNothing()).isTrue();
+    }
+
+    private static Route route(String id, String uri, String audience) {
+        return Route.async().id(id).uri(uri).predicate(exchange -> true)
+                .metadata(RouteAudiences.METADATA_KEY, audience).build();
     }
 }

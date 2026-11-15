@@ -21,7 +21,7 @@ public final class InternalAccess {
 
     /** A signed-in user's request routed by the gateway. */
     public static <T> AuthorizationManager<T> gatewayUser() {
-        return of(identity -> identity.fromGateway() && !identity.isAnonymous());
+        return of(InternalIdentity::isUser);
     }
 
     /** A signed-in user's request routed by the gateway with the exact {@code ADMIN} role. */

@@ -21,15 +21,18 @@ class InternalTokenSignerTest {
 
     private static final Instant NOW = Instant.parse("2026-11-15T10:00:00.750Z");
     private static final ECKey GATEWAY = ecKey("gateway");
+    private static final ECKey BOOKING = ecKey("svc:booking");
 
     private final InternalTokenSigner signer = new InternalTokenSigner(GATEWAY, "gateway",
             Clock.fixed(NOW, ZoneOffset.UTC));
+    private final InternalTokenSigner booking = new InternalTokenSigner(BOOKING, "svc:booking");
 
     @Test
-    void signsEs256WithTheIssuerAsKidAndTheAgreedClaims() throws Exception {
+    void signsEs256WithTypKidAndTheAgreedClaims() throws Exception {
         SignedJWT jwt = SignedJWT.parse(signer.sign("booking-service", "u-42", List.of("USER", "ADMIN"), "req-1"));
 
         assertThat(jwt.getHeader().getAlgorithm()).isEqualTo(JWSAlgorithm.ES256);
+        assertThat(jwt.getHeader().getType().getType()).isEqualTo("surge-id+jwt");
         assertThat(jwt.getHeader().getKeyID()).isEqualTo("gateway");
         assertThat(jwt.verify(new ECDSAVerifier(GATEWAY.toPublicJWK()))).isTrue();
 
@@ -45,12 +48,41 @@ class InternalTokenSignerTest {
     }
 
     @Test
+    void theSystemClockIsTheDefault() throws Exception {
+        Instant before = Instant.now().minusSeconds(1);
+        JWTClaimsSet claims = SignedJWT.parse(new InternalTokenSigner(GATEWAY, "gateway").sign("booking-service",
+                null, List.of(), null)).getJWTClaimsSet();
+        assertThat(claims.getIssueTime().toInstant()).isBetween(before, Instant.now().plusSeconds(1));
+    }
+
+    @Test
     void anonymousTokensHaveNoSubjectAndAnEmptyRolesArray() throws Exception {
         JWTClaimsSet claims = SignedJWT.parse(signer.sign("catalog-service", null, List.of(), null))
                 .getJWTClaimsSet();
         assertThat(claims.getSubject()).isNull();
         assertThat(claims.getStringListClaim("roles")).isEmpty();
         assertThat(claims.getClaim("rid")).isNull();
+    }
+
+    @Test
+    void aServiceSignsOnlyItself() throws Exception {
+        JWTClaimsSet claims = SignedJWT.parse(booking.signForService("payment-service", "r-1")).getJWTClaimsSet();
+        assertThat(claims.getIssuer()).isEqualTo("svc:booking");
+        assertThat(claims.getSubject()).isEqualTo("svc:booking");
+        assertThat(claims.getStringListClaim("roles")).isEmpty();
+
+        // never a user, never another service, never anonymous, never a role
+        assertThatThrownBy(() -> booking.sign("payment-service", "u-1", List.of(), null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> booking.sign("payment-service", "svc:notification", List.of(), null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> booking.sign("payment-service", null, List.of(), null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> booking.sign("payment-service", "svc:booking", List.of("ADMIN"), null))
+                .isInstanceOf(IllegalArgumentException.class);
+        // and the gateway never names a service
+        assertThatThrownBy(() -> signer.sign("payment-service", "svc:booking", List.of(), null))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -73,7 +105,7 @@ class InternalTokenSignerTest {
     void signIdentityRequiresTheSignersIssuer() {
         String token = signer.sign(new InternalIdentity("gateway", "u-1", Set.of("USER"), "r-1", "booking-service"));
         assertThat(token).isNotBlank();
-        assertThatThrownBy(() -> signer.sign(new InternalIdentity("svc:booking", "u-1", Set.of(), null,
+        assertThatThrownBy(() -> signer.sign(new InternalIdentity("svc:booking", "svc:booking", Set.of(), null,
                 "booking-service"))).isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -90,15 +122,14 @@ class InternalTokenSignerTest {
 
     @Test
     void refusesKeysThatDoNotFitTheIssuer() {
-        Clock clock = Clock.systemUTC();
         // public key only
-        assertThatThrownBy(() -> new InternalTokenSigner(GATEWAY.toPublicJWK(), "gateway", clock))
+        assertThatThrownBy(() -> new InternalTokenSigner(GATEWAY.toPublicJWK(), "gateway"))
                 .isInstanceOf(IllegalArgumentException.class);
         // booking's key mounted into the gateway
-        assertThatThrownBy(() -> new InternalTokenSigner(ecKey("svc:booking"), "gateway", clock))
+        assertThatThrownBy(() -> new InternalTokenSigner(ecKey("svc:booking"), "gateway"))
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("kid");
         // not an issuer name
-        assertThatThrownBy(() -> new InternalTokenSigner(ecKey("payment"), "payment", clock))
+        assertThatThrownBy(() -> new InternalTokenSigner(ecKey("payment"), "payment"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 }

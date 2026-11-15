@@ -13,6 +13,11 @@
 #
 # Needs a JDK (JAVA_HOME or java on PATH); Maven comes from ./mvnw. Works on Linux, macOS and Git Bash. The keys
 # are made by dev.surge.common.security.tools.InternalKeyGen (Nimbus), so no openssl/jq JWK conversion is needed.
+# With --force all four files are generated in a staging directory first and then moved into place.
+#
+# Permissions: on Linux/macOS the private keys are created owner-only (600). On Windows (Git Bash) file modes do not
+# exist: chmod below is best-effort and changes nothing real; the files get the output directory's ACL, so keep that
+# directory private. Generate production keys on the Linux host that runs the containers.
 set -eu
 
 usage() {
@@ -62,6 +67,7 @@ classpath="common/target/classes${sep}$(cat common/target/internal-keygen.classp
 "$java" -cp "$classpath" dev.surge.common.security.tools.InternalKeyGen $flags "$out_abs"
 
 cd - > /dev/null
-chmod 600 "$out"/gateway.jwk "$out"/booking.jwk "$out"/notification.jwk
-chmod 644 "$out"/internal-jwks.json
-echo "Done. Private keys are owner-only; internal-jwks.json is public."
+# Best-effort: real on Linux/macOS, a no-op on Windows (see Permissions above).
+chmod 600 "$out"/gateway.jwk "$out"/booking.jwk "$out"/notification.jwk || true
+chmod 644 "$out"/internal-jwks.json || true
+echo "Done. Private keys are owner-only on Linux/macOS (see Permissions for Windows); internal-jwks.json is public."

@@ -25,6 +25,9 @@ spring:
 surge:
   # dev (default, local) or prod. Compose's prod overlay sets SURGE_ENV=prod, which turns on the startup guards.
   env: ${SURGE_ENV:dev}
+  security:
+    # The prod overlay sets SURGE_PUBLIC_DEPLOYMENT=true: SURGE_ENV=dev then refuses to start (StartupGuards, SurgeEnv).
+    public-deployment: ${SURGE_PUBLIC_DEPLOYMENT:false}
   auth:
     # Empty means "not configured": dev falls back to the local default, prod refuses to start (StartupGuards).
     admin-password: ${SURGE_ADMIN_PASSWORD:}

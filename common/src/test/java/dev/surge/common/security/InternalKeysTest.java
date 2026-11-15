@@ -9,7 +9,6 @@ import com.nimbusds.jose.jwk.JWK;
 import com.nimbusds.jose.jwk.JWKSet;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Clock;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -34,11 +33,11 @@ class InternalKeysTest {
             assertThat(key.isPrivate()).isTrue();
             assertThat(key.getKeyID()).isEqualTo(issuer);
             assertThat(jwks.getKeyByKeyId(issuer).computeThumbprint()).isEqualTo(key.computeThumbprint());
-            // and they work end to end
-            String token = new InternalTokenSigner(key, issuer, Clock.systemUTC()).sign("booking-service", null,
-                    List.of(), null);
-            assertThat(new InternalTokenVerifier(jwks, InternalTokens.KNOWN_ISSUERS, "booking-service",
-                    Clock.systemUTC()).verify(token).issuer()).isEqualTo(issuer);
+            // and they work end to end (a service signs as itself, the gateway here anonymously)
+            String subject = issuer.equals(InternalTokens.GATEWAY) ? null : issuer;
+            String token = new InternalTokenSigner(key, issuer).sign("booking-service", subject, List.of(), null);
+            assertThat(new InternalTokenVerifier(jwks, InternalTokens.KNOWN_ISSUERS, "booking-service").verify(token)
+                    .issuer()).isEqualTo(issuer);
         }
         assertThat(InternalKeys.devThumbprints()).hasSize(3);
     }
@@ -136,5 +135,30 @@ class InternalKeysTest {
         assertThat(SurgeEnv.from(env)).isEqualTo(SurgeEnv.DEV);
         env.setProperty("surge.env", "prod");
         assertThat(SurgeEnv.from(env)).isEqualTo(SurgeEnv.PROD);
+    }
+
+    @Test
+    void aPublicDeploymentRefusesDev() {
+        var env = new org.springframework.mock.env.MockEnvironment()
+                .withProperty("surge.security.public-deployment", "true");
+        assertThatThrownBy(() -> SurgeEnv.from(env)).isInstanceOf(IllegalStateException.class)
+                .hasMessage("SURGE_ENV=dev is not allowed when surge.security.public-deployment=true; set SURGE_ENV=prod");
+        env.setProperty("surge.env", "prod");
+        assertThat(SurgeEnv.from(env)).isEqualTo(SurgeEnv.PROD);
+    }
+
+    @Test
+    void everyApplicationChecksSurgeEnvAtStartup() {
+        var runner = new org.springframework.boot.test.context.runner.ApplicationContextRunner().withConfiguration(
+                org.springframework.boot.autoconfigure.AutoConfigurations.of(SurgeEnvironmentAutoConfiguration.class));
+        runner.run(context -> assertThat(context).getBean(SurgeEnv.class).isEqualTo(SurgeEnv.DEV));
+        runner.withPropertyValues("surge.env=prod")
+                .run(context -> assertThat(context).getBean(SurgeEnv.class).isEqualTo(SurgeEnv.PROD));
+        runner.withPropertyValues("surge.env=staging").run(context -> assertThat(context.getStartupFailure())
+                .rootCause().hasMessage("SURGE_ENV must be exactly 'dev' or 'prod'"));
+        runner.withPropertyValues("surge.security.public-deployment=true").run(context -> assertThat(
+                context.getStartupFailure()).rootCause().hasMessageContaining("public-deployment=true"));
+        runner.withPropertyValues("surge.security.public-deployment=true", "surge.env=prod")
+                .run(context -> assertThat(context).hasNotFailed());
     }
 }
