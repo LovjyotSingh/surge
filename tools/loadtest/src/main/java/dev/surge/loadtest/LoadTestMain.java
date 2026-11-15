@@ -74,9 +74,8 @@ public final class LoadTestMain {
         try (BookingApi api = new BookingApi(cfg.baseUrl())) {
             api.login(cfg.adminEmail(), cfg.adminPassword());
             // One synthetic user per buyer. Minted BEFORE the reset so that a deployment without test tokens, or an
-            // account that is not an admin, stops the run before anything destructive happens. Tokens live 60 minutes
-            // today (15 once the load-test claim lands), so the run, counted from this mint, must finish within the
-            // token lifetime.
+            // account that is not an admin, stops the run before anything destructive happens. Load-test tokens live
+            // 15 minutes (claim lt: true), so the run, counted from this mint, must finish within that lifetime.
             List<BookingApi.TestToken> buyers = api.mintTokens("lt-" + runId.substring(0, 8), cfg.users());
             if (cfg.reset()) {
                 api.reset(cfg.eventId());
