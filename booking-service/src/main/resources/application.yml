@@ -55,6 +55,15 @@ surge:
   env: ${SURGE_ENV:dev}
   security:
     public-deployment: ${SURGE_PUBLIC_DEPLOYMENT:false}
+  internal-identity:
+    # Every request but health needs a verified X-Surge-Identity addressed to booking-service (rules in
+    # config/AccessRulesConfig). SURGE_ENV=prod refuses to start without it.
+    enforce: true
+    # Public JWKS of every issuer. Blank = the committed DEV keys (dev/tests, with a warning); prod refuses blank.
+    jwks-location: ${SURGE_INTERNAL_JWKS:}
+    # Only the gateway for now; S3 adds svc:notification for GET /internal/orders/{id}.
+    allowed-issuers:
+      - gateway
   hold:
     ttl: PT5M
   payment:

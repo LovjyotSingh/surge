@@ -1,5 +1,6 @@
 package dev.surge.common;
 
+import dev.surge.common.security.SurgeEnv;
 import dev.surge.common.web.RequestIdFilter;
 import java.util.List;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -10,6 +11,7 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.Ordered;
+import org.springframework.core.env.Environment;
 import org.springframework.util.ClassUtils;
 
 @AutoConfiguration
@@ -21,6 +23,27 @@ public class CommonAutoConfiguration {
         var registration = new FilterRegistrationBean<>(new RequestIdFilter());
         registration.setOrder(Ordered.HIGHEST_PRECEDENCE);
         return registration;
+    }
+
+    /**
+     * In {@code prod} every servlet service must verify the internal identity token: without
+     * {@code surge.internal-identity.enforce=true} it would have no security chain and trust any caller. The check
+     * mirrors the chain's own condition ({@code InternalSecurityAutoConfiguration}: exactly {@code true}, case
+     * ignored), so a value such as {@code yes} cannot pass here yet leave the chain off. {@code dev} may run without
+     * it.
+     */
+    @Configuration(proxyBeanMethods = false)
+    static class InternalIdentityRequiredInProd {
+
+        static final String PROPERTY = "surge.internal-identity.enforce";
+
+        InternalIdentityRequiredInProd(Environment environment) {
+            if (SurgeEnv.from(environment) == SurgeEnv.PROD
+                    && !"true".equalsIgnoreCase(environment.getProperty(PROPERTY))) {
+                throw new IllegalStateException(PROPERTY + " must be true when SURGE_ENV=prod: without it this "
+                        + "service does not verify X-Surge-Identity and would trust any caller");
+            }
+        }
     }
 
     /**

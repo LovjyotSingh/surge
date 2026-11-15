@@ -2,6 +2,7 @@ package dev.surge.gateway;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import dev.surge.common.security.InternalIdentity;
 import dev.surge.gateway.support.GatewayTestBase;
 import java.net.URI;
 import java.time.Instant;
@@ -111,14 +112,15 @@ class GatewaySecurityTest extends GatewayTestBase {
                 .exchange().expectStatus().isForbidden();
         assertThat(BOOKING.sawNothing()).isTrue();
 
-        // on a USER route the forged value is overwritten by the token's roles, never forwarded
+        // on a USER route the forged values are dropped, never forwarded: the signed token carries the token's roles
         client.post().uri("/api/bookings/holds")
                 .header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-7")))
                 .header("X-User-Roles", "ADMIN").header("x-user-roles", "USER,ADMIN").bodyValue("{}")
                 .exchange().expectStatus().isOk();
         RecordedRequest seen = BOOKING.next();
-        assertThat(seen.getHeaders().values("X-User-Roles")).containsExactly("USER");
-        assertThat(seen.getHeaders().values("X-User-Id")).containsExactly("u-7");
+        InternalIdentity identity = identityFor(seen, "booking-service");
+        assertThat(identity.subject()).isEqualTo("u-7");
+        assertThat(identity.roles()).containsExactly("USER");
     }
 
     @Test
@@ -150,7 +152,7 @@ class GatewaySecurityTest extends GatewayTestBase {
                 .expectStatus().isOk();
         RecordedRequest seen = CATALOG.next();
         assertThat(seen.getTarget()).isEqualTo(uri);
-        assertThat(seen.getHeaders().values("X-User-Roles")).hasSize(1).first().asString().contains("ADMIN");
+        assertThat(identityFor(seen, "catalog-service").isGatewayAdmin()).isTrue();
     }
 
     @Test

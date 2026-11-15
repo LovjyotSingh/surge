@@ -1,19 +1,21 @@
 package dev.surge.notification.audit;
 
+import dev.surge.common.security.CurrentIdentity;
 import dev.surge.notification.error.InvalidParameterException;
-import dev.surge.notification.api.RequestIdentity;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.List;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-/** Admin view of the daily audit file. The gateway lets only ADMIN tokens reach it and sets the identity headers. */
+/**
+ * Admin view of the daily audit file. The gateway and the identity chain let only ADMINs reach it; the controller
+ * checks again ({@code CurrentIdentity}).
+ */
 @RestController
 @RequestMapping("/api/notifications/admin/audit")
 public class AuditController {
@@ -32,12 +34,9 @@ public class AuditController {
     }
 
     @GetMapping
-    public AuditView audit(@RequestHeader(name = "X-User-Id", required = false) String userId,
-                           @RequestHeader(name = "X-User-Roles", required = false) String roles,
-                           @RequestParam(name = "date", required = false) String date,
+    public AuditView audit(@RequestParam(name = "date", required = false) String date,
                            @RequestParam(name = "tail", defaultValue = "50") String tail) {
-        RequestIdentity.requireUser(userId);
-        RequestIdentity.requireAdmin(roles);
+        CurrentIdentity.requireAdmin();
         LocalDate day = date == null ? writer.today() : parseDate(date);
         AuditLogWriter.Tail result = writer.tail(day, parseTail(tail));
         return new AuditView(day.toString(), result.lines(), result.tail().stream().map(this::parseLine).toList());

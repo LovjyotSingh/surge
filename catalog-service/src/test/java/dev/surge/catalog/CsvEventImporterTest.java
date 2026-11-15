@@ -5,6 +5,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import dev.surge.catalog.support.Identity;
 import dev.surge.catalog.support.IntegrationTest;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -15,6 +16,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 @IntegrationTest
 class CsvEventImporterTest {
@@ -25,16 +27,13 @@ class CsvEventImporterTest {
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
 
-    private ResultActions upload(String csv, String roles) throws Exception {
-        return upload(csv.getBytes(StandardCharsets.UTF_8), roles);
+    private ResultActions upload(String csv, RequestPostProcessor identity) throws Exception {
+        return upload(csv.getBytes(StandardCharsets.UTF_8), identity);
     }
 
-    private ResultActions upload(byte[] csv, String roles) throws Exception {
-        var request = multipart(IMPORT).file(new MockMultipartFile("file", "events.csv", "text/csv", csv));
-        if (roles != null) {
-            request.header("X-User-Roles", roles);
-        }
-        return mvc.perform(request);
+    private ResultActions upload(byte[] csv, RequestPostProcessor identity) throws Exception {
+        return mvc.perform(multipart(IMPORT).file(new MockMultipartFile("file", "events.csv", "text/csv", csv))
+                .with(identity));
     }
 
     private int count(String sql, Object... args) {
@@ -50,7 +49,7 @@ class CsvEventImporterTest {
         }
         int before = count("SELECT COUNT(*) FROM event");
 
-        upload(sample, "USER,ADMIN")
+        upload(sample, Identity.admin())
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.imported").value(10))
                 .andExpect(jsonPath("$.errors.length()").value(0));
@@ -74,7 +73,7 @@ class CsvEventImporterTest {
                 + ",Artist D,sports,1,2027-02-04T13:30:00Z,2026-11-01T00:00:00Z,A:10:GOLD,Missing title\n"
                 + "Good Three,Artist E,theatre,2,2027-02-05T15:00:00Z,2026-11-01T00:00:00Z,A:5:GOLD|B:5:SILVER,Fine\n";
 
-        upload(csv, "ADMIN")
+        upload(csv, Identity.admin())
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.imported").value(3))
                 .andExpect(jsonPath("$.errors.length()").value(2))
@@ -104,7 +103,7 @@ class CsvEventImporterTest {
                 + "Sale After Start,Artist,concert,1,2027-02-01T13:30:00Z,2027-03-01T00:00:00Z,A:10:GOLD,x\n"
                 + "\"Unterminated,Artist,concert,1,2027-02-01T13:30:00Z,2026-11-01T00:00:00Z,A:10:GOLD,x\n";
 
-        upload(csv, "ADMIN")
+        upload(csv, Identity.admin())
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.imported").value(0))
                 .andExpect(jsonPath("$.errors.length()").value(13));
@@ -117,7 +116,7 @@ class CsvEventImporterTest {
                 + "\"Line one,\nline two\"\n"
                 + "Bad After Multiline,Artist,nope,1,2027-02-01T13:30:00Z,2026-11-01T00:00:00Z,A:10:GOLD,x\n";
 
-        upload(csv, "ADMIN")
+        upload(csv, Identity.admin())
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.imported").value(1))
                 .andExpect(jsonPath("$.errors.length()").value(1))
@@ -130,15 +129,18 @@ class CsvEventImporterTest {
     @Test
     void nonAdminIsForbidden() throws Exception {
         String csv = HEADER + "Never Saved,Artist,concert,1,2027-02-01T13:30:00Z,2026-11-01T00:00:00Z,A:10:GOLD,x\n";
-        for (String roles : new String[] {null, "", "USER", "SUPERADMIN", "admin", "ADMINISTRATOR", "USER;ADMIN"}) {
-            upload(csv, roles)
+        // a lower-case "admin" or "USER;ADMIN" cannot even be signed: the gateway drops such roles
+        for (String[] roles : new String[][] {{}, {"USER"}, {"SUPERADMIN"}, {"ADMINISTRATOR"}, {"USER", "ADMINS"}}) {
+            upload(csv, Identity.userWithRoles("u-7", roles))
                     .andExpect(status().isForbidden())
                     .andExpect(jsonPath("$.type").value("https://surge.dev/problems/forbidden"))
                     .andExpect(jsonPath("$.requestId").exists());
         }
+        upload(csv, Identity.anonymous()).andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/missing-user"));
         assertThat(count("SELECT COUNT(*) FROM event WHERE title = 'Never Saved'")).isZero();
-        // The exact token is what counts: whitespace around it is trimmed.
-        upload(csv.replace("Never Saved", "Saved By Trimmed Admin"), " USER , ADMIN ")
+        // The exact ADMIN role from the gateway is what counts.
+        upload(csv.replace("Never Saved", "Saved By The Admin"), Identity.admin())
                 .andExpect(status().isOk()).andExpect(jsonPath("$.imported").value(1));
     }
 
@@ -146,20 +148,20 @@ class CsvEventImporterTest {
     void oversizedFileIsRejected() throws Exception {
         byte[] big = new byte[5 * 1024 * 1024 + 1];
         java.util.Arrays.fill(big, (byte) 'x');
-        upload(big, "ADMIN").andExpect(status().isPayloadTooLarge())
+        upload(big, Identity.admin()).andExpect(status().isPayloadTooLarge())
                 .andExpect(jsonPath("$.requestId").exists());
     }
 
     @Test
     void wrongHeaderOrEmptyFileIsABadRequest() throws Exception {
-        upload("name,when\nA,B\n", "ADMIN").andExpect(status().isBadRequest())
+        upload("name,when\nA,B\n", Identity.admin()).andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/invalid-import"));
-        upload("", "ADMIN").andExpect(status().isBadRequest());
+        upload("", Identity.admin()).andExpect(status().isBadRequest());
     }
 
     @Test
     void missingFilePartIsABadRequest() throws Exception {
-        mvc.perform(multipart(IMPORT).header("X-User-Roles", "ADMIN")).andExpect(status().isBadRequest());
+        mvc.perform(multipart(IMPORT).with(Identity.admin())).andExpect(status().isBadRequest());
     }
 
     /** Excel saves "CSV UTF-8" with a BOM; it must be skipped before parsing, quoted header or not. */
@@ -169,11 +171,11 @@ class CsvEventImporterTest {
         String quoted = "﻿\"title\",\"artist\",\"category\",\"venueId\",\"startsAt\",\"saleOpensAt\",\"rows\","
                 + "\"description\"\n";
 
-        upload(quoted + row, "ADMIN")
+        upload(quoted + row, Identity.admin())
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.imported").value(1))
                 .andExpect(jsonPath("$.errors.length()").value(0));
-        upload("﻿" + HEADER + row.replace("Bom Show", "Bom Show Plain"), "ADMIN")
+        upload("﻿" + HEADER + row.replace("Bom Show", "Bom Show Plain"), Identity.admin())
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.imported").value(1));
     }

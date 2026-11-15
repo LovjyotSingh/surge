@@ -6,7 +6,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
-/** Resolves the caller's user id from the validated {@code X-User-Id} header. */
+/** The signed-in user's id from the verified identity token ({@link CurrentUserArgumentResolver}). */
 @Target(ElementType.PARAMETER)
 @Retention(RetentionPolicy.RUNTIME)
 @Documented

@@ -49,17 +49,18 @@ class PaymentControllerTest {
     }
 
     private ResultActions charge(String ref, String userId, String amount) throws Exception {
-        return mvc.perform(post("/api/payments").contentType(MediaType.APPLICATION_JSON)
+        return mvc.perform(post("/api/payments").with(Identity.booking()).contentType(MediaType.APPLICATION_JSON)
                 .content(body(ref, userId, amount)));
     }
 
+    /** As signed-in user u-ops (through the gateway) with exactly {@code roles}, comma separated; null = none. */
     private ResultActions setChaos(double failure, int latency, double error, String roles) throws Exception {
-        var req = put("/api/payments/admin/chaos").contentType(MediaType.APPLICATION_JSON)
-                .content("{\"failureRate\":" + failure + ",\"latencyMs\":" + latency + ",\"errorRate\":" + error + "}");
-        if (roles != null) {
-            req.header("X-User-Roles", roles);
-        }
-        return mvc.perform(req);
+        String[] list = roles == null ? new String[0]
+                : java.util.Arrays.stream(roles.split(",")).map(String::trim).toArray(String[]::new);
+        return mvc.perform(put("/api/payments/admin/chaos").with(Identity.userWithRoles("u-ops", list))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"failureRate\":" + failure + ",\"latencyMs\":" + latency + ",\"errorRate\":" + error
+                        + "}"));
     }
 
     private String paymentId(ResultActions r) throws Exception {
@@ -126,12 +127,12 @@ class PaymentControllerTest {
     void refundIsIdempotentAndUnknownIs404() throws Exception {
         String id = paymentId(charge(ref(), "u-1", "20"));
         double before = count("refunds_total", null);
-        mvc.perform(post("/api/payments/" + id + "/refund")).andExpect(status().isOk())
+        mvc.perform(post("/api/payments/" + id + "/refund").with(Identity.booking())).andExpect(status().isOk())
                 .andExpect(jsonPath("$.refunded").value(true));
-        mvc.perform(post("/api/payments/" + id + "/refund")).andExpect(status().isOk())
+        mvc.perform(post("/api/payments/" + id + "/refund").with(Identity.booking())).andExpect(status().isOk())
                 .andExpect(jsonPath("$.refunded").value(true));
         assertThat(count("refunds_total", null)).isEqualTo(before + 1);
-        mvc.perform(post("/api/payments/pay_nope/refund")).andExpect(status().isNotFound())
+        mvc.perform(post("/api/payments/pay_nope/refund").with(Identity.booking())).andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/payment-not-found"))
                 .andExpect(jsonPath("$.requestId").exists());
     }
@@ -140,7 +141,7 @@ class PaymentControllerTest {
     void refundedPaymentIsNeverReplayedAsApproved() throws Exception {
         String ref = ref();
         String id = paymentId(charge(ref, "u-1", "40").andExpect(jsonPath("$.approved").value(true)));
-        mvc.perform(post("/api/payments/" + id + "/refund")).andExpect(status().isOk());
+        mvc.perform(post("/api/payments/" + id + "/refund").with(Identity.booking())).andExpect(status().isOk());
 
         charge(ref, "u-1", "40").andExpect(status().isOk())
                 .andExpect(jsonPath("$.approved").value(false))
@@ -152,13 +153,14 @@ class PaymentControllerTest {
     void lookupByReferenceReturnsStatusOr404() throws Exception {
         String ref = ref();
         String id = paymentId(charge(ref, "u-1", "50"));
-        mvc.perform(get("/api/payments").param("reference", ref)).andExpect(status().isOk())
+        mvc.perform(get("/api/payments").with(Identity.booking()).param("reference", ref)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.approved").value(true)).andExpect(jsonPath("$.paymentId").value(id))
                 .andExpect(jsonPath("$.refunded").value(false));
-        mvc.perform(post("/api/payments/" + id + "/refund")).andExpect(status().isOk());
-        mvc.perform(get("/api/payments").param("reference", ref)).andExpect(status().isOk())
+        mvc.perform(post("/api/payments/" + id + "/refund").with(Identity.booking())).andExpect(status().isOk());
+        mvc.perform(get("/api/payments").with(Identity.booking()).param("reference", ref)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.refunded").value(true));
-        mvc.perform(get("/api/payments").param("reference", "nope")).andExpect(status().isNotFound())
+        mvc.perform(get("/api/payments").with(Identity.booking()).param("reference", "nope"))
+                .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/payment-not-found"));
     }
 
@@ -172,7 +174,7 @@ class PaymentControllerTest {
                 .andExpect(jsonPath("$.declineReason").value("card_declined"));
         String id = paymentId(r);
         assertThat(count("payments_total", "declined")).isEqualTo(before + 1);
-        mvc.perform(post("/api/payments/" + id + "/refund")).andExpect(status().isConflict())
+        mvc.perform(post("/api/payments/" + id + "/refund").with(Identity.booking())).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/not-refundable"));
         // the decline is stored: a retry with chaos off still sees it
         setChaos(0, 0, 0, "ADMIN").andExpect(status().isNoContent());
@@ -209,9 +211,10 @@ class PaymentControllerTest {
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/forbidden"));
         setChaos(0, 0, 0, "USER").andExpect(status().isForbidden());
         setChaos(0, 0, 0, "SUPERADMIN").andExpect(status().isForbidden());
-        mvc.perform(get("/api/payments/admin/chaos")).andExpect(status().isForbidden());
+        mvc.perform(get("/api/payments/admin/chaos").with(Identity.user("u-ops"))).andExpect(status().isForbidden());
+        mvc.perform(get("/api/payments/admin/chaos").with(Identity.anonymous())).andExpect(status().isUnauthorized());
         setChaos(0.25, 120, 0.5, "USER, ADMIN").andExpect(status().isNoContent());
-        mvc.perform(get("/api/payments/admin/chaos").header("X-User-Roles", "ADMIN")).andExpect(status().isOk())
+        mvc.perform(get("/api/payments/admin/chaos").with(Identity.admin())).andExpect(status().isOk())
                 .andExpect(jsonPath("$.failureRate").value(0.25)).andExpect(jsonPath("$.latencyMs").value(120))
                 .andExpect(jsonPath("$.errorRate").value(0.5));
     }
@@ -236,7 +239,8 @@ class PaymentControllerTest {
         charge(ref(), "u-1", "10000000.01").andExpect(status().isBadRequest());
         charge(ref(), "u-1", "1.234").andExpect(status().isBadRequest());
         charge("r".repeat(200), "u-1", "10000000").andExpect(status().isOk());
-        mvc.perform(post("/api/payments").contentType(MediaType.APPLICATION_JSON).content("{nope"))
+        mvc.perform(post("/api/payments").with(Identity.booking()).contentType(MediaType.APPLICATION_JSON)
+                .content("{nope"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/malformed-request"));
     }

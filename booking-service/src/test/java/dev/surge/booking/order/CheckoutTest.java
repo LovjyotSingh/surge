@@ -23,6 +23,7 @@ import dev.surge.booking.payment.PaymentInDoubtException;
 import dev.surge.booking.payment.PaymentRequest;
 import dev.surge.booking.payment.PaymentUnavailableException;
 import dev.surge.booking.payment.PaymentResult;
+import dev.surge.booking.support.Identity;
 import dev.surge.booking.support.IntegrationTest;
 import dev.surge.booking.support.TestData;
 import java.math.BigDecimal;
@@ -68,7 +69,7 @@ class CheckoutTest {
     }
 
     private String hold(String user, String seatIdsJson) throws Exception {
-        MvcResult r = mvc.perform(post("/api/bookings/holds").header("X-User-Id", user)
+        MvcResult r = mvc.perform(post("/api/bookings/holds").with(Identity.user(user))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"eventId\":1,\"seatIds\":" + seatIdsJson + "}"))
                 .andExpect(status().isCreated()).andReturn();
@@ -78,9 +79,7 @@ class CheckoutTest {
     private ResultActions checkout(String user, String key, String holdId) throws Exception {
         var req = post("/api/bookings/orders").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"holdId\":\"" + holdId + "\"}");
-        if (user != null) {
-            req.header("X-User-Id", user);
-        }
+        req.with(user == null ? Identity.anonymous() : Identity.user(user));
         if (key != null) {
             req.header("Idempotency-Key", key);
         }
@@ -92,7 +91,8 @@ class CheckoutTest {
     }
 
     private List<String> seatStates(String filter) throws Exception {
-        MvcResult r = mvc.perform(get("/api/bookings/events/1")).andExpect(status().isOk()).andReturn();
+        MvcResult r = mvc.perform(get("/api/bookings/events/1").with(Identity.anonymous())).andExpect(status().isOk())
+                .andReturn();
         return JsonPath.read(r.getResponse().getContentAsString(), "$.seats[?(" + filter + ")].state");
     }
 
@@ -393,7 +393,7 @@ class CheckoutTest {
     void priceIsLockedAtHoldTimeAndNotRepriced() throws Exception {
         // Sale opened a minute ago: the early-bird rule takes 10% off, 4999 -> 4499 per PLATINUM seat.
         testData.setSaleOpensAt(1L, Instant.now().minusSeconds(60));
-        MvcResult held = mvc.perform(post("/api/bookings/holds").header("X-User-Id", "u1")
+        MvcResult held = mvc.perform(post("/api/bookings/holds").with(Identity.user("u1"))
                         .contentType(MediaType.APPLICATION_JSON).content("{\"eventId\":1,\"seatIds\":[1,2]}"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.quotedTotalInr").value(8998.0))
@@ -465,12 +465,12 @@ class CheckoutTest {
         MvcResult r = checkout("u1", "k1", holdId).andExpect(status().isCreated()).andReturn();
         int orderId = JsonPath.read(r.getResponse().getContentAsString(), "$.orderId");
 
-        mvc.perform(get("/api/bookings/orders/" + orderId).header("X-User-Id", "u1"))
+        mvc.perform(get("/api/bookings/orders/" + orderId).with(Identity.user("u1")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.orderId").value(orderId))
                 .andExpect(jsonPath("$.lines[0].rowLabel").value("A"))
                 .andExpect(jsonPath("$.lines[0].number").value(1));
-        mvc.perform(get("/api/bookings/orders/" + orderId).header("X-User-Id", "u2"))
+        mvc.perform(get("/api/bookings/orders/" + orderId).with(Identity.user("u2")))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/order-not-found"));
     }

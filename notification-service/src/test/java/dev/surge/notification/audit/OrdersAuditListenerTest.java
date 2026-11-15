@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import dev.surge.common.messaging.MessageTypes;
+import dev.surge.notification.support.Identity;
 import dev.surge.notification.support.IntegrationTest;
 import dev.surge.notification.support.TestcontainersConfig;
 import java.io.IOException;
@@ -126,7 +127,7 @@ class OrdersAuditListenerTest {
     }
 
     private static MockHttpServletRequestBuilder adminGet(String url) {
-        return get(url).header("X-User-Id", "u-1").header("X-User-Roles", "ADMIN");
+        return get(url).with(Identity.admin());
     }
 
     @Test
@@ -252,24 +253,18 @@ class OrdersAuditListenerTest {
 
     @Test
     void adminAuditNeedsAUserAndTheAdminRole() throws Exception {
-        for (String bad : new String[] {null, "", "a b", "../x"}) {
-            var request = get("/api/notifications/admin/audit").header("X-User-Roles", "ADMIN");
-            if (bad != null) {
-                request.header("X-User-Id", bad);
-            }
-            mvc.perform(request).andExpect(status().isUnauthorized())
-                    .andExpect(jsonPath("$.type").value("https://surge.dev/problems/missing-user"));
-        }
-        for (String roles : new String[] {null, "", "USER", "SUPERADMIN", "admin", "XADMIN,USER"}) {
-            var request = get("/api/notifications/admin/audit").header("X-User-Id", "u-1");
-            if (roles != null) {
-                request.header("X-User-Roles", roles);
-            }
-            mvc.perform(request).andExpect(status().isForbidden())
+        // the gateway's anonymous token is no user, whatever legacy headers come with it
+        mvc.perform(get("/api/notifications/admin/audit").with(Identity.anonymous()).header("X-User-Id", "u-1")
+                        .header("X-User-Roles", "ADMIN"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/missing-user"));
+        // a lower-case "admin" cannot even be signed: the gateway drops such roles
+        for (String[] roles : new String[][] {{}, {"USER"}, {"SUPERADMIN"}, {"XADMIN", "USER"}}) {
+            mvc.perform(get("/api/notifications/admin/audit").with(Identity.userWithRoles("u-1", roles)))
+                    .andExpect(status().isForbidden())
                     .andExpect(jsonPath("$.type").value("https://surge.dev/problems/forbidden"));
         }
-        mvc.perform(get("/api/notifications/admin/audit").header("X-User-Id", "u-1")
-                .header("X-User-Roles", "USER, ADMIN")).andExpect(status().isOk());
+        mvc.perform(get("/api/notifications/admin/audit").with(Identity.admin())).andExpect(status().isOk());
     }
 
     @Test
@@ -284,7 +279,7 @@ class OrdersAuditListenerTest {
         mvc.perform(adminGet("/api/notifications/admin/audit?tail=500")).andExpect(status().isOk());
         mvc.perform(adminGet("/api/notifications/admin/audit?tail=1")).andExpect(status().isOk());
         // the role check comes before parameter validation
-        mvc.perform(get("/api/notifications/admin/audit?tail=0").header("X-User-Id", "u-1"))
+        mvc.perform(get("/api/notifications/admin/audit?tail=0").with(Identity.user("u-1")))
                 .andExpect(status().isForbidden());
     }
 }

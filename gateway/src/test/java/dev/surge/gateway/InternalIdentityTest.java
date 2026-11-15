@@ -43,14 +43,6 @@ class InternalIdentityTest extends GatewayTestBase {
     @Autowired
     private RouteLocator routeLocator;
 
-    /** Exactly one identity header, valid for {@code audience}, signed by the gateway. */
-    private static InternalIdentity identityFor(RecordedRequest seen, String audience) {
-        assertThat(seen).as("the downstream service received the request").isNotNull();
-        List<String> values = seen.getHeaders().values(HEADER);
-        assertThat(values).hasSize(1);
-        return new InternalTokenVerifier(DEV_JWKS, Set.of("gateway"), audience).verify(values.get(0));
-    }
-
     private static InternalTokenSigner devSigner(String issuer) {
         return new InternalTokenSigner(InternalKeys.loadSigningKey(null, issuer, SurgeEnv.DEV,
                 new DefaultResourceLoader()), issuer);
@@ -67,9 +59,10 @@ class InternalIdentityTest extends GatewayTestBase {
         assertThat(identity.subject()).isEqualTo("u-s2a-1");
         assertThat(identity.roles()).containsExactly("USER");
         assertThat(identity.requestId()).isEqualTo("rid-s2a-1");
-        // S2a keeps the legacy headers until S2b has moved every service over
-        assertThat(seen.getHeaders().get("X-User-Id")).isEqualTo("u-s2a-1");
-        assertThat(seen.getHeaders().get("X-User-Roles")).isEqualTo("USER");
+        // S2b: the signed token is the only identity a service gets (identityFor also checks no X-User-* came)
+        assertThat(seen.getHeaders().get("X-User-Id")).isNull();
+        assertThat(seen.getHeaders().get("X-User-Email")).isNull();
+        assertThat(seen.getHeaders().get("X-User-Roles")).isNull();
 
         // the same token is useless anywhere else
         String token = seen.getHeaders().get(HEADER);

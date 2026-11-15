@@ -12,9 +12,10 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 /**
- * Admin-only CSV import. The gateway already rejects non-admins on {@code /api/*}{@code /admin/**}; AdminAccess repeats the
- * check on the identity header it sets ({@code X-User-Roles}, comma separated) as defence in depth. Paths stay
- * case-sensitive (Spring MVC's default), matching the gateway, so {@code /api/catalog/ADMIN/...} is simply a 404.
+ * Admin-only CSV import. The gateway already rejects non-admins on {@code /api/*}{@code /admin/**}; catalog's identity
+ * chain and then AdminAccess repeat the check on the verified identity token as defence in depth. Paths stay
+ * case-sensitive (Spring MVC's and the chain's default), matching the gateway, so {@code /api/catalog/ADMIN/...} is
+ * simply a 404.
  */
 @RestController
 @RequestMapping("/api/catalog/admin/events")

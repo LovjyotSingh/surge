@@ -39,4 +39,30 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <!-- common-<version>-tests.jar holds ONLY the test helper IdentityTokens (DEV-key identity tokens for
+                 MockMvc). Services depend on it with <type>test-jar</type><scope>test</scope>, so it never reaches a
+                 runtime classpath. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>identity-test-helper</id>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                        <configuration>
+                            <includes>
+                                <include>dev/surge/common/security/IdentityTokens.class</include>
+                                <include>dev/surge/common/security/IdentityTokens$*.class</include>
+                            </includes>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 </project>

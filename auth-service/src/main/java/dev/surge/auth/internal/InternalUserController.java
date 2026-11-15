@@ -8,7 +8,10 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
 
-/** Service-to-service lookup; the gateway has no route to /internal. */
+/**
+ * Service-to-service lookup for notification's ticket email. The gateway has no route to /internal, and the identity
+ * chain lets only {@code svc:notification} in ({@code AccessRulesConfig}).
+ */
 @RestController
 public class InternalUserController {
     private final UserLookup lookup;

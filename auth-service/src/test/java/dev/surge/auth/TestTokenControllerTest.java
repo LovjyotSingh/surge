@@ -9,6 +9,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.jayway.jsonpath.JsonPath;
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.RSAKey;
+import dev.surge.auth.support.Identity;
 import dev.surge.auth.support.IntegrationTest;
 import java.util.List;
 import java.util.Map;
@@ -26,10 +27,11 @@ class TestTokenControllerTest {
     @Autowired
     MockMvc mvc;
 
+    /** As signed-in user u-mint with exactly {@code roles} (comma separated; null = no roles at all). */
     MockHttpServletRequestBuilder mint(String roles, String json) {
-        MockHttpServletRequestBuilder b = post("/api/auth/admin/test-tokens").contentType(MediaType.APPLICATION_JSON)
-                .content(json);
-        return roles == null ? b : b.header("X-User-Roles", roles);
+        String[] list = roles == null ? new String[0] : roles.split(",");
+        return post("/api/auth/admin/test-tokens").contentType(MediaType.APPLICATION_JSON).content(json)
+                .with(Identity.userWithRoles("u-mint", list));
     }
 
     @Test

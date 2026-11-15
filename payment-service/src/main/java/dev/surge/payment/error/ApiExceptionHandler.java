@@ -64,11 +64,6 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(pd);
     }
 
-    @ExceptionHandler(ForbiddenException.class)
-    ResponseEntity<ProblemDetail> forbidden(ForbiddenException e) {
-        return problem(Problems.of(HttpStatus.FORBIDDEN, "forbidden", "Forbidden", e.getMessage()));
-    }
-
     /** Last resort: a bug or an infrastructure failure. Logged in full, but the client only sees a generic text. */
     @ExceptionHandler(Exception.class)
     ResponseEntity<ProblemDetail> unexpected(Exception e) {

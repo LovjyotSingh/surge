@@ -10,7 +10,7 @@ import org.springframework.security.oauth2.jwt.Jwt;
 /**
  * Strict reading of the claims the gateway trusts. Anything malformed is treated as absent, never guessed at: a
  * {@code roles} claim that is not a JSON array grants nothing, a role that is not an exact upper-case token grants
- * nothing, and an {@code X-User-Id}/{@code X-User-Email} that downstream could not parse safely is never emitted.
+ * nothing, and a subject that is not a safe user id never becomes the {@code sub} of an {@code X-Surge-Identity}.
  * The user-id and role rules are common's ({@link InternalTokens#USER_ID}, {@link InternalTokens#ROLE}): exactly what
  * the gateway accepts here is what it can sign into {@code X-Surge-Identity}, and services verify the same rules.
  */
@@ -18,7 +18,6 @@ final class JwtClaims {
 
     static final Pattern USER_ID = InternalTokens.USER_ID;
     private static final Pattern ROLE = InternalTokens.ROLE;
-    private static final Pattern EMAIL = Pattern.compile("^[\\x21-\\x7E]{1,254}$");
 
     private JwtClaims() {
     }
@@ -45,11 +44,5 @@ final class JwtClaims {
             }
         }
         return roles;
-    }
-
-    /** The email claim when it is a plain printable-ASCII string; otherwise null (header is then not set). */
-    static String email(Jwt jwt) {
-        Object claim = jwt.getClaim("email");
-        return claim instanceof String email && EMAIL.matcher(email).matches() ? email : null;
     }
 }

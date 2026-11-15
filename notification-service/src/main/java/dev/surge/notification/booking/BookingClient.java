@@ -5,8 +5,10 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.client.RestClient;
 
 /**
- * Reads an order from booking-service (an internal call inside the trusted network: booking checks ownership from
- * the {@code X-User-Id} header). Timeouts and I/O errors propagate, so the caller retries.
+ * Reads an order from booking-service. Timeouts and I/O errors propagate, so the caller retries.
+ *
+ * <p>KNOWN BROKEN until S3: booking no longer reads {@code X-User-Id} (S2b) and answers this unsigned call with 401.
+ * S3 replaces it with booking's {@code GET /internal/orders/{id}?userId=...}, signed as {@code svc:notification}.
  */
 public class BookingClient {
 

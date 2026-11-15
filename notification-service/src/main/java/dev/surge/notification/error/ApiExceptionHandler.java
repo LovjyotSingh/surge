@@ -18,25 +18,17 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
 /**
  * Every error becomes an RFC 9457 problem ({@code application/problem+json}) with a Surge {@code type} and the
  * request's {@code requestId}. The service has almost no HTTP surface (actuator only); this keeps the shape uniform.
+ * 401 {@code missing-user} and 403 {@code forbidden} come from {@code CurrentIdentity} (an
+ * {@code ErrorResponseException}, rendered by the base class) or, before any controller runs, from the identity chain.
  */
 @RestControllerAdvice
 public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
 
-    @ExceptionHandler(MissingUserException.class)
-    ResponseEntity<ProblemDetail> missingUser(MissingUserException e) {
-        return problem(Problems.of(HttpStatus.UNAUTHORIZED, "missing-user", "Missing or invalid user", e.getMessage()));
-    }
-
     @ExceptionHandler(TicketNotFoundException.class)
     ResponseEntity<ProblemDetail> ticketNotFound(TicketNotFoundException e) {
         return problem(Problems.of(HttpStatus.NOT_FOUND, "ticket-not-found", "Ticket not found", e.getMessage()));
-    }
-
-    @ExceptionHandler(ForbiddenException.class)
-    ResponseEntity<ProblemDetail> forbidden(ForbiddenException e) {
-        return problem(Problems.of(HttpStatus.FORBIDDEN, "forbidden", "Forbidden", e.getMessage()));
     }
 
     @ExceptionHandler(InvalidParameterException.class)

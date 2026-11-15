@@ -46,6 +46,15 @@ surge:
   env: ${SURGE_ENV:dev}
   security:
     public-deployment: ${SURGE_PUBLIC_DEPLOYMENT:false}
+  internal-identity:
+    # Every request but health needs a verified X-Surge-Identity addressed to catalog-service (rules in
+    # config/AccessRulesConfig). SURGE_ENV=prod refuses to start without it.
+    enforce: true
+    # Public JWKS of every issuer. Blank = the committed DEV keys (dev/tests, with a warning); prod refuses blank.
+    jwks-location: ${SURGE_INTERNAL_JWKS:}
+    # Only the gateway for now; S3 adds svc:notification for the ticket's event lookup.
+    allowed-issuers:
+      - gateway
   outbox:
     poll-interval: PT0.5S
     batch-size: 100

@@ -15,6 +15,7 @@ import com.jayway.jsonpath.JsonPath;
 import dev.surge.booking.hold.RedisKeys;
 import dev.surge.booking.payment.PaymentGateway;
 import dev.surge.booking.support.Admin;
+import dev.surge.booking.support.Identity;
 import dev.surge.booking.support.IntegrationTest;
 import dev.surge.booking.support.TestData;
 import org.hamcrest.Matchers;
@@ -59,7 +60,7 @@ class ApiErrorsTest {
 
     @Test
     void nonNumericPathVariableIs400() throws Exception {
-        perform(get("/api/bookings/events/abc"), HttpStatus.BAD_REQUEST, "validation-failed")
+        perform(get("/api/bookings/events/abc").with(Identity.anonymous()), HttpStatus.BAD_REQUEST, "validation-failed")
                 .andExpect(jsonPath("$.detail").value("Invalid value for 'eventId'"));
     }
 
@@ -72,24 +73,25 @@ class ApiErrorsTest {
 
     @Test
     void unknownRouteIs404() throws Exception {
-        perform(get("/api/bookings/nope"), HttpStatus.NOT_FOUND, "not-found");
+        perform(get("/api/bookings/nope").with(Identity.anonymous()), HttpStatus.NOT_FOUND, "not-found");
     }
 
     @Test
     void wrongMethodIs405() throws Exception {
-        perform(delete("/api/bookings/events"), HttpStatus.METHOD_NOT_ALLOWED, "method-not-allowed")
+        perform(delete("/api/bookings/events").with(Identity.anonymous()), HttpStatus.METHOD_NOT_ALLOWED,
+                "method-not-allowed")
                 .andExpect(header().string("Allow", Matchers.containsString("GET")));
     }
 
     @Test
     void unexpectedErrorIs500WithoutLeakingTheMessage() throws Exception {
-        MvcResult held = mvc.perform(post("/api/bookings/holds").header("X-User-Id", "u1")
+        MvcResult held = mvc.perform(post("/api/bookings/holds").with(Identity.user("u1"))
                         .contentType(MediaType.APPLICATION_JSON).content("{\"eventId\":1,\"seatIds\":[1]}"))
                 .andExpect(status().isCreated()).andReturn();
         String holdId = JsonPath.read(held.getResponse().getContentAsString(), "$.holdId");
         doThrow(new IllegalStateException("gateway password=hunter2")).when(gateway).charge(any());
 
-        MvcResult r = perform(post("/api/bookings/orders").header("X-User-Id", "u1").header("Idempotency-Key", "k1")
+        MvcResult r = perform(post("/api/bookings/orders").with(Identity.user("u1")).header("Idempotency-Key", "k1")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"holdId\":\"" + holdId + "\"}"),
                 HttpStatus.INTERNAL_SERVER_ERROR, "internal-error").andReturn();
 
@@ -100,7 +102,7 @@ class ApiErrorsTest {
 
     @Test
     void customSlugsAreKept() throws Exception {
-        perform(get("/api/bookings/events/999"), HttpStatus.NOT_FOUND, "event-not-found");
+        perform(get("/api/bookings/events/999").with(Identity.anonymous()), HttpStatus.NOT_FOUND, "event-not-found");
     }
 
     @Test

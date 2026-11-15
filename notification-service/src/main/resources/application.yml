@@ -57,6 +57,15 @@ surge:
   env: ${SURGE_ENV:dev}
   security:
     public-deployment: ${SURGE_PUBLIC_DEPLOYMENT:false}
+  internal-identity:
+    # Every request but health needs a verified X-Surge-Identity addressed to notification-service (rules in
+    # config/AccessRulesConfig). SURGE_ENV=prod refuses to start without it.
+    enforce: true
+    # Public JWKS of every issuer. Blank = the committed DEV keys (dev/tests, with a warning); prod refuses blank.
+    jwks-location: ${SURGE_INTERNAL_JWKS:}
+    # Only the gateway: notification receives no service-to-service calls (it makes them; S3 signs those).
+    allowed-issuers:
+      - gateway
   s3:
     # Empty endpoint = real AWS. Locally this is Adobe S3Mock (compose: http://s3mock:9090).
     endpoint: ${S3_ENDPOINT:}

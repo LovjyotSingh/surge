@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.jayway.jsonpath.JsonPath;
 import dev.surge.booking.support.Admin;
+import dev.surge.booking.support.Identity;
 import dev.surge.booking.support.IntegrationTest;
 import dev.surge.booking.support.TestData;
 import dev.surge.outbox.OutboxRelay;
@@ -107,12 +108,12 @@ class OutboxBrokerPublishingTest {
     }
 
     private long buyOneSeat() throws Exception {
-        MvcResult hold = mvc.perform(post("/api/bookings/holds").header("X-User-Id", "u1")
+        MvcResult hold = mvc.perform(post("/api/bookings/holds").with(Identity.user("u1"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"eventId\":1,\"seatIds\":[1]}"))
                 .andExpect(status().isCreated()).andReturn();
         String holdId = JsonPath.read(hold.getResponse().getContentAsString(), "$.holdId");
-        mvc.perform(post("/api/bookings/orders").header("X-User-Id", "u1").header("Idempotency-Key", "k-" + holdId)
+        mvc.perform(post("/api/bookings/orders").with(Identity.user("u1")).header("Idempotency-Key", "k-" + holdId)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"holdId\":\"" + holdId + "\"}"))
                 .andExpect(status().isCreated());

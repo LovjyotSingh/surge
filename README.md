@@ -86,44 +86,40 @@ Run the 10,000-buyer load test:
 docker compose --profile core --profile loadtest run --rm loadtest --users 10000 --event 1
 ```
 
-It resets event 1, runs, prints the report, shows it on the **Ops** page (http://localhost:8080/ops) and writes it to `reports/`. It exits with code 1 unless every check passes: 0 oversold, sold seats matching order lines, and as many `201`s as seats sold. Each run uses fresh idempotency keys (`<runId>-<userId>`), so you can run it again right away. On native Linux, run `export UID` first (or `chmod o+w reports`) so the container can write `reports/`; otherwise it only prints a warning. The run leaves event 1 sold out; reset it from the Ops page or with:
+It resets event 1, runs, prints the report, shows it on the **Ops** page (http://localhost:8080/ops) and writes it to `reports/`. It exits with code 1 unless every check passes: 0 oversold, sold seats matching order lines, and as many `201`s as seats sold. Each run uses fresh idempotency keys (`<runId>-<userId>`), so you can run it again right away. On native Linux, run `export UID` first (or `chmod o+w reports`) so the container can write `reports/`; otherwise it only prints a warning. The run leaves event 1 sold out; an administrator resets it with `POST /api/bookings/admin/events/1/reset?opensInSeconds=0` through the gateway.
 
-```bash
-curl -X POST -H "X-User-Id: u-admin" -H "X-User-Roles: ADMIN" "http://localhost:8080/api/bookings/admin/events/1/reset?opensInSeconds=0"
-```
-
-This curl is **local development only**. Booking checks the `ADMIN` role in the service, but it trusts the `X-User-Id` and `X-User-Roles` headers from whoever can reach it. Until Task 16 (nginx forwards to the gateway only) and S2 (a signed internal identity token) land, never expose booking, or this web/nginx port, beyond your own machine.
+**Identity.** Only the gateway reads the user's JWT. For every request it routes, it signs a 60-second ES256 identity token (`X-Surge-Identity`) for exactly the target service, and every service verifies that token and trusts nothing else: `X-User-*` headers are ignored, so a forged header gets `401` even from inside the network. Without a valid token only `/actuator/health` (and auth-service's public JWKS) answers. Service-to-service calls (notification to booking, auth and catalog; booking to payment) get their own signed tokens in task S3, and are refused until then. So is the `core` profile's web-to-booking path, until Task 16 puts the gateway into compose.
 
 If you start auth-service by hand (outside compose), set `SURGE_ENV=dev` explicitly, for example `SURGE_ENV=dev ./mvnw -pl auth-service spring-boot:run`. With the variable missing it also defaults to `dev` and logs a warning that the public development admin password is in use. Never expose such an instance; real deployments set `SURGE_ENV=prod` and a `SURGE_ADMIN_PASSWORD` of at least 16 characters.
 
 Stop everything with `docker compose --profile core down` (add `-v` to also delete the database data).
 
-Ports on your machine, all bound to `127.0.0.1` so nothing is reachable from your network: `8080` web and API through Nginx, `8081` booking-service directly (health and metrics), `3307` MySQL, `6379` Redis.
+Ports on your machine, all bound to `127.0.0.1` so nothing is reachable from your network: `8080` web and API through Nginx, `8081` booking-service directly (health only without a token), `3307` MySQL, `6379` Redis.
 
 ## API
 
 All endpoints are under `/api/bookings`. Interactive docs: **http://localhost:8080/api/bookings/docs** (Swagger UI). OpenAPI JSON: http://localhost:8080/api/bookings/v3/api-docs.
 
-| Method | Path | Headers | What it does | Success |
+| Method | Path | Caller | What it does | Success |
 |---|---|---|---|---|
-| GET | `/events` | | List events with sold counts | 200 |
-| GET | `/events/{eventId}` | | Event details and seat map (`AVAILABLE` / `HELD` / `SOLD`) | 200 |
-| GET | `/events/{eventId}/stream` | | Live seat changes as Server-Sent Events | 200 (stream) |
-| POST | `/holds` | `X-User-Id` | Hold 1 to 8 seats for 5 minutes and lock their prices. Body: `{"eventId":1,"seatIds":[1,2]}`. Returns `holdId`, `expiresAt`, `quotedTotalInr` and per-seat `lines` | 201 |
-| POST | `/orders` | `X-User-Id`, `Idempotency-Key` | Pay the hold's locked quote and confirm the order. Body: `{"holdId":"..."}` | 201, or 200 with `Idempotent-Replayed: true` on a repeat |
-| GET | `/orders/{orderId}` | `X-User-Id` | Your order | 200 |
-| GET | `/admin/events/{eventId}/integrity` | `X-User-Id`, `X-User-Roles: ADMIN` | Sold count and oversell checks (`oversold` must be 0, `consistent` must be true) | 200 |
-| POST | `/admin/events/{eventId}/reset?opensInSeconds=N` | `X-User-Id`, `X-User-Roles: ADMIN` | Reset an event; the sale opens in N seconds | 204 |
-| PUT | `/admin/loadtest-reports/latest` | `X-User-Id`, `X-User-Roles: ADMIN` | Store the latest load-test report (used by the load tester) | 204 |
-| GET | `/admin/loadtest-reports/latest` | `X-User-Id`, `X-User-Roles: ADMIN` | Latest load-test report (used by the Ops page) | 200 |
+| GET | `/events` | anyone | List events with sold counts | 200 |
+| GET | `/events/{eventId}` | anyone | Event details and seat map (`AVAILABLE` / `HELD` / `SOLD`) | 200 |
+| GET | `/events/{eventId}/stream` | anyone | Live seat changes as Server-Sent Events | 200 (stream) |
+| POST | `/holds` | user | Hold 1 to 8 seats for 5 minutes and lock their prices. Body: `{"eventId":1,"seatIds":[1,2]}`. Returns `holdId`, `expiresAt`, `quotedTotalInr` and per-seat `lines` | 201 |
+| POST | `/orders` | user, `Idempotency-Key` header | Pay the hold's locked quote and confirm the order. Body: `{"holdId":"..."}` | 201, or 200 with `Idempotent-Replayed: true` on a repeat |
+| GET | `/orders/{orderId}` | user | Your order | 200 |
+| GET | `/admin/events/{eventId}/integrity` | admin | Sold count and oversell checks (`oversold` must be 0, `consistent` must be true) | 200 |
+| POST | `/admin/events/{eventId}/reset?opensInSeconds=N` | admin | Reset an event; the sale opens in N seconds | 204 |
+| PUT | `/admin/loadtest-reports/latest` | admin | Store the latest load-test report (used by the load tester) | 204 |
+| GET | `/admin/loadtest-reports/latest` | admin | Latest load-test report (used by the Ops page) | 200 |
 
 Every error, including the ones Spring raises itself (unknown route `404 not-found`, wrong method `405 method-not-allowed`, a value of the wrong type `400 validation-failed`) and unexpected failures (`500 internal-error`, without the exception message), uses the Problem Details JSON format (RFC 9457, the successor of RFC 7807) with a `type` under `https://surge.dev/problems/` and a `requestId` field. Common ones: `400` validation, `401` missing user, `403` not an administrator (admin routes), `402` payment failed, `404` not found, `409` seat taken / hold exists / sale not open, `429` rate limited (with `Retry-After`).
 
 Idempotency keys: a repeat of a completed checkout returns the same order for 24 hours. A key whose order no longer exists (an admin reset deletes orders) is treated as a new request.
 
-Health and metrics are on the service port: http://localhost:8081/actuator/health and http://localhost:8081/actuator/prometheus.
+Health is on the service port without a token: http://localhost:8081/actuator/health. `/actuator/prometheus` and `/actuator/info` need an identity token, so nothing scrapes metrics until phase 3 adds a scrape identity or a separate management port.
 
-**Phase 1 limits, stated plainly:** there is no login yet. The web app sends a demo user id in the `X-User-Id` header, and the admin endpoints check the `ADMIN` role in the service from the `X-User-Roles` header, which anyone who can reach booking can forge until Task 16 and S2 land. Payment is a fake in-process gateway. Outbox messages are logged, not yet sent to a broker. Run it locally only: every published port is bound to `127.0.0.1`, so Redis (no password), MySQL and the admin API are not reachable from your network. A hold lives only in the open page, so refreshing the page loses its Pay button until the hold expires.
+**Phase 1 limits, stated plainly:** identity now comes only from the gateway-signed token (see **Identity** above). Payment is a fake in-process gateway. Outbox messages are logged, not yet sent to a broker. Run it locally only: every published port is bound to `127.0.0.1`, so Redis (no password), MySQL and the admin API are not reachable from your network. A hold lives only in the open page, so refreshing the page loses its Pay button until the hold expires.
 
 ## Run the tests
 
@@ -159,4 +155,4 @@ Phase 1 (this code) is the core booking flow. The phases below are designed in t
 | 4. AI | AI customer assistant, AI on-call agent that diagnoses incidents, RAG over runbooks, an MCP server |
 | 5. Delivery | Kubernetes manifests for a local kind cluster, Jenkins pipeline, AWS EC2/S3 deployment guide (documented), recorded demo |
 
-Phase 1 already leaves the seams for this: the `PaymentGateway` and `OutboxPublisher` interfaces, the `X-User-Id` header that the gateway will set after checking a JWT, and the `event_ref` table that the catalog service will feed.
+Phase 1 already leaves the seams for this: the `PaymentGateway` and `OutboxPublisher` interfaces, the user id that the gateway now signs into an identity token after checking a JWT, and the `event_ref` table that the catalog service will feed.

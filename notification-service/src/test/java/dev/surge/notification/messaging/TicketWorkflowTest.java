@@ -16,6 +16,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import dev.surge.common.messaging.TicketRequested;
+import dev.surge.notification.support.Identity;
 import dev.surge.notification.support.IntegrationTest;
 import dev.surge.notification.support.TicketTestBase;
 import dev.surge.notification.ticket.Ticket;
@@ -133,7 +134,7 @@ class TicketWorkflowTest extends TicketTestBase {
         assertThat(mailpit.messages()).hasSize(1);
         assertThat(processedRows(good)).isEqualTo(1);
         // The admin listing shows it, with the broker's dead-letter count, and does not consume it.
-        mvc.perform(get("/api/notifications/admin/dlq").header("X-User-Roles", "ADMIN")).andExpect(status().isOk())
+        mvc.perform(get("/api/notifications/admin/dlq").with(Identity.admin())).andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(1)).andExpect(jsonPath("$[0].orderId").value((int) badOrder))
                 .andExpect(jsonPath("$[0].messageId").value(bad.messageId().toString()))
                 .andExpect(jsonPath("$[0].deaths").value(1));
@@ -201,7 +202,7 @@ class TicketWorkflowTest extends TicketTestBase {
 
         // S3 is back.
         doCallRealMethod().when(store).put(eq(orderId), any());
-        mvc.perform(post("/api/notifications/admin/dlq/replay?limit=10").header("X-User-Roles", "ADMIN"))
+        mvc.perform(post("/api/notifications/admin/dlq/replay?limit=10").with(Identity.admin()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.replayed").value(1));
 
         JsonNode summary = awaitOneEmail();

@@ -29,7 +29,9 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
  * request's {@code requestId}. Surge's own exceptions have explicit handlers below. Errors that Spring MVC raises
  * itself (unknown route, wrong method, bad path variable, ...) are handled by {@link ResponseEntityExceptionHandler}
  * and pass through {@link #createResponseEntity}, which stamps the same conventions on them. Anything else is a
- * 500 {@code internal-error} that never exposes the exception message.
+ * 500 {@code internal-error} that never exposes the exception message. 401 {@code missing-user} and 403
+ * {@code forbidden} come from {@code CurrentIdentity} (an {@code ErrorResponseException}, rendered by the base class)
+ * or, before any controller runs, from the identity chain.
  */
 @RestControllerAdvice
 public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
@@ -39,16 +41,6 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(EventNotFoundException.class)
     ResponseEntity<ProblemDetail> eventNotFound(EventNotFoundException e) {
         return problem(Problems.of(HttpStatus.NOT_FOUND, "event-not-found", "Event not found", e.getMessage()));
-    }
-
-    @ExceptionHandler(MissingUserException.class)
-    ResponseEntity<ProblemDetail> missingUser(MissingUserException e) {
-        return problem(Problems.of(HttpStatus.UNAUTHORIZED, "missing-user", "Missing or invalid user", e.getMessage()));
-    }
-
-    @ExceptionHandler(ForbiddenException.class)
-    ResponseEntity<ProblemDetail> forbidden(ForbiddenException e) {
-        return problem(Problems.of(HttpStatus.FORBIDDEN, "forbidden", "Forbidden", e.getMessage()));
     }
 
     @ExceptionHandler(InvalidSeatsException.class)

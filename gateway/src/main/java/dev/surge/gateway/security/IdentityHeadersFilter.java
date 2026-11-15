@@ -1,23 +1,22 @@
 package dev.surge.gateway.security;
 
-import java.util.Optional;
+import java.util.List;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.server.reactive.ServerHttpRequest;
-import org.springframework.security.core.context.ReactiveSecurityContextHolder;
-import org.springframework.security.core.context.SecurityContext;
-import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
 /**
- * Global filter that turns a verified JWT into the identity headers the services trust. Whatever the client sent as
- * {@code X-User-Id}, {@code X-User-Email}, {@code X-User-Roles} or {@code X-Surge-Identity} (and the bearer token
- * itself, which downstream services never need) is ALWAYS removed first; the headers are then set from the token's
- * claims only when the request carries a verified JWT. {@link InternalIdentityFilter} runs next and adds the signed
- * {@code X-Surge-Identity}; the {@code X-User-*} headers stay until every service reads the signed token (S2b).
+ * Global filter that removes every client-supplied identity before a request is routed: {@code X-User-Id},
+ * {@code X-User-Email}, {@code X-User-Roles}, {@code X-Surge-Identity} and the bearer token itself, which downstream
+ * services never need. Nothing is set in their place: services trust only the signed {@code X-Surge-Identity} that
+ * {@link InternalIdentityFilter} adds next, and no service reads {@code X-User-*} any more (S2b). Whatever needs the
+ * caller inside the gateway (the holds/orders rate limiter, {@code KeyResolvers.user()}) reads the verified
+ * principal, never a header.
  */
 @Component
 public class IdentityHeadersFilter implements GlobalFilter, Ordered {
@@ -27,38 +26,16 @@ public class IdentityHeadersFilter implements GlobalFilter, Ordered {
     public static final String USER_EMAIL = "X-User-Email";
     public static final String USER_ROLES = "X-User-Roles";
 
+    /** Removed from every request, case-insensitively. */
+    static final List<String> STRIPPED = List.of(USER_ID, USER_EMAIL, USER_ROLES, InternalIdentityFilter.HEADER,
+            HttpHeaders.AUTHORIZATION);
+
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
-        return ReactiveSecurityContextHolder.getContext()
-                .map(SecurityContext::getAuthentication)
-                .filter(JwtAuthenticationToken.class::isInstance)
-                .map(JwtAuthenticationToken.class::cast)
-                .map(Optional::of)
-                .defaultIfEmpty(Optional.empty())
-                .flatMap(authentication -> {
-                    ServerHttpRequest request = exchange.getRequest().mutate().headers(headers -> {
-                        headers.remove(USER_ID);
-                        headers.remove(USER_EMAIL);
-                        headers.remove(USER_ROLES);
-                        headers.remove(InternalIdentityFilter.HEADER);
-                        headers.remove("Authorization");
-                        authentication.ifPresent(token -> {
-                            var jwt = token.getToken();
-                            if (JwtClaims.validUserId(jwt.getSubject())) {
-                                headers.set(USER_ID, jwt.getSubject());
-                                String email = JwtClaims.email(jwt);
-                                if (email != null) {
-                                    headers.set(USER_EMAIL, email);
-                                }
-                                var roles = JwtClaims.roles(jwt);
-                                if (!roles.isEmpty()) {
-                                    headers.set(USER_ROLES, String.join(",", roles));
-                                }
-                            }
-                        });
-                    }).build();
-                    return chain.filter(exchange.mutate().request(request).build());
-                });
+        ServerHttpRequest request = exchange.getRequest().mutate()
+                .headers(headers -> STRIPPED.forEach(headers::remove))
+                .build();
+        return chain.filter(exchange.mutate().request(request).build());
     }
 
     @Override

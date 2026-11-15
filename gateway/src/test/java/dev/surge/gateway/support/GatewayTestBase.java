@@ -1,5 +1,7 @@
 package dev.surge.gateway.support;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
@@ -9,14 +11,22 @@ import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jose.jwk.gen.RSAKeyGenerator;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
+import dev.surge.common.security.InternalIdentity;
+import dev.surge.common.security.InternalKeys;
+import dev.surge.common.security.InternalTokenVerifier;
+import dev.surge.common.security.InternalTokens;
+import dev.surge.common.security.SurgeEnv;
 import java.io.IOException;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Date;
 import java.util.List;
+import java.util.Set;
+import mockwebserver3.RecordedRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.reactive.server.WebTestClient;
@@ -136,6 +146,30 @@ public abstract class GatewayTestBase {
 
     protected static String bearer(String token) {
         return "Bearer " + token;
+    }
+
+    // ---- what a downstream service receives -----------------------------------------------------------------
+
+    private static final JWKSet DEV_JWKS = InternalKeys.loadVerificationKeys(null, SurgeEnv.DEV,
+            new DefaultResourceLoader());
+
+    /**
+     * The one identity a service gets: exactly one {@code X-Surge-Identity}, valid for {@code audience} and signed by
+     * the gateway (verified the way a service does, with the committed DEV keys), and no legacy {@code X-User-*}.
+     */
+    protected static InternalIdentity identityFor(RecordedRequest seen, String audience) {
+        assertThat(seen).as("the downstream service received the request").isNotNull();
+        assertNoLegacyIdentityHeaders(seen);
+        List<String> values = seen.getHeaders().values(InternalTokens.HEADER);
+        assertThat(values).hasSize(1);
+        return new InternalTokenVerifier(DEV_JWKS, Set.of(InternalTokens.GATEWAY), audience).verify(values.get(0));
+    }
+
+    /** S2b: services read only the signed token, so the gateway never forwards an X-User-* header or the bearer. */
+    protected static void assertNoLegacyIdentityHeaders(RecordedRequest seen) {
+        for (String header : List.of("X-User-Id", "X-User-Email", "X-User-Roles", "Authorization")) {
+            assertThat(seen.getHeaders().values(header)).as(header + " reaches no service").isEmpty();
+        }
     }
 
     private static RSAKey generate(String kid) {

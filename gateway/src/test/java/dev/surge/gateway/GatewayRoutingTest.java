@@ -2,6 +2,7 @@ package dev.surge.gateway;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import dev.surge.common.security.InternalIdentity;
 import dev.surge.gateway.support.GatewayTestBase;
 import java.time.Duration;
 import java.time.Instant;
@@ -62,10 +63,10 @@ class GatewayRoutingTest extends GatewayTestBase {
                 .bodyValue("{}").exchange().expectStatus().isOk();
 
         RecordedRequest seen = BOOKING.next();
-        assertThat(seen).isNotNull();
-        assertThat(seen.getHeaders().values("X-User-Id")).containsExactly("u-1");
-        assertThat(seen.getHeaders().values("X-User-Email")).containsExactly("u-1@surge.test");
-        assertThat(seen.getHeaders().values("X-User-Roles")).containsExactly("USER");
+        // the forged headers are dropped, none is re-emitted (no service reads them), and the bearer stays here
+        InternalIdentity identity = identityFor(seen, "booking-service");
+        assertThat(identity.subject()).isEqualTo("u-1");
+        assertThat(identity.roles()).containsExactly("USER");
         assertThat(seen.getHeaders().get("Authorization")).as("the bearer token never reaches a service").isNull();
     }
 
@@ -80,6 +81,7 @@ class GatewayRoutingTest extends GatewayTestBase {
         assertThat(seen.getHeaders().get("X-User-Id")).isNull();
         assertThat(seen.getHeaders().get("X-User-Email")).isNull();
         assertThat(seen.getHeaders().get("X-User-Roles")).isNull();
+        assertThat(identityFor(seen, "catalog-service").isAnonymous()).isTrue();
     }
 
     @Test
@@ -103,8 +105,9 @@ class GatewayRoutingTest extends GatewayTestBase {
         RecordedRequest seen = BOOKING.next();
         assertThat(seen).isNotNull();
         assertThat(seen.getTarget()).isEqualTo("/api/bookings/admin/reset");
-        assertThat(seen.getHeaders().get("X-User-Id")).isEqualTo("u-admin");
-        assertThat(seen.getHeaders().get("X-User-Roles")).isEqualTo("USER,ADMIN");
+        InternalIdentity admin = identityFor(seen, "booking-service");
+        assertThat(admin.subject()).isEqualTo("u-admin");
+        assertThat(admin.isGatewayAdmin()).isTrue();
     }
 
     @Test
@@ -233,7 +236,7 @@ class GatewayRoutingTest extends GatewayTestBase {
         client.get().uri("/api/notifications/tickets/5").header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-9")))
                 .exchange().expectStatus().isOk();
         RecordedRequest seen = NOTIFICATION.next();
-        assertThat(seen.getHeaders().get("X-User-Id")).isEqualTo("u-9");
+        assertThat(identityFor(seen, "notification-service").subject()).isEqualTo("u-9");
     }
 
     @Test
@@ -249,7 +252,7 @@ class GatewayRoutingTest extends GatewayTestBase {
         client.get().uri("/api/auth/me").exchange().expectStatus().isUnauthorized();
         client.get().uri("/api/auth/me").header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-42"))).exchange()
                 .expectStatus().isOk();
-        assertThat(AUTH.next().getHeaders().get("X-User-Id")).isEqualTo("u-42");
+        assertThat(identityFor(AUTH.next(), "auth-service").subject()).isEqualTo("u-42");
 
         // admin sub-tree needs ADMIN
         client.post().uri("/api/auth/admin/test-tokens").header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-42")))

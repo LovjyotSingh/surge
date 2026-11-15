@@ -49,11 +49,6 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
                 "Search is temporarily unavailable. Try again shortly."));
     }
 
-    @ExceptionHandler(ForbiddenException.class)
-    ResponseEntity<ProblemDetail> forbidden(ForbiddenException e) {
-        return problem(Problems.of(HttpStatus.FORBIDDEN, "forbidden", "Forbidden", e.getMessage()));
-    }
-
     @ExceptionHandler(InvalidImportException.class)
     ResponseEntity<ProblemDetail> invalidImport(InvalidImportException e) {
         return problem(Problems.of(HttpStatus.BAD_REQUEST, "invalid-import", "Invalid import file", e.getMessage()));

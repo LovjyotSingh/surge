@@ -20,6 +20,12 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webmvc</artifactId>
         </dependency>
+        <!-- Zero-trust internal identity (common's InternalSecurityAutoConfiguration, enforce=true in application.yml):
+             every request but health needs a verified X-Surge-Identity addressed to this service. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
@@ -49,7 +55,7 @@
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
-        <!-- BCrypt + JWT signing only: no spring-security-config, so no filter chain is auto-configured. -->
+        <!-- BCrypt and the signing of the user JWTs auth issues (the filter chain above is common's identity chain). -->
         <dependency>
             <groupId>org.springframework.security</groupId>
             <artifactId>spring-security-crypto</artifactId>
@@ -71,6 +77,14 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- IdentityTokens: X-Surge-Identity tokens signed with the committed DEV keys, for MockMvc tests only. -->
+        <dependency>
+            <groupId>dev.surge</groupId>
+            <artifactId>common</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
             <scope>test</scope>
         </dependency>
         <dependency>

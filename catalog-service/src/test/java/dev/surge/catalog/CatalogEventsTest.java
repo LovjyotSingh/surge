@@ -6,6 +6,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import dev.surge.catalog.support.Identity;
 import dev.surge.catalog.support.IntegrationTest;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -54,7 +55,7 @@ class CatalogEventsTest {
 
     @Test
     void listReturnsEventsSortedByStartWithDefaultPageSize() throws Exception {
-        mvc.perform(get("/api/catalog/events"))
+        mvc.perform(get("/api/catalog/events").with(Identity.anonymous()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.size").value(20))
                 .andExpect(jsonPath("$.page").value(0))
@@ -70,7 +71,7 @@ class CatalogEventsTest {
                 .andExpect(jsonPath("$.content[0].totalSeats").value(500))
                 .andExpect(jsonPath("$.content[0].seatsLeft").value(500))
                 .andExpect(jsonPath("$.content[0].category").value("concert"));
-        mvc.perform(get("/api/catalog/events").param("page", "1").param("size", "10"))
+        mvc.perform(get("/api/catalog/events").with(Identity.anonymous()).param("page", "1").param("size", "10"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.content.length()").value(10))
                 .andExpect(jsonPath("$.page").value(1))
@@ -79,7 +80,7 @@ class CatalogEventsTest {
 
     @Test
     void detailReturnsOneEvent() throws Exception {
-        mvc.perform(get("/api/catalog/events/2"))
+        mvc.perform(get("/api/catalog/events/2").with(Identity.anonymous()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(2))
                 .andExpect(jsonPath("$.title").value("Desert Beats"))
@@ -90,7 +91,7 @@ class CatalogEventsTest {
 
     @Test
     void unknownEventIsNotFoundProblem() throws Exception {
-        mvc.perform(get("/api/catalog/events/999999"))
+        mvc.perform(get("/api/catalog/events/999999").with(Identity.anonymous()))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/event-not-found"))
                 .andExpect(jsonPath("$.requestId").exists());
@@ -98,13 +99,17 @@ class CatalogEventsTest {
 
     @Test
     void pageSizeAboveOneHundredIsRejected() throws Exception {
-        mvc.perform(get("/api/catalog/events").param("size", "101"))
+        mvc.perform(get("/api/catalog/events").with(Identity.anonymous()).param("size", "101"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/validation-failed"));
-        mvc.perform(get("/api/catalog/events").param("size", "100")).andExpect(status().isOk());
-        mvc.perform(get("/api/catalog/events").param("size", "0")).andExpect(status().isBadRequest());
-        mvc.perform(get("/api/catalog/events").param("page", "-1")).andExpect(status().isBadRequest());
-        mvc.perform(get("/api/catalog/events").param("size", "abc")).andExpect(status().isBadRequest());
+        mvc.perform(get("/api/catalog/events").with(Identity.anonymous()).param("size", "100"))
+                .andExpect(status().isOk());
+        mvc.perform(get("/api/catalog/events").with(Identity.anonymous()).param("size", "0"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get("/api/catalog/events").with(Identity.anonymous()).param("page", "-1"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get("/api/catalog/events").with(Identity.anonymous()).param("size", "abc"))
+                .andExpect(status().isBadRequest());
     }
 
     /** The gateway matches /api/catalog/admin/** case-sensitively, so catalog must not match it case-insensitively. */
@@ -114,7 +119,7 @@ class CatalogEventsTest {
                 "title,artist,category,venueId,startsAt,saleOpensAt,rows,description\n".getBytes(StandardCharsets.UTF_8));
         for (String path : List.of("/api/catalog/ADMIN/events/import", "/api/catalog/Admin/events/import",
                 "/api/catalog/admin/EVENTS/import")) {
-            mvc.perform(multipart(path).file(file).header("X-User-Roles", "ADMIN"))
+            mvc.perform(multipart(path).file(file).with(Identity.admin()))
                     .andExpect(status().isNotFound());
         }
     }

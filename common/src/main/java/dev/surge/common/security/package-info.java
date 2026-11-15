@@ -22,6 +22,20 @@
  * callee allows it ({@code allowed-issuers}, default gateway only, plus {@code InternalAccess.service}), but it can
  * never act as a user or an admin.
  *
+ * <h2>Services</h2>
+ * Every servlet service (auth, booking, catalog, payment, notification) sets {@code enforce=true}, lists its
+ * {@code allowed-issuers}, and declares one {@link dev.surge.common.security.SurgeAccessRules} bean that mirrors the
+ * gateway's rules for its paths. Controllers read the caller only through
+ * {@link dev.surge.common.security.CurrentIdentity}; nothing reads {@code X-User-*}, and the gateway no longer sends
+ * them. With {@code SURGE_ENV=prod} a servlet service refuses to start unless {@code enforce=true}
+ * ({@code CommonAutoConfiguration}). Tests sign tokens with {@code IdentityTokens} from common's test-jar.
+ *
+ * <h2>Actuator</h2>
+ * Only {@code /actuator/health} and {@code /actuator/health/**} are open (container health checks; status only).
+ * Every other exposed endpoint, {@code /actuator/info} and {@code /actuator/prometheus} included, needs a valid
+ * identity token like any other request, and the gateway has no route to them, so nothing can scrape metrics yet.
+ * Phase 3 (observability) adds a scrape identity or a separate management port; until then nothing new is exposed.
+ *
  * <h2>Replay</h2>
  * {@code jti} is not tracked. A captured token is accepted again by design, but only within its 60 s lifetime and
  * only by the one service it is addressed to. If a replay cache is ever added, it must key on {@code jti} (unique per

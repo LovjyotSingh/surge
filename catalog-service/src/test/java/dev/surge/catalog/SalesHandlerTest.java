@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import dev.surge.catalog.search.EventDocument;
 import dev.surge.catalog.search.EventIndexer;
+import dev.surge.catalog.support.Identity;
 import dev.surge.catalog.support.IntegrationTest;
 import dev.surge.common.messaging.MessageTypes;
 import dev.surge.common.messaging.OrderConfirmed;
@@ -157,6 +158,7 @@ class SalesHandlerTest {
         assertThat((BigDecimal) row.get("revenue_inr")).isEqualByComparingTo("7497.00");
         // and a search sees the new count (within the index refresh interval)
         await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> mvc.perform(get("/api/catalog/events/search")
+                        .with(Identity.anonymous())
                         .param("q", jdbc.queryForObject("SELECT title FROM event WHERE id = ?", String.class, eventId))
                         .param("size", "50"))
                 .andExpect(status().isOk())
@@ -291,7 +293,7 @@ class SalesHandlerTest {
                 order(c, eventId, 1, "1499.00", Instant.parse("2026-12-01T21:00:00Z")));
         awaitProcessed(c);
 
-        mvc.perform(get("/api/catalog/admin/stats/daily").header("X-User-Roles", "USER,ADMIN").param("eventId", "2"))
+        mvc.perform(get("/api/catalog/admin/stats/daily").with(Identity.admin()).param("eventId", "2"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(2))
                 .andExpect(jsonPath("$[0].date").value("2026-12-01"))
@@ -302,30 +304,35 @@ class SalesHandlerTest {
                 .andExpect(jsonPath("$[1].revenueInr").value(1499.0));
 
         // an event with no sales has an empty list; a missing, malformed or unknown id is a client error
-        mvc.perform(get("/api/catalog/admin/stats/daily").header("X-User-Roles", "USER,ADMIN").param("eventId", "3"))
+        mvc.perform(get("/api/catalog/admin/stats/daily").with(Identity.admin()).param("eventId", "3"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(0));
-        mvc.perform(get("/api/catalog/admin/stats/daily").header("X-User-Roles", "USER,ADMIN"))
+        mvc.perform(get("/api/catalog/admin/stats/daily").with(Identity.admin()))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/validation-failed"));
-        mvc.perform(get("/api/catalog/admin/stats/daily").header("X-User-Roles", "USER,ADMIN").param("eventId", "abc")).andExpect(status().isBadRequest());
-        mvc.perform(get("/api/catalog/admin/stats/daily").header("X-User-Roles", "USER,ADMIN").param("eventId", "999999"))
+        mvc.perform(get("/api/catalog/admin/stats/daily").with(Identity.admin()).param("eventId", "abc"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get("/api/catalog/admin/stats/daily").with(Identity.admin()).param("eventId", "999999"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/event-not-found"));
     }
 
     @Test
     void dailyStatsNeedTheAdminRoleAndTheOldPublicPathIsGone() throws Exception {
-        mvc.perform(get("/api/catalog/admin/stats/daily").param("eventId", "2"))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/forbidden"));
-        for (String roles : new String[] {"USER", "admin", "SUPERADMIN"}) {
-            mvc.perform(get("/api/catalog/admin/stats/daily").param("eventId", "2").header("X-User-Roles", roles))
-                    .andExpect(status().isForbidden());
+        mvc.perform(get("/api/catalog/admin/stats/daily").param("eventId", "2").with(Identity.anonymous()))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/missing-user"));
+        // a lower-case "admin" cannot even be signed: the gateway drops such roles
+        for (String[] roles : new String[][] {{}, {"USER"}, {"SUPERADMIN"}}) {
+            mvc.perform(get("/api/catalog/admin/stats/daily").param("eventId", "2")
+                            .with(Identity.userWithRoles("u-7", roles)))
+                    .andExpect(status().isForbidden())
+                    .andExpect(jsonPath("$.type").value("https://surge.dev/problems/forbidden"));
         }
         // authorization runs before argument binding: a non-admin with a bad or missing eventId still gets 403
-        mvc.perform(get("/api/catalog/admin/stats/daily").param("eventId", "abc")).andExpect(status().isForbidden());
-        mvc.perform(get("/api/catalog/admin/stats/daily")).andExpect(status().isForbidden());
-        mvc.perform(get("/api/catalog/stats/daily").param("eventId", "2").header("X-User-Roles", "ADMIN"))
+        mvc.perform(get("/api/catalog/admin/stats/daily").param("eventId", "abc").with(Identity.user("u-7")))
+                .andExpect(status().isForbidden());
+        mvc.perform(get("/api/catalog/admin/stats/daily").with(Identity.user("u-7"))).andExpect(status().isForbidden());
+        mvc.perform(get("/api/catalog/stats/daily").param("eventId", "2").with(Identity.admin()))
                 .andExpect(status().isNotFound());
     }
 

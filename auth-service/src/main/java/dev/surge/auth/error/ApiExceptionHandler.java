@@ -24,6 +24,8 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
 /**
  * Every error becomes an RFC 9457 problem ({@code application/problem+json}) with a Surge {@code type} and the
  * request's {@code requestId}. Nothing here ever echoes a password or hash; unexpected errors show a generic text.
+ * 401 {@code missing-user} and 403 {@code forbidden} come from {@code CurrentIdentity} (an
+ * {@code ErrorResponseException} the base class renders) or, before any controller runs, from the identity chain.
  */
 @RestControllerAdvice
 public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
@@ -45,12 +47,6 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(Problems.of(HttpStatus.NOT_FOUND, "user-not-found", "User not found", e.getMessage()));
     }
 
-    @ExceptionHandler(MissingUserException.class)
-    ResponseEntity<ProblemDetail> missingUser(MissingUserException e) {
-        return problem(Problems.of(HttpStatus.UNAUTHORIZED, "missing-user", "Missing or invalid user",
-                e.getMessage()));
-    }
-
     @ExceptionHandler(InvalidBodyException.class)
     ResponseEntity<ProblemDetail> invalidBody(InvalidBodyException e) {
         ProblemDetail pd;
@@ -61,11 +57,6 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
             pd.setProperty("errors", e.errors());
         }
         return problem(pd);
-    }
-
-    @ExceptionHandler(ForbiddenException.class)
-    ResponseEntity<ProblemDetail> forbidden(ForbiddenException e) {
-        return problem(Problems.of(HttpStatus.FORBIDDEN, "forbidden", "Forbidden", e.getMessage()));
     }
 
     /** Last resort: a bug or an infrastructure failure. Logged in full, but the client only sees a generic text. */

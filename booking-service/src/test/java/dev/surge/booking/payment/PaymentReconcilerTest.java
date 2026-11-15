@@ -10,6 +10,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.jayway.jsonpath.JsonPath;
+import dev.surge.booking.support.Identity;
 import dev.surge.booking.support.IntegrationTest;
 import dev.surge.booking.support.TestData;
 import java.math.BigDecimal;
@@ -66,11 +67,11 @@ class PaymentReconcilerTest {
 
     @Test
     void keepsAPaymentThatHasAnOrder() throws Exception {
-        String holdBody = mvc.perform(post("/api/bookings/holds").header("X-User-Id", "u1")
+        String holdBody = mvc.perform(post("/api/bookings/holds").with(Identity.user("u1"))
                         .contentType(MediaType.APPLICATION_JSON).content("{\"eventId\":1,\"seatIds\":[1]}"))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
         String holdId = JsonPath.read(holdBody, "$.holdId");
-        mvc.perform(post("/api/bookings/orders").header("X-User-Id", "u1").header("Idempotency-Key", "paid")
+        mvc.perform(post("/api/bookings/orders").with(Identity.user("u1")).header("Idempotency-Key", "paid")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"holdId\":\"" + holdId + "\"}"))
                 .andExpect(status().isCreated());
         Mockito.clearInvocations(gateway);

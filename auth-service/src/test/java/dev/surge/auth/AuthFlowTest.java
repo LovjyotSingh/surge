@@ -12,6 +12,7 @@ import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.RSAKey;
 import dev.surge.auth.api.LoginRequest;
 import dev.surge.auth.api.SignupRequest;
+import dev.surge.auth.support.Identity;
 import dev.surge.auth.support.IntegrationTest;
 import dev.surge.auth.user.Role;
 import dev.surge.auth.user.User;
@@ -28,9 +29,13 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 @IntegrationTest
 class AuthFlowTest {
+
+    /** notification-service's own token: the only caller /internal/users accepts. */
+    private static final RequestPostProcessor NOTIFICATION = Identity.service("svc:notification");
 
     @Autowired
     MockMvc mvc;
@@ -48,14 +53,14 @@ class AuthFlowTest {
     }
 
     MvcResult signup(String email, String password) throws Exception {
-        return mvc.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+        return mvc.perform(post("/api/auth/signup").with(Identity.anonymous()).contentType(MediaType.APPLICATION_JSON)
                 .content(body(email, password, "Ada"))).andReturn();
     }
 
     @Test
     void signupLoginAndMe() throws Exception {
         String email = email();
-        mvc.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/api/auth/signup").with(Identity.anonymous()).contentType(MediaType.APPLICATION_JSON)
                         .content(body(email.toUpperCase(), "correct-horse", "Ada")))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.token").isNotEmpty())
@@ -63,13 +68,14 @@ class AuthFlowTest {
                 .andExpect(jsonPath("$.user.roles[0]").value("USER"))
                 .andExpect(content().string(Matchers.not(Matchers.containsString("hash"))));
 
-        MvcResult login = mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+        MvcResult login = mvc.perform(post("/api/auth/login").with(Identity.anonymous())
+                .contentType(MediaType.APPLICATION_JSON)
                         .content(creds(email, "correct-horse")))
                 .andExpect(status().isOk()).andReturn();
         String id = JsonPath.read(login.getResponse().getContentAsString(), "$.user.id");
         assertThat(id).matches("u-\\d+");
 
-        mvc.perform(get("/api/auth/me").header("X-User-Id", id))
+        mvc.perform(get("/api/auth/me").with(Identity.user(id)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(id))
                 .andExpect(jsonPath("$.email").value(email))
@@ -78,17 +84,19 @@ class AuthFlowTest {
     }
 
     @Test
-    void meWithoutOrWithBadUserIdIs401() throws Exception {
-        mvc.perform(get("/api/auth/me")).andExpect(status().isUnauthorized())
+    void meNeedsASignedInUser() throws Exception {
+        mvc.perform(get("/api/auth/me").with(Identity.anonymous())).andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/missing-user"));
-        mvc.perform(get("/api/auth/me").header("X-User-Id", "bad id!")).andExpect(status().isUnauthorized());
+        // a legacy header is not an identity: without a token the chain answers before any controller
+        mvc.perform(get("/api/auth/me").header("X-User-Id", "u-1")).andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/unauthorized"));
     }
 
     @Test
     void duplicateEmailIs409() throws Exception {
         String email = email();
         assertThat(signup(email, "password-1").getResponse().getStatus()).isEqualTo(201);
-        mvc.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/api/auth/signup").with(Identity.anonymous()).contentType(MediaType.APPLICATION_JSON)
                         .content(body(email.toUpperCase(), "password-2", "Bob")))
                 .andExpect(status().isConflict())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
@@ -97,14 +105,14 @@ class AuthFlowTest {
 
     @Test
     void signupValidation() throws Exception {
-        mvc.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/api/auth/signup").with(Identity.anonymous()).contentType(MediaType.APPLICATION_JSON)
                         .content(body("not-an-email", "password-1", "Ada")))
                 .andExpect(status().isBadRequest());
-        mvc.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/api/auth/signup").with(Identity.anonymous()).contentType(MediaType.APPLICATION_JSON)
                         .content(body(email(), "short", "Ada")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errors.password").exists());
-        mvc.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/api/auth/signup").with(Identity.anonymous()).contentType(MediaType.APPLICATION_JSON)
                         .content(body(email(), "x".repeat(73), "Ada")))
                 .andExpect(status().isBadRequest());
     }
@@ -113,10 +121,12 @@ class AuthFlowTest {
     void wrongPasswordAndUnknownEmailLookIdentical() throws Exception {
         String email = email();
         signup(email, "right-password");
-        String wrong = mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+        String wrong = mvc.perform(post("/api/auth/login").with(Identity.anonymous())
+                .contentType(MediaType.APPLICATION_JSON)
                         .content(creds(email, "wrong-password")))
                 .andExpect(status().isUnauthorized()).andReturn().getResponse().getContentAsString();
-        String unknown = mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+        String unknown = mvc.perform(post("/api/auth/login").with(Identity.anonymous())
+                .contentType(MediaType.APPLICATION_JSON)
                         .content(creds(email(), "wrong-password")))
                 .andExpect(status().isUnauthorized()).andReturn().getResponse().getContentAsString();
         for (String field : List.of("type", "title", "detail", "status")) {
@@ -130,7 +140,7 @@ class AuthFlowTest {
 
     @Test
     void adminIsSeededAndCanLogIn() throws Exception {
-        mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/api/auth/login").with(Identity.anonymous()).contentType(MediaType.APPLICATION_JSON)
                         .content(creds("admin@surge.local", "surge-admin")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.user.roles[0]").value("USER"))
@@ -148,23 +158,24 @@ class AuthFlowTest {
             @Autowired java.time.Clock clock) throws Exception {
         try {
             seed(users, encoder, clock, "rotated-admin-password");
-            mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+            mvc.perform(post("/api/auth/login").with(Identity.anonymous()).contentType(MediaType.APPLICATION_JSON)
                             .content(creds("admin@surge.local", "rotated-admin-password")))
                     .andExpect(status().isOk());
-            mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+            mvc.perform(post("/api/auth/login").with(Identity.anonymous()).contentType(MediaType.APPLICATION_JSON)
                             .content(creds("admin@surge.local", "surge-admin")))
                     .andExpect(status().isUnauthorized());
         } finally {
             seed(users, encoder, clock, "surge-admin");
         }
-        mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/api/auth/login").with(Identity.anonymous()).contentType(MediaType.APPLICATION_JSON)
                         .content(creds("admin@surge.local", "surge-admin")))
                 .andExpect(status().isOk());
     }
 
     @Test
     void ordinaryLoginTokensAreNotLoadTestTokens() throws Exception {
-        String json = mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+        String json = mvc.perform(post("/api/auth/login").with(Identity.anonymous())
+                .contentType(MediaType.APPLICATION_JSON)
                         .content(creds("admin@surge.local", "surge-admin")))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         String token = JsonPath.read(json, "$.token");
@@ -175,20 +186,20 @@ class AuthFlowTest {
     @Test
     void multibytePasswordOver72BytesIs400NotA500() throws Exception {
         String pw = "\u00e9".repeat(72);
-        mvc.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/api/auth/signup").with(Identity.anonymous()).contentType(MediaType.APPLICATION_JSON)
                         .content(body(email(), pw, "Ada")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/validation-failed"))
                 .andExpect(jsonPath("$.errors.password").exists());
         // 36 x 2 bytes = exactly 72 bytes is fine
-        mvc.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/api/auth/signup").with(Identity.anonymous()).contentType(MediaType.APPLICATION_JSON)
                         .content(body(email(), "\u00e9".repeat(36), "Ada")))
                 .andExpect(status().isCreated());
     }
 
     @Test
     void signupCannotTakeTheAdminEmail() throws Exception {
-        mvc.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/api/auth/signup").with(Identity.anonymous()).contentType(MediaType.APPLICATION_JSON)
                         .content(body("Admin@Surge.local", "password-1", "Evil")))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/email-taken"));
@@ -237,16 +248,16 @@ class AuthFlowTest {
     void internalLookup() throws Exception {
         MvcResult res = signup(email(), "password-1");
         String id = JsonPath.read(res.getResponse().getContentAsString(), "$.user.id");
-        mvc.perform(get("/internal/users/" + id)).andExpect(status().isOk())
+        mvc.perform(get("/internal/users/" + id).with(NOTIFICATION)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(id)).andExpect(jsonPath("$.roles[0]").value("USER"));
-        mvc.perform(get("/internal/users/lt-run1-7")).andExpect(status().isOk())
+        mvc.perform(get("/internal/users/lt-run1-7").with(NOTIFICATION)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value("lt-run1-7"))
                 .andExpect(jsonPath("$.displayName").value("lt-run1-7"))
                 .andExpect(jsonPath("$.email").value("lt-run1-7@loadtest.local"))
                 .andExpect(jsonPath("$.roles[0]").value("USER"));
-        mvc.perform(get("/internal/users/u-99999999")).andExpect(status().isNotFound())
+        mvc.perform(get("/internal/users/u-99999999").with(NOTIFICATION)).andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/user-not-found"));
-        mvc.perform(get("/internal/users/u-abc")).andExpect(status().isNotFound());
-        mvc.perform(get("/internal/users/whoever")).andExpect(status().isNotFound());
+        mvc.perform(get("/internal/users/u-abc").with(NOTIFICATION)).andExpect(status().isNotFound());
+        mvc.perform(get("/internal/users/whoever").with(NOTIFICATION)).andExpect(status().isNotFound());
     }
 }

@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.jayway.jsonpath.JsonPath;
+import dev.surge.booking.support.Identity;
 import dev.surge.booking.support.IntegrationTest;
 import dev.surge.booking.support.TestData;
 import java.time.Duration;
@@ -43,14 +44,14 @@ class HoldControllerTest {
     private ResultActions hold(String user, long eventId, String seatIdsJson) throws Exception {
         var req = post("/api/bookings/holds").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"eventId\":" + eventId + ",\"seatIds\":" + seatIdsJson + "}");
-        if (user != null) {
-            req.header("X-User-Id", user);
-        }
+        // no user: the anonymous token the gateway sends on public routes
+        req.with(user == null ? Identity.anonymous() : Identity.user(user));
         return mvc.perform(req);
     }
 
     private String seatState(long seatId) throws Exception {
-        MvcResult r = mvc.perform(get("/api/bookings/events/1")).andExpect(status().isOk()).andReturn();
+        MvcResult r = mvc.perform(get("/api/bookings/events/1").with(Identity.anonymous())).andExpect(status().isOk())
+                .andReturn();
         List<String> states = JsonPath.read(r.getResponse().getContentAsString(),
                 "$.seats[?(@.id==" + seatId + ")].state");
         return states.get(0);
@@ -165,7 +166,10 @@ class HoldControllerTest {
     void missingUserIs401() throws Exception {
         hold(null, 1, "[1]").andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/missing-user"));
-        hold("bad user!", 1, "[1]").andExpect(status().isUnauthorized())
+        // a forged legacy header next to the anonymous token is still no user
+        mvc.perform(post("/api/bookings/holds").with(Identity.anonymous()).header("X-User-Id", "u1")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"eventId\":1,\"seatIds\":[1]}"))
+                .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/missing-user"));
     }
 
@@ -205,7 +209,7 @@ class HoldControllerTest {
 
     @Test
     void nonJsonContentTypeIs415() throws Exception {
-        mvc.perform(post("/api/bookings/holds").header("X-User-Id", "u1")
+        mvc.perform(post("/api/bookings/holds").with(Identity.user("u1"))
                         .contentType(MediaType.TEXT_PLAIN).content("hello"))
                 .andExpect(status().isUnsupportedMediaType())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))

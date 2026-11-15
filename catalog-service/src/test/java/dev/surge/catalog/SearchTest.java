@@ -7,6 +7,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import dev.surge.catalog.event.EventView;
 import dev.surge.catalog.search.SearchPage;
+import dev.surge.catalog.support.Identity;
 import dev.surge.catalog.support.IntegrationTest;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -32,7 +33,7 @@ class SearchTest {
     @Autowired JsonMapper json;
 
     private static MockHttpServletRequestBuilder request(String... paramsAndValues) {
-        MockHttpServletRequestBuilder request = get(SEARCH);
+        MockHttpServletRequestBuilder request = get(SEARCH).with(Identity.anonymous());
         for (int i = 0; i < paramsAndValues.length; i += 2) {
             request.param(paramsAndValues[i], paramsAndValues[i + 1]);
         }

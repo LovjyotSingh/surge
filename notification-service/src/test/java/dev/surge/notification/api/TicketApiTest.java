@@ -9,6 +9,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import dev.surge.common.messaging.TicketRequested;
+import dev.surge.notification.support.Identity;
 import dev.surge.notification.support.IntegrationTest;
 import dev.surge.notification.support.TicketTestBase;
 import java.nio.charset.StandardCharsets;
@@ -43,7 +44,7 @@ class TicketApiTest extends TicketTestBase {
         TicketRequested message = stubOrder("u-1", orderId);
         assertThat(workflow.process(message)).isTrue();
 
-        byte[] pdf = mvc.perform(get("/api/notifications/tickets/" + orderId + ".pdf").header("X-User-Id", "u-1"))
+        byte[] pdf = mvc.perform(get("/api/notifications/tickets/" + orderId + ".pdf").with(Identity.user("u-1")))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_PDF))
                 .andExpect(header().string("Content-Disposition", "inline; filename=\"surge-ticket-" + orderId + ".pdf\""))
@@ -51,56 +52,59 @@ class TicketApiTest extends TicketTestBase {
         assertThat(pdf).isEqualTo(store.get(orderId).orElseThrow());
         assertThat(new String(pdf, 0, 5)).isEqualTo("%PDF-");
 
-        mvc.perform(get("/api/notifications/tickets/" + orderId + ".pdf").header("X-User-Id", "u-2"))
+        mvc.perform(get("/api/notifications/tickets/" + orderId + ".pdf").with(Identity.user("u-2")))
                 .andExpect(status().isNotFound())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/ticket-not-found"));
-        mvc.perform(get("/api/notifications/tickets/" + (orderId + 7000) + ".pdf").header("X-User-Id", "u-1"))
+        mvc.perform(get("/api/notifications/tickets/" + (orderId + 7000) + ".pdf").with(Identity.user("u-1")))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/ticket-not-found"));
     }
 
     @Test
-    void downloadNeedsAValidUserHeader() throws Exception {
-        for (String bad : new String[] {null, "", "a b", "../x"}) {
-            var request = get("/api/notifications/tickets/1.pdf");
-            if (bad != null) {
-                request.header("X-User-Id", bad);
+    void downloadNeedsASignedInUser() throws Exception {
+        // the gateway's anonymous token is no user, and a forged legacy header next to it changes nothing
+        for (String forged : new String[] {null, "u-1"}) {
+            var request = get("/api/notifications/tickets/1.pdf").with(Identity.anonymous());
+            if (forged != null) {
+                request.header("X-User-Id", forged);
             }
             mvc.perform(request).andExpect(status().isUnauthorized())
                     .andExpect(jsonPath("$.type").value("https://surge.dev/problems/missing-user"));
         }
+        // without a token the identity chain answers before any controller
+        mvc.perform(get("/api/notifications/tickets/1.pdf").header("X-User-Id", "u-1"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/unauthorized"));
     }
 
     @Test
     void admin403() throws Exception {
-        String[] wrong = {null, "", "USER", "SUPERADMIN", "ADMINISTRATOR", "admin", "XADMIN,USER"};
-        for (String roles : wrong) {
-            var list = get("/api/notifications/admin/dlq");
-            var replay = post("/api/notifications/admin/dlq/replay");
-            if (roles != null) {
-                list.header("X-User-Roles", roles);
-                replay.header("X-User-Roles", roles);
-            }
+        // a lower-case "admin" cannot even be signed: the gateway drops such roles
+        String[][] wrong = {{}, {"USER"}, {"SUPERADMIN"}, {"ADMINISTRATOR"}, {"XADMIN", "USER"}};
+        for (String[] roles : wrong) {
+            var list = get("/api/notifications/admin/dlq").with(Identity.userWithRoles("u-1", roles));
+            var replay = post("/api/notifications/admin/dlq/replay").with(Identity.userWithRoles("u-1", roles));
             mvc.perform(list).andExpect(status().isForbidden())
                     .andExpect(jsonPath("$.type").value("https://surge.dev/problems/forbidden"));
             mvc.perform(replay).andExpect(status().isForbidden())
                     .andExpect(jsonPath("$.type").value("https://surge.dev/problems/forbidden"));
         }
-        mvc.perform(get("/api/notifications/admin/dlq").header("X-User-Roles", "USER, ADMIN")).andExpect(status().isOk());
-        mvc.perform(post("/api/notifications/admin/dlq/replay").header("X-User-Roles", "ADMIN")).andExpect(status().isOk());
+        mvc.perform(get("/api/notifications/admin/dlq").with(Identity.admin())).andExpect(status().isOk());
+        mvc.perform(post("/api/notifications/admin/dlq/replay").with(Identity.admin())).andExpect(status().isOk());
     }
 
     @Test
     void dlqLimitIsValidatedAfterTheRoleCheck() throws Exception {
         for (String limit : new String[] {"0", "-1", "101", "abc"}) {
-            mvc.perform(get("/api/notifications/admin/dlq?limit=" + limit).header("X-User-Roles", "ADMIN"))
+            mvc.perform(get("/api/notifications/admin/dlq?limit=" + limit).with(Identity.admin()))
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.type").value("https://surge.dev/problems/validation-failed"));
-            mvc.perform(post("/api/notifications/admin/dlq/replay?limit=" + limit).header("X-User-Roles", "ADMIN"))
+            mvc.perform(post("/api/notifications/admin/dlq/replay?limit=" + limit).with(Identity.admin()))
                     .andExpect(status().isBadRequest());
         }
-        mvc.perform(get("/api/notifications/admin/dlq?limit=101")).andExpect(status().isForbidden());
+        mvc.perform(get("/api/notifications/admin/dlq?limit=101").with(Identity.user("u-1")))
+                .andExpect(status().isForbidden());
     }
 
     @Test
@@ -113,14 +117,14 @@ class TicketApiTest extends TicketTestBase {
         org.awaitility.Awaitility.await().untilAsserted(() -> assertThat(queueDepth("tickets.dlq")).isEqualTo(3));
 
         for (int round = 0; round < 2; round++) {
-            mvc.perform(get("/api/notifications/admin/dlq?limit=20").header("X-User-Roles", "ADMIN"))
+            mvc.perform(get("/api/notifications/admin/dlq?limit=20").with(Identity.admin()))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.length()").value(3))
                     .andExpect(jsonPath("$[?(@.messageId == '" + message.messageId() + "')].orderId").value((int) orderId))
                     .andExpect(jsonPath("$[?(@.messageId == '" + message.messageId() + "')].reason").value("s3 is down"));
             assertThat(queueDepth("tickets.dlq")).isEqualTo(3);
         }
-        mvc.perform(get("/api/notifications/admin/dlq?limit=2").header("X-User-Roles", "ADMIN"))
+        mvc.perform(get("/api/notifications/admin/dlq?limit=2").with(Identity.admin()))
                 .andExpect(jsonPath("$.length()").value(2));
         assertThat(queueDepth("tickets.dlq")).isEqualTo(3);
     }
@@ -135,7 +139,7 @@ class TicketApiTest extends TicketTestBase {
         }
         org.awaitility.Awaitility.await().untilAsserted(() -> assertThat(queueDepth("tickets.dlq")).isEqualTo(3));
 
-        mvc.perform(post("/api/notifications/admin/dlq/replay?limit=2").header("X-User-Roles", "ADMIN"))
+        mvc.perform(post("/api/notifications/admin/dlq/replay?limit=2").with(Identity.admin()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.replayed").value(2));
 
         // The two replayed messages fail validation again and come back; nothing is lost.
@@ -156,7 +160,7 @@ class TicketApiTest extends TicketTestBase {
 
         admin.removeBinding(ticketsBinding);
         try {
-            mvc.perform(post("/api/notifications/admin/dlq/replay?limit=5").header("X-User-Roles", "ADMIN"))
+            mvc.perform(post("/api/notifications/admin/dlq/replay?limit=5").with(Identity.admin()))
                     .andExpect(status().isServiceUnavailable())
                     .andExpect(jsonPath("$.type").value("https://surge.dev/problems/replay-failed"));
         } finally {

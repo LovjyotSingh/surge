@@ -12,6 +12,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.jayway.jsonpath.JsonPath;
 import dev.surge.booking.hold.RedisKeys;
 import dev.surge.booking.support.Admin;
+import dev.surge.booking.support.Identity;
 import dev.surge.booking.support.IntegrationTest;
 import dev.surge.booking.support.TestData;
 import java.time.Duration;
@@ -27,6 +28,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 @IntegrationTest
 class AdminControllerTest {
@@ -44,7 +46,7 @@ class AdminControllerTest {
     }
 
     private String hold(String user, String seatIdsJson) throws Exception {
-        MvcResult r = mvc.perform(post("/api/bookings/holds").header("X-User-Id", user)
+        MvcResult r = mvc.perform(post("/api/bookings/holds").with(Identity.user(user))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"eventId\":1,\"seatIds\":" + seatIdsJson + "}"))
                 .andExpect(status().isCreated()).andReturn();
@@ -52,7 +54,7 @@ class AdminControllerTest {
     }
 
     private ResultActions checkout(String user, String key, String holdId) throws Exception {
-        return mvc.perform(post("/api/bookings/orders").header("X-User-Id", user).header("Idempotency-Key", key)
+        return mvc.perform(post("/api/bookings/orders").with(Identity.user(user)).header("Idempotency-Key", key)
                 .contentType(MediaType.APPLICATION_JSON).content("{\"holdId\":\"" + holdId + "\"}"));
     }
 
@@ -68,26 +70,27 @@ class AdminControllerTest {
     @Test
     void everyAdminEndpointNeedsAnIdentityAndTheAdminRole() throws Exception {
         record Call(String method, String path) {
+            MockHttpServletRequestBuilder request() {
+                return org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .request(org.springframework.http.HttpMethod.valueOf(method), path);
+            }
         }
         for (Call c : java.util.List.of(new Call("POST", "/api/bookings/admin/events/1/reset"),
                 new Call("GET", "/api/bookings/admin/events/1/integrity"),
                 new Call("PUT", "/api/bookings/admin/loadtest-reports/latest"),
                 new Call("GET", "/api/bookings/admin/loadtest-reports/latest"))) {
-            var req = org.springframework.test.web.servlet.request.MockMvcRequestBuilders
-                    .request(org.springframework.http.HttpMethod.valueOf(c.method()), c.path());
-            // no identity at all: 401
-            mvc.perform(req).andExpect(status().isUnauthorized())
-                    .andExpect(jsonPath("$.type").value("https://surge.dev/problems/missing-user"));
-            // a role header without a user id is still anonymous
-            mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
-                            .request(org.springframework.http.HttpMethod.valueOf(c.method()), c.path())
-                            .header("X-User-Roles", "ADMIN"))
+            // no identity token at all: the chain answers 401 before anything else
+            mvc.perform(c.request()).andExpect(status().isUnauthorized())
+                    .andExpect(jsonPath("$.type").value("https://surge.dev/problems/unauthorized"));
+            // forged identity headers are not an identity
+            mvc.perform(c.request().header("X-User-Id", "u-admin").header("X-User-Roles", "ADMIN"))
                     .andExpect(status().isUnauthorized());
-            for (String roles : new String[] {null, "", "USER", "admin", "SUPERADMIN", "USER,ADMINISTRATOR"}) {
-                var r = org.springframework.test.web.servlet.request.MockMvcRequestBuilders
-                        .request(org.springframework.http.HttpMethod.valueOf(c.method()), c.path())
-                        .header("X-User-Id", "u-7");
-                mvc.perform(roles == null ? r : r.header("X-User-Roles", roles))
+            // the gateway's anonymous token is no user
+            mvc.perform(c.request().with(Identity.anonymous())).andExpect(status().isUnauthorized())
+                    .andExpect(jsonPath("$.type").value("https://surge.dev/problems/missing-user"));
+            // a user without the exact ADMIN role (a lower-case "admin" cannot even be signed)
+            for (String[] roles : new String[][] {{}, {"USER"}, {"SUPERADMIN"}, {"USER", "ADMINISTRATOR"}}) {
+                mvc.perform(c.request().with(Identity.userWithRoles("u-7", roles)))
                         .andExpect(status().isForbidden())
                         .andExpect(jsonPath("$.type").value("https://surge.dev/problems/forbidden"));
             }
@@ -97,11 +100,10 @@ class AdminControllerTest {
     @Test
     void resetWithoutAdminDeletesNothing() throws Exception {
         buy("u1", "k1", "[1]");
-        mvc.perform(post("/api/bookings/admin/events/1/reset").header("X-User-Id", "u1").header("X-User-Roles", "USER"))
+        mvc.perform(post("/api/bookings/admin/events/1/reset").with(Identity.user("u1")))
                 .andExpect(status().isForbidden());
         assertThat(count("SELECT COUNT(*) FROM orders WHERE event_id = 1")).isEqualTo(1);
-        mvc.perform(post("/api/bookings/admin/events/1/reset").header("X-User-Id", "u-admin")
-                        .header("X-User-Roles", "USER, ADMIN"))
+        mvc.perform(post("/api/bookings/admin/events/1/reset").with(Identity.admin()))
                 .andExpect(status().isNoContent());
     }
 
@@ -181,12 +183,12 @@ class AdminControllerTest {
         assertThat(redis.opsForZSet().range(RedisKeys.HOLD_EXPIRY, 0, -1)).containsExactly("2:otherhold:9");
         assertThat(redis.hasKey("idem:u1:keep")).isTrue();
 
-        MvcResult r = mvc.perform(get("/api/bookings/events/1")).andExpect(status().isOk())
+        MvcResult r = mvc.perform(get("/api/bookings/events/1").with(Identity.anonymous())).andExpect(status().isOk())
                 .andExpect(jsonPath("$.seats[?(@.state != 'AVAILABLE')]").isEmpty()).andReturn();
         Instant opens = Instant.parse(JsonPath.<String>read(r.getResponse().getContentAsString(), "$.saleOpensAt"));
         assertThat(Duration.between(Instant.now(), opens).minusSeconds(60).abs()).isLessThan(Duration.ofSeconds(10));
 
-        mvc.perform(post("/api/bookings/holds").header("X-User-Id", "u3").contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/api/bookings/holds").with(Identity.user("u3")).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"eventId\":1,\"seatIds\":[1]}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/sale-not-open"));
@@ -250,7 +252,7 @@ class AdminControllerTest {
 
     @Test
     void openApiIsServed() throws Exception {
-        mvc.perform(get("/api/bookings/v3/api-docs")).andExpect(status().isOk())
+        mvc.perform(get("/api/bookings/v3/api-docs").with(Identity.anonymous())).andExpect(status().isOk())
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("/api/bookings/holds")));
     }
 }

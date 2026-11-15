@@ -28,6 +28,16 @@ surge:
   security:
     # The prod overlay sets SURGE_PUBLIC_DEPLOYMENT=true: SURGE_ENV=dev then refuses to start (StartupGuards, SurgeEnv).
     public-deployment: ${SURGE_PUBLIC_DEPLOYMENT:false}
+  internal-identity:
+    # Every request but health and the JWKS needs a verified X-Surge-Identity addressed to auth-service (rules in
+    # config/AccessRulesConfig). SURGE_ENV=prod refuses to start without it.
+    enforce: true
+    # Public JWKS of every issuer. Blank = the committed DEV keys (dev/tests, with a warning); prod refuses blank.
+    jwks-location: ${SURGE_INTERNAL_JWKS:}
+    # gateway: routed requests. svc:notification: GET /internal/users/{id} (notification signs it from S3 on).
+    allowed-issuers:
+      - gateway
+      - "svc:notification"
   auth:
     # Empty means "not configured": dev falls back to the local default, prod refuses to start (StartupGuards).
     admin-password: ${SURGE_ADMIN_PASSWORD:}
