@@ -51,32 +51,28 @@ export default function TicketLink({ orderId }: { orderId: number }) {
     }
   }, [orderId])
 
-  switch (state.kind) {
-    case 'ready':
-      return (
+  const message =
+    state.kind === 'ready'
+      ? 'Your ticket is ready.'
+      : state.kind === 'late'
+        ? 'Your ticket is still being prepared — it will also arrive by email.'
+        : state.kind === 'signed-out'
+          ? 'Your session expired — log in again to get your ticket.'
+          : 'Preparing your ticket…'
+
+  // One live region that stays mounted, so the change from "Preparing" to "ready" is announced.
+  return (
+    <>
+      <p role="status" aria-live="polite" className="muted">
+        {message}
+      </p>
+      {state.kind === 'ready' && (
         <p>
           <a className="button-link" href={state.href} download={`surge-ticket-${orderId}.pdf`}>
             Download ticket (PDF)
           </a>
         </p>
-      )
-    case 'late':
-      return (
-        <p role="status" className="muted">
-          Your ticket is still being prepared — it will also arrive by email.
-        </p>
-      )
-    case 'signed-out':
-      return (
-        <p role="status" className="muted">
-          Your session expired — log in again to get your ticket.
-        </p>
-      )
-    default:
-      return (
-        <p role="status" className="muted">
-          Preparing your ticket…
-        </p>
-      )
-  }
+      )}
+    </>
+  )
 }

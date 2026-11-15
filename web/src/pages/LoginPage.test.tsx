@@ -80,7 +80,7 @@ describe('LoginPage', () => {
   })
 
   it('defaults to the home page when next is missing or not a local path', async () => {
-    for (const next of ['', '?next=https://evil.example', '?next=//evil.example', '?next=javascript:alert(1)']) {
+    for (const next of ['', '?next=https://evil.example', '?next=//evil.example', '?next=javascript:alert(1)', '?next=/%09/evil.example', '?next=%5C%5Cevil']) {
       const user = userEvent.setup()
       fetchMock.mockResolvedValueOnce(json(200, tokenResponse))
       const { unmount } = renderAt('/login' + next)
@@ -122,6 +122,26 @@ describe('LoginPage', () => {
     renderAt('/login')
     await fillAndSubmit(user, 'Log in')
     expect(await screen.findByRole('alert')).toHaveTextContent('Too many attempts — try again shortly.')
+  })
+
+  it('explains a wrong device clock when the new session is already expired', async () => {
+    const user = userEvent.setup()
+    fetchMock.mockResolvedValueOnce(json(200, { ...tokenResponse, expiresAt: new Date(Date.now() - 1000).toISOString() }))
+    renderAt('/login')
+    await fillAndSubmit(user, 'Log in')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Your device clock seems to be wrong')
+    expect(screen.getByRole('button', { name: 'Log in' })).toBeEnabled()
+    expect(screen.getByLabelText('Email')).toHaveAttribute('aria-describedby', 'auth-error')
+  })
+
+  it('marks the fields invalid and re-enables the form after a failure', async () => {
+    const user = userEvent.setup()
+    fetchMock.mockResolvedValueOnce(json(401, { type: 't', title: 'Bad credentials', status: 401 }))
+    renderAt('/login')
+    await fillAndSubmit(user, 'Log in')
+    await screen.findByRole('alert')
+    expect(screen.getByLabelText('Password')).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByRole('button', { name: 'Log in' })).toBeEnabled()
   })
 
   it('falls back on network errors', async () => {

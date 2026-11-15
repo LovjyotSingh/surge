@@ -3,8 +3,22 @@ export function loginPath(next: string): string {
   return `/login?next=${encodeURIComponent(next).replace(/%2F/g, '/')}`
 }
 
-/** Only same-site absolute paths are honoured after login; anything else (https://…, //host, javascript:) goes home. */
+/**
+ * Only same-origin paths are honoured after login; anything else goes home. The raw value is rejected outright if it
+ * holds a control character or a backslash (the URL parser silently drops tabs and newlines and treats `\` as `/`, so
+ * `/\t/evil.example` would otherwise become `//evil.example`), then it must parse to this origin.
+ */
 export function safeNext(raw: string | null): string {
-  if (!raw || !raw.startsWith('/') || raw.startsWith('//') || raw.startsWith('/\\')) return '/'
-  return raw
+  if (!raw || !raw.startsWith('/')) return '/'
+  for (const ch of raw) {
+    const code = ch.codePointAt(0) as number
+    if (code < 0x20 || code === 0x7f || ch === '\\') return '/'
+  }
+  try {
+    const url = new URL(raw, window.location.origin)
+    if (url.origin !== window.location.origin) return '/'
+    return url.pathname + url.search + url.hash
+  } catch {
+    return '/'
+  }
 }

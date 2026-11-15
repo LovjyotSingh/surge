@@ -43,6 +43,7 @@ function describe(err: unknown): Notice {
 
 export default function EventPage() {
   const raw = useParams().id ?? ''
+  const { user } = useAuth()
   const eventId = Number(raw)
   if (!/^\d+$/.test(raw) || !Number.isSafeInteger(eventId)) {
     return (
@@ -51,7 +52,8 @@ export default function EventPage() {
       </main>
     )
   }
-  return <EventView key={eventId} eventId={eventId} />
+  // Keyed on the user too: logging out (or in as someone else) drops holds, orders and the ticket link.
+  return <EventView key={`${eventId}:${user?.id ?? ''}`} eventId={eventId} />
 }
 
 /** The seat map is the booking service's; title and venue come from the catalog (the map's own copy is the fallback). */
@@ -172,8 +174,10 @@ function EventView({ eventId }: { eventId: number }) {
       setSelected(new Set())
     } catch (err) {
       setNotice(describe(err))
-      // A declined payment is a finished attempt: the next try must not replay it under the same key.
-      if (err instanceof ApiError && err.status === 402) idempotencyKey.current = crypto.randomUUID()
+      // A declined payment (or a key the server says was already used) is a finished attempt: the next try needs a new key.
+      if (err instanceof ApiError && (err.status === 402 || slugOf(err) === 'idempotency-key-reused')) {
+        idempotencyKey.current = crypto.randomUUID()
+      }
       // The hold is gone: it expired, or another order got the seats (the server released the hold).
       if (err instanceof ApiError && ['hold-not-found', 'seat-taken'].includes(slugOf(err))) {
         setHold(null)

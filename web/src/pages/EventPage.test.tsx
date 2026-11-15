@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -102,10 +102,12 @@ beforeEach(() => {
   mocked.event.mockResolvedValue(detail(past()))
   mocked.catalogEvent.mockResolvedValue(catalogEvent)
   mocked.fetchTicket.mockResolvedValue(null)
-  vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: () => 'blob:t', revokeObjectURL: () => {} }))
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:t')
+  vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
 })
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
   clearSession()
   sessionStorage.clear()
 })
@@ -161,6 +163,36 @@ describe('EventPage', () => {
     await screen.findByText('Booked! Order #42 — ₹1800')
     const [first, second] = mocked.checkout.mock.calls
     expect(second[1]).toBe(first[1]) // the first attempt may have succeeded: replay, do not double-charge
+  })
+
+  it('mints a new key after the server says the old one was reused', async () => {
+    const user = userEvent.setup()
+    mocked.hold.mockResolvedValue(hold)
+    mocked.checkout
+      .mockRejectedValueOnce(new ApiError(problem('idempotency-key-reused', 409)))
+      .mockResolvedValueOnce({ orderId: 42, eventId: 1, status: 'CONFIRMED', totalInr: 1800, lines: [], createdAt: '' })
+    renderPage()
+    await pickSeatAndHold(user)
+    const pay = await screen.findByRole('button', { name: 'Pay ₹1800' })
+    await user.click(pay)
+    await screen.findByRole('alert')
+    await user.click(pay)
+    await screen.findByText('Booked! Order #42 — ₹1800')
+    const [first, second] = mocked.checkout.mock.calls
+    expect(second[1]).not.toBe(first[1])
+  })
+
+  it('clears the booked notice and ticket link when the user logs out', async () => {
+    const user = userEvent.setup()
+    mocked.hold.mockResolvedValue(hold)
+    mocked.checkout.mockResolvedValue({ orderId: 42, eventId: 1, status: 'CONFIRMED', totalInr: 1800, lines: [], createdAt: '' })
+    renderPage()
+    await pickSeatAndHold(user)
+    await user.click(await screen.findByRole('button', { name: 'Pay ₹1800' }))
+    await screen.findByText('Booked! Order #42 — ₹1800')
+    act(() => clearSession())
+    await waitFor(() => expect(screen.queryByText(/Booked!/)).not.toBeInTheDocument())
+    expect(screen.queryByText('Preparing your ticket…')).not.toBeInTheDocument()
   })
 
   it('shows title and venue from the catalog', async () => {

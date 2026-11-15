@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ApiError, api } from '../api/client'
-import type { CatalogEvent, DlqMessage, IntegrityReport, LoadTestReport } from '../api/types'
+import type { CatalogEvent, Chaos, DlqMessage, IntegrityReport, LoadTestReport } from '../api/types'
 import { GENERIC_ERROR } from '../format'
 
 type Report = LoadTestReport | null | undefined // undefined = loading
@@ -8,15 +8,31 @@ type Report = LoadTestReport | null | undefined // undefined = loading
 const DLQ_LIMIT = 100 // the most the API returns or replays in one call
 const CHAOS_ERROR = 'Rates are 0 to 100 and latency is 0 to 10000 ms.'
 
-/** 0.07 * 100 is 7.000000000000001: show what the admin would type. */
-const pct = (fraction: number) => String(Number((fraction * 100).toFixed(2)))
+type ChaosField = keyof Chaos
 
-function parseChaos(failurePct: string, latency: string, errorPct: string) {
-  const rate = (text: string) => (/^\d+(\.\d+)?$/.test(text.trim()) && Number(text) <= 100 ? Number(text) / 100 : null)
-  const failureRate = rate(failurePct)
-  const errorRate = rate(errorPct)
-  const latencyMs = /^\d+$/.test(latency.trim()) ? Number(latency) : null
-  if (failureRate === null || errorRate === null || latencyMs === null || latencyMs > 10_000) return null
+/** Shows a fraction as the percentage an admin would type (0.07 is "7", not 7.000000000000001). Display only. */
+const pct = (fraction: number) => String(Number((fraction * 100).toPrecision(12)))
+
+const num = (text: string): number | null => (text.trim() !== '' && Number.isFinite(Number(text)) ? Number(text) : null)
+
+/**
+ * Builds the body to PUT. A field the admin did not touch keeps the backend's exact value (no round trip through a
+ * percentage); an edited field is converted from what was typed. Null when an edited field is out of range.
+ */
+function buildChaos(loaded: Chaos, dirty: ReadonlySet<ChaosField>, failurePct: string, latency: string, errorPct: string) {
+  const rate = (field: 'failureRate' | 'errorRate', text: string) => {
+    if (!dirty.has(field)) return loaded[field]
+    const v = num(text)
+    return v !== null && v >= 0 && v <= 100 ? v / 100 : null
+  }
+  const failureRate = rate('failureRate', failurePct)
+  const errorRate = rate('errorRate', errorPct)
+  let latencyMs: number | null = loaded.latencyMs
+  if (dirty.has('latencyMs')) {
+    const v = num(latency)
+    latencyMs = v !== null && Number.isInteger(v) && v >= 0 && v <= 10_000 ? v : null
+  }
+  if (failureRate === null || errorRate === null || latencyMs === null) return null
   return { failureRate, latencyMs, errorRate }
 }
 
@@ -45,7 +61,10 @@ export default function OpsPage() {
   const [failurePct, setFailurePct] = useState('')
   const [latency, setLatency] = useState('')
   const [errorPct, setErrorPct] = useState('')
-  const [chaosLoaded, setChaosLoaded] = useState(false)
+  const [loadedChaos, setLoadedChaos] = useState<Chaos | null>(null)
+  const [dirty, setDirty] = useState<ReadonlySet<ChaosField>>(new Set())
+  const chaosLoaded = loadedChaos !== null
+  const touch = (field: ChaosField) => setDirty((d) => new Set(d).add(field))
   const [chaosError, setChaosError] = useState<string | null>(null)
   const [chaosMessage, setChaosMessage] = useState<string | null>(null)
   const [chaosSaving, setChaosSaving] = useState(false)
@@ -53,6 +72,7 @@ export default function OpsPage() {
   const [dlq, setDlq] = useState<DlqMessage[] | null>(null)
   const [dlqError, setDlqError] = useState<string | null>(null)
   const [dlqMessage, setDlqMessage] = useState<string | null>(null)
+  const [dlqRefreshError, setDlqRefreshError] = useState<string | null>(null)
   const [replaying, setReplaying] = useState(false)
 
   useEffect(() => {
@@ -64,7 +84,7 @@ export default function OpsPage() {
         setFailurePct(pct(c.failureRate))
         setLatency(String(c.latencyMs))
         setErrorPct(pct(c.errorRate))
-        setChaosLoaded(true)
+        setLoadedChaos(c)
       })
       .catch(() => {
         if (!cancelled) setChaosError(GENERIC_ERROR)
@@ -82,9 +102,14 @@ export default function OpsPage() {
     }
   }, [])
 
+  const chaosAria = {
+    'aria-invalid': chaosError !== null,
+    'aria-describedby': chaosError !== null ? 'chaos-error' : undefined,
+  }
+
   const saveChaos = async () => {
     setChaosMessage(null)
-    const chaos = parseChaos(failurePct, latency, errorPct)
+    const chaos = loadedChaos && buildChaos(loadedChaos, dirty, failurePct, latency, errorPct)
     if (!chaos) {
       setChaosError(CHAOS_ERROR)
       return
@@ -93,6 +118,8 @@ export default function OpsPage() {
     setChaosSaving(true)
     try {
       await api.setChaos(chaos)
+      setLoadedChaos(chaos)
+      setDirty(new Set())
       setChaosMessage('Chaos settings saved.')
     } catch {
       setChaosError(GENERIC_ERROR)
@@ -104,14 +131,21 @@ export default function OpsPage() {
   const replay = async () => {
     setDlqMessage(null)
     setDlqError(null)
+    setDlqRefreshError(null)
     setReplaying(true)
     try {
       const { replayed } = await api.replayDlq(DLQ_LIMIT)
       setDlqMessage(`Replayed ${replayed} ${replayed === 1 ? 'message' : 'messages'}.`)
-      setDlq(await api.dlq(DLQ_LIMIT))
     } catch (err) {
       const failed = err instanceof ApiError && err.problem.type.endsWith('/replay-failed')
       setDlqError(failed && err.problem.detail ? err.problem.detail : GENERIC_ERROR)
+    }
+    // Refresh either way: a failed replay may still have moved some messages. Its own message, so a refresh problem
+    // is never reported as a replay problem.
+    try {
+      setDlq(await api.dlq(DLQ_LIMIT))
+    } catch {
+      setDlqRefreshError('Could not refresh the dead-letter list.')
     } finally {
       setReplaying(false)
     }
@@ -315,7 +349,11 @@ export default function OpsPage() {
             step="any"
             value={failurePct}
             disabled={!chaosLoaded}
-            onChange={(e) => setFailurePct(e.target.value)}
+            {...chaosAria}
+            onChange={(e) => {
+              touch('failureRate')
+              setFailurePct(e.target.value)
+            }}
           />
         </label>
         <label className="field">
@@ -327,7 +365,11 @@ export default function OpsPage() {
             inputMode="numeric"
             value={latency}
             disabled={!chaosLoaded}
-            onChange={(e) => setLatency(e.target.value)}
+            {...chaosAria}
+            onChange={(e) => {
+              touch('latencyMs')
+              setLatency(e.target.value)
+            }}
           />
         </label>
         <label className="field">
@@ -339,11 +381,15 @@ export default function OpsPage() {
             step="any"
             value={errorPct}
             disabled={!chaosLoaded}
-            onChange={(e) => setErrorPct(e.target.value)}
+            {...chaosAria}
+            onChange={(e) => {
+              touch('errorRate')
+              setErrorPct(e.target.value)
+            }}
           />
         </label>
         {chaosError && (
-          <p role="alert" className="field-error">
+          <p id="chaos-error" role="alert" className="field-error">
             {chaosError}
           </p>
         )}
@@ -370,7 +416,7 @@ export default function OpsPage() {
             <ul className="plain">
               {dlq.slice(0, 5).map((m) => (
                 <li key={m.messageId} className="muted">
-                  order {m.orderId ?? 'unknown'} · {m.reason}
+                  order {m.orderId ?? 'unknown'} · {m.reason ?? 'no reason recorded'}
                 </li>
               ))}
             </ul>
@@ -384,6 +430,11 @@ export default function OpsPage() {
         <button type="button" className="primary" disabled={replaying || !dlq?.length} onClick={replay}>
           Replay dead letters
         </button>
+        {dlqRefreshError && (
+          <p role="alert" className="field-error">
+            {dlqRefreshError}
+          </p>
+        )}
         {dlqMessage && (
           <p role="status" className="notice success">
             {dlqMessage}

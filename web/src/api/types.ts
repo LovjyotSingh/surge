@@ -1,16 +1,6 @@
 export type SeatState = 'AVAILABLE' | 'HELD' | 'SOLD'
 export type Tier = 'PLATINUM' | 'GOLD' | 'SILVER'
 
-export interface EventSummary {
-  id: number
-  title: string
-  venueName: string
-  zoneId: string
-  saleOpensAt: string
-  totalSeats: number
-  soldSeats: number
-}
-
 export interface SeatView {
   id: number
   rowLabel: string
@@ -185,5 +175,5 @@ export interface DlqMessage {
   messageId: string
   orderId: number | null
   deaths: number
-  reason: string
+  reason: string | null
 }

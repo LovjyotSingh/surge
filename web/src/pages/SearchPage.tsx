@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import type { CatalogEvent, SearchParams } from '../api/types'
 import EventCard from '../components/EventCard'
@@ -17,6 +17,7 @@ const NO_FILTERS: Filters = { q: '', city: '', category: '', maxPrice: '', from:
 const CATEGORIES = ['concert', 'comedy', 'sports', 'theatre']
 const CITIES = ['Delhi', 'Dubai', 'Singapore']
 const DEBOUNCE_MS = 300
+const DATE_ORDER_ERROR = 'Start date must be before end date.'
 
 function instant(day: string, time: string): string | undefined {
   const d = new Date(`${day}T${time}`) // local time: the day the user picked, in their zone
@@ -54,37 +55,51 @@ export default function SearchPage() {
     filters: NO_FILTERS,
   })
   const [loadingMore, setLoadingMore] = useState(false)
+  // Bumped whenever the query changes (and when a new search starts): a response is applied only if it still carries
+  // the current generation, so a slow "Load more" or an old search can never land on newer results.
+  const generation = useRef(0)
+  const dateOrderBad = filters.from !== '' && filters.to !== '' && filters.from > filters.to
 
   useEffect(() => {
-    let cancelled = false
+    const mine = ++generation.current
+    if (dateOrderBad) return
     const timer = setTimeout(() => {
       setResults((r) => ({ ...r, status: 'loading' }))
       api
         .search(toParams(filters, 0))
         .then((res) => {
-          if (!cancelled) setResults({ status: 'ok', items: res.items, total: res.total, page: res.page, filters })
+          if (generation.current === mine)
+            setResults({ status: 'ok', items: res.items, total: res.total, page: res.page, filters })
         })
         .catch(() => {
-          if (!cancelled) setResults((r) => ({ ...r, status: 'error' }))
+          if (generation.current === mine) setResults((r) => ({ ...r, status: 'error' }))
         })
     }, DEBOUNCE_MS)
-    return () => {
-      cancelled = true
-      clearTimeout(timer)
-    }
-  }, [filters])
+    return () => clearTimeout(timer)
+  }, [filters, dateOrderBad])
 
   const loadMore = async () => {
+    const mine = generation.current
     setLoadingMore(true)
     try {
       const res = await api.search(toParams(results.filters, results.page + 1))
+      if (generation.current !== mine) return
       setResults((r) => ({ ...r, status: 'ok', items: [...r.items, ...res.items], total: res.total, page: res.page }))
     } catch {
-      setResults((r) => ({ ...r, status: 'error' }))
+      if (generation.current === mine) setResults((r) => ({ ...r, status: 'error' }))
     } finally {
       setLoadingMore(false)
     }
   }
+
+  const statusText =
+    results.status === 'loading'
+      ? 'Searching…'
+      : results.status === 'ok'
+        ? results.items.length === 0
+          ? 'No events match. Try a different spelling or fewer filters.'
+          : `Showing ${results.items.length} of ${results.total} events.`
+        : ''
 
   const set = (key: keyof Filters) => (e: { target: { value: string } }) =>
     setFilters((f) => ({ ...f, [key]: e.target.value }))
@@ -127,25 +142,35 @@ export default function SearchPage() {
         </label>
         <label className="field">
           To
-          <input type="date" value={filters.to} onChange={set('to')} />
+          <input
+            type="date"
+            value={filters.to}
+            onChange={set('to')}
+            aria-invalid={dateOrderBad}
+            aria-describedby={dateOrderBad ? 'date-order-error' : undefined}
+          />
         </label>
       </form>
+      {dateOrderBad && (
+        <p id="date-order-error" role="alert" className="field-error">
+          {DATE_ORDER_ERROR}
+        </p>
+      )}
 
       {results.status === 'error' && (
         <p role="alert" className="notice error">
           {GENERIC_ERROR}
         </p>
       )}
-      {results.status === 'loading' && <p className="muted">Searching…</p>}
-      {results.status === 'ok' && results.items.length === 0 && (
-        <p className="muted">No events match. Try a different spelling or fewer filters.</p>
-      )}
+      <p aria-live="polite" className="muted">
+        {dateOrderBad ? '' : statusText}
+      </p>
       <ul className="cards">
         {results.items.map((e) => (
           <EventCard key={e.id} event={e} />
         ))}
       </ul>
-      {results.items.length > 0 && results.items.length < results.total && (
+      {results.items.length > 0 && results.items.length < results.total && results.status !== 'loading' && (
         <button type="button" disabled={loadingMore} onClick={loadMore}>
           Load more
         </button>

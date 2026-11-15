@@ -16,11 +16,13 @@ beforeEach(() => {
   vi.resetAllMocks()
   create.mockReturnValue('blob:ticket-1')
   vi.useFakeTimers()
-  vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke }))
+  vi.spyOn(URL, 'createObjectURL').mockImplementation(create)
+  vi.spyOn(URL, 'revokeObjectURL').mockImplementation(revoke)
 })
 afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 const tick = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms))
@@ -95,5 +97,31 @@ describe('TicketLink', () => {
     await tick(10_000)
     expect(mocked.fetchTicket).toHaveBeenCalledTimes(1)
     expect(screen.queryByRole('link')).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Your session expired — log in again to get your ticket.')
+  })
+
+  it('announces readiness in the same live region', async () => {
+    mocked.fetchTicket.mockResolvedValueOnce(null).mockResolvedValueOnce(new Blob(['%PDF']))
+    render(<TicketLink orderId={3} />)
+    await tick(0)
+    const region = screen.getByRole('status')
+    expect(region).toHaveAttribute('aria-live', 'polite')
+    expect(region).toHaveTextContent('Preparing your ticket…')
+    await tick(2000)
+    expect(screen.getByRole('status')).toBe(region)
+    expect(region).toHaveTextContent('Your ticket is ready.')
+  })
+
+  it('ignores a ticket that arrives after unmount: no object URL, no state update', async () => {
+    let finish!: (b: Blob | null) => void
+    mocked.fetchTicket.mockReturnValue(new Promise((r) => (finish = r)))
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { unmount } = render(<TicketLink orderId={4} />)
+    await tick(0)
+    unmount()
+    await act(async () => finish(new Blob(['%PDF'])))
+    expect(create).not.toHaveBeenCalled()
+    expect(revoke).not.toHaveBeenCalled()
+    expect(errors).not.toHaveBeenCalled()
   })
 })

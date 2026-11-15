@@ -1,7 +1,7 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../api/client'
 import type { CatalogEvent } from '../api/types'
 import SearchPage from './SearchPage'
@@ -48,24 +48,35 @@ function renderPage() {
 beforeEach(() => {
   vi.resetAllMocks()
 })
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 describe('SearchPage', () => {
-  it('debounces typing into one request and renders result cards', async () => {
-    const user = userEvent.setup()
+  it('debounces typing into one request at exactly 300 ms and renders result cards', async () => {
+    vi.useFakeTimers()
     mocked.search.mockResolvedValue(page([hit()]))
     renderPage()
-    await user.type(screen.getByRole('searchbox', { name: 'Search events' }), 'cold')
+    const box = screen.getByRole('searchbox', { name: 'Search events' })
+    for (const text of ['c', 'co', 'col', 'cold']) {
+      fireEvent.change(box, { target: { value: text } })
+      await act(() => vi.advanceTimersByTimeAsync(100))
+    }
+    await act(() => vi.advanceTimersByTimeAsync(199))
+    // 299 ms after the last keystroke: nothing yet
+    expect(mocked.search).not.toHaveBeenCalled()
+    await act(() => vi.advanceTimersByTimeAsync(1))
+    expect(mocked.search).toHaveBeenCalledTimes(1)
+    expect(mocked.search.mock.calls[0][0]).toMatchObject({ q: 'cold' })
 
-    const link = await screen.findByRole('link', { name: 'Coldplay Live' })
+    const link = screen.getByRole('link', { name: 'Coldplay Live' })
     expect(link).toHaveAttribute('href', '/events/7')
     expect(screen.getByText('Coldplay')).toBeInTheDocument()
     expect(screen.getByText('Wankhede · Mumbai')).toBeInTheDocument()
     expect(screen.getByText(/5 Dec 2026/)).toBeInTheDocument()
     expect(screen.getByText('from ₹1800')).toBeInTheDocument()
     expect(screen.getByText('123 seats left')).toBeInTheDocument()
-
-    expect(mocked.search).toHaveBeenCalledTimes(1)
-    expect(mocked.search.mock.calls[0][0]).toMatchObject({ q: 'cold' })
+    expect(screen.getByText('Showing 1 of 1 events.')).toBeInTheDocument()
   })
 
   it('shows the empty state', async () => {
@@ -112,5 +123,51 @@ describe('SearchPage', () => {
     expect(screen.getByRole('link', { name: 'Coldplay Live' })).toBeInTheDocument()
     expect(mocked.search.mock.calls[1][0]).toMatchObject({ page: 1 })
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument()
+  })
+
+  it('drops a slow "Load more" that resolves after the filters changed', async () => {
+    const user = userEvent.setup()
+    let finishMore!: (p: ReturnType<typeof page>) => void
+    mocked.search
+      .mockResolvedValueOnce({ items: [hit()], total: 2, page: 0, size: 1 })
+      .mockReturnValueOnce(new Promise((r) => (finishMore = r)))
+      .mockResolvedValueOnce({ items: [hit({ id: 9, title: 'Fresh Result' })], total: 1, page: 0, size: 1 })
+    renderPage()
+    await screen.findByRole('link', { name: 'Coldplay Live' })
+    await user.click(screen.getByRole('button', { name: 'Load more' }))
+    await user.type(screen.getByLabelText('City'), 'Dubai')
+    expect(await screen.findByRole('link', { name: 'Fresh Result' })).toBeInTheDocument()
+
+    await act(async () => finishMore({ items: [hit({ id: 8, title: 'Stale Page' })], total: 2, page: 1, size: 1 }))
+    expect(screen.queryByRole('link', { name: 'Stale Page' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Coldplay Live' })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Fresh Result' })).toBeInTheDocument()
+    expect(screen.getByText('Showing 1 of 1 events.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument()
+  })
+
+  it('disables Load more while it is loading', async () => {
+    const user = userEvent.setup()
+    mocked.search
+      .mockResolvedValueOnce({ items: [hit()], total: 2, page: 0, size: 1 })
+      .mockReturnValueOnce(new Promise(() => {}))
+    renderPage()
+    await screen.findByRole('link', { name: 'Coldplay Live' })
+    await user.click(screen.getByRole('button', { name: 'Load more' }))
+    expect(screen.getByRole('button', { name: 'Load more' })).toBeDisabled()
+  })
+
+  it('does not search when From is after To', async () => {
+    const user = userEvent.setup()
+    mocked.search.mockResolvedValue(page([hit()]))
+    renderPage()
+    await screen.findByRole('link', { name: 'Coldplay Live' })
+    mocked.search.mockClear()
+    await user.type(screen.getByLabelText('From'), '2026-12-31')
+    await user.type(screen.getByLabelText('To'), '2026-12-01')
+    expect(await screen.findByText('Start date must be before end date.')).toBeInTheDocument()
+    await new Promise((r) => setTimeout(r, 450))
+    const sent = mocked.search.mock.calls.filter(([p]) => p.from && p.to)
+    expect(sent).toHaveLength(0)
   })
 })

@@ -214,4 +214,72 @@ describe('OpsPage', () => {
     await user.click(await screen.findByRole('button', { name: 'Replay dead letters' }))
     expect(await screen.findByText('Broker connection refused')).toBeInTheDocument()
   })
+
+  it('sends untouched chaos fields exactly as loaded and accepts .5 and 1e1', async () => {
+    const user = userEvent.setup()
+    mocked.latestReport.mockResolvedValue(null)
+    mocked.chaos.mockResolvedValue({ failureRate: 0.07, latencyMs: 150, errorRate: 0.123456789 })
+    render(<OpsPage />)
+    const latency = await screen.findByLabelText('Latency (ms)')
+    await waitFor(() => expect(latency).toHaveValue(150))
+    await user.clear(latency)
+    await user.type(latency, '1e1')
+    await user.click(screen.getByRole('button', { name: 'Save chaos settings' }))
+    await screen.findByText('Chaos settings saved.')
+    expect(mocked.setChaos).toHaveBeenLastCalledWith({ failureRate: 0.07, latencyMs: 10, errorRate: 0.123456789 })
+
+    const failure = screen.getByLabelText('Failure rate (%)')
+    await user.clear(failure)
+    await user.type(failure, '.5')
+    await user.click(screen.getByRole('button', { name: 'Save chaos settings' }))
+    await waitFor(() => expect(mocked.setChaos).toHaveBeenCalledTimes(2))
+    expect(mocked.setChaos).toHaveBeenLastCalledWith({ failureRate: 0.005, latencyMs: 10, errorRate: 0.123456789 })
+  })
+
+  it('flags the chaos inputs invalid and linked to the error', async () => {
+    const user = userEvent.setup()
+    mocked.latestReport.mockResolvedValue(null)
+    render(<OpsPage />)
+    const failure = await screen.findByLabelText('Failure rate (%)')
+    await waitFor(() => expect(failure).toHaveValue(25))
+    await user.clear(failure)
+    await user.type(failure, '150')
+    await user.click(screen.getByRole('button', { name: 'Save chaos settings' }))
+    await screen.findByText(/Rates are 0 to 100/)
+    expect(failure).toHaveAttribute('aria-invalid', 'true')
+    expect(failure).toHaveAttribute('aria-describedby', 'chaos-error')
+  })
+
+  it('reports a refresh failure separately from a successful replay', async () => {
+    const user = userEvent.setup()
+    mocked.latestReport.mockResolvedValue(null)
+    mocked.dlq
+      .mockResolvedValueOnce([{ messageId: 'm1', orderId: 11, deaths: 3, reason: null }])
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    mocked.replayDlq.mockResolvedValue({ replayed: 1 })
+    render(<OpsPage />)
+    expect(await screen.findByText(/no reason recorded/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Replay dead letters' }))
+    expect(await screen.findByText('Replayed 1 message.')).toBeInTheDocument()
+    expect(screen.getByText('Could not refresh the dead-letter list.')).toBeInTheDocument()
+    expect(screen.queryByText('Something went wrong — please try again.')).not.toBeInTheDocument()
+  })
+
+  it('still refreshes the list after a failed (maybe partial) replay', async () => {
+    const user = userEvent.setup()
+    mocked.latestReport.mockResolvedValue(null)
+    mocked.dlq
+      .mockResolvedValueOnce([
+        { messageId: 'm1', orderId: 11, deaths: 3, reason: 'x' },
+        { messageId: 'm2', orderId: 12, deaths: 3, reason: 'x' },
+      ])
+      .mockResolvedValueOnce([{ messageId: 'm2', orderId: 12, deaths: 3, reason: 'x' }])
+    mocked.replayDlq.mockRejectedValue(
+      new ApiError({ type: 'https://surge.dev/problems/replay-failed', title: 'Replay failed', status: 503, detail: 'Broker down' }),
+    )
+    render(<OpsPage />)
+    await user.click(await screen.findByRole('button', { name: 'Replay dead letters' }))
+    expect(await screen.findByText('Broker down')).toBeInTheDocument()
+    expect(await screen.findByText('Dead letters: 1')).toBeInTheDocument()
+  })
 })

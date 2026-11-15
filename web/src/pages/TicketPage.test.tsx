@@ -33,10 +33,12 @@ function renderAt(path: string) {
 beforeEach(() => {
   vi.mocked(api.fetchTicket).mockReset()
   vi.mocked(api.fetchTicket).mockResolvedValue(null)
-  vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: () => 'blob:x', revokeObjectURL: () => {} }))
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:x')
+  vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
 })
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
   clearSession()
   sessionStorage.clear()
 })
