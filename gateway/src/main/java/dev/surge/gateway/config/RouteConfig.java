@@ -26,6 +26,7 @@ import org.springframework.http.HttpMethod;
 class RouteConfig {
 
     private static final String RESPONSE_TIMEOUT = "response-timeout";
+    private static final String AUDIENCE = RouteAudiences.METADATA_KEY;
 
     @Bean
     RouteLocator routes(RouteLocatorBuilder builder, RedisRateLimiter limiter, ProblemWriter problems,
@@ -42,43 +43,55 @@ class RouteConfig {
         RateLimitFilter authLimit = new RateLimitFilter(limiter, problems, "auth-entry", KeyResolvers.clientIp(), 5,
                 10);
 
-        return builder.routes()
+        // Every route names its target's spring.application.name (AUDIENCE): the gateway signs each request's
+        // X-Surge-Identity for exactly that service. RouteAudiences.requireAll refuses to start without it.
+        return RouteAudiences.requireAll(builder.routes()
                 // --- ADMIN (the owning service) ---
-                .route("auth-admin", r -> r.path("/api/auth/admin/**").uri(auth))
-                .route("payments-admin", r -> r.path("/api/payments/admin/**").uri(payment))
-                .route("bookings-admin", r -> r.path("/api/bookings/admin/**").uri(booking))
-                .route("catalog-admin", r -> r.path("/api/catalog/admin/**").uri(catalog))
-                .route("notifications-admin", r -> r.path("/api/notifications/admin/**").uri(notification))
+                .route("auth-admin", r -> r.path("/api/auth/admin/**")
+                        .metadata(AUDIENCE, RouteAudiences.AUTH).uri(auth))
+                .route("payments-admin", r -> r.path("/api/payments/admin/**")
+                        .metadata(AUDIENCE, RouteAudiences.PAYMENT).uri(payment))
+                .route("bookings-admin", r -> r.path("/api/bookings/admin/**")
+                        .metadata(AUDIENCE, RouteAudiences.BOOKING).uri(booking))
+                .route("catalog-admin", r -> r.path("/api/catalog/admin/**")
+                        .metadata(AUDIENCE, RouteAudiences.CATALOG).uri(catalog))
+                .route("notifications-admin", r -> r.path("/api/notifications/admin/**")
+                        .metadata(AUDIENCE, RouteAudiences.NOTIFICATION).uri(notification))
                 // --- auth ---
-                .route("auth-me", r -> r.path("/api/auth/me").uri(auth))
+                .route("auth-me", r -> r.path("/api/auth/me")
+                        .metadata(AUDIENCE, RouteAudiences.AUTH).uri(auth))
                 .route("auth-entry", r -> r.method(HttpMethod.POST).and()
                         .path("/api/auth/login", "/api/auth/signup")
-                        .filters(f -> f.filter(authLimit)).uri(auth))
-                .route("auth-public", r -> r.path("/api/auth/**").uri(auth))
+                        .filters(f -> f.filter(authLimit))
+                        .metadata(AUDIENCE, RouteAudiences.AUTH).uri(auth))
+                .route("auth-public", r -> r.path("/api/auth/**")
+                        .metadata(AUDIENCE, RouteAudiences.AUTH).uri(auth))
                 // --- catalog (public reads) ---
                 .route("catalog", r -> r.method(HttpMethod.GET).and().path("/api/catalog/**")
                         .filters(f -> f.circuitBreaker(c -> c.setName("catalog")
                                 .setFallbackUri("forward:/fallback/catalog")))
-                        .uri(catalog))
+                        .metadata(AUDIENCE, RouteAudiences.CATALOG).uri(catalog))
                 // --- booking: the SSE stream has no response timeout; other public event reads use the default ---
                 .route("booking-events-stream", r -> r.method(HttpMethod.GET).and()
                         .path("/api/bookings/events/*/stream")
                         .metadata(RESPONSE_TIMEOUT, -1)
+                        .metadata(AUDIENCE, RouteAudiences.BOOKING)
                         .uri(booking))
                 .route("booking-events", r -> r.method(HttpMethod.GET).and().path("/api/bookings/events/**")
-                        .uri(booking))
+                        .metadata(AUDIENCE, RouteAudiences.BOOKING).uri(booking))
                 .route("booking-holds", r -> r.path("/api/bookings/holds/**")
                         .filters(f -> f.filter(holdsLimit)
                                 .circuitBreaker(c -> c.setName("booking").setFallbackUri("forward:/fallback/booking")))
-                        .uri(booking))
+                        .metadata(AUDIENCE, RouteAudiences.BOOKING).uri(booking))
                 .route("booking-orders", r -> r.path("/api/bookings/orders/**")
                         .filters(f -> f.filter(ordersLimit)
                                 .circuitBreaker(c -> c.setName("booking").setFallbackUri("forward:/fallback/booking")))
-                        .uri(booking))
+                        .metadata(AUDIENCE, RouteAudiences.BOOKING).uri(booking))
                 // --- notification ---
                 .route("notification-tickets", r -> r.method(HttpMethod.GET).and()
-                        .path("/api/notifications/tickets/**").uri(notification))
-                .build();
+                        .path("/api/notifications/tickets/**")
+                        .metadata(AUDIENCE, RouteAudiences.NOTIFICATION).uri(notification))
+                .build());
     }
 
     /**

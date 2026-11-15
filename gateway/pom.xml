@@ -10,9 +10,17 @@
     <artifactId>gateway</artifactId>
     <name>gateway</name>
 
-    <!-- Reactive (webflux) edge service. Deliberately does NOT depend on dev.surge:common: its RequestIdFilter and
-         auto-configuration are servlet-based; the gateway has its own reactive request-id filter and problem writer. -->
+    <!-- Reactive (webflux) edge service. Depends on dev.surge:common ONLY for the internal identity token signer
+         (dev.surge.common.security, pure Nimbus). common's servlet pieces stay inert here: its RequestIdFilter is never
+         registered and both servlet auto-configurations are @ConditionalOnWebApplication(SERVLET); its webmvc and
+         security starters are optional, so none of them reach this classpath. The gateway keeps its own reactive
+         request-id filter and problem writer. -->
     <dependencies>
+        <dependency>
+            <groupId>dev.surge</groupId>
+            <artifactId>common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <dependency>
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-gateway-server-webflux</artifactId>

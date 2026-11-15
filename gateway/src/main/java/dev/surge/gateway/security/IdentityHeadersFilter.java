@@ -14,13 +14,15 @@ import reactor.core.publisher.Mono;
 
 /**
  * Global filter that turns a verified JWT into the identity headers the services trust. Whatever the client sent as
- * {@code X-User-Id}, {@code X-User-Email} or {@code X-User-Roles} (and the bearer token itself, which downstream
- * services never need) is ALWAYS removed first; the headers are then set from the token's claims only when the
- * request carries a verified JWT.
+ * {@code X-User-Id}, {@code X-User-Email}, {@code X-User-Roles} or {@code X-Surge-Identity} (and the bearer token
+ * itself, which downstream services never need) is ALWAYS removed first; the headers are then set from the token's
+ * claims only when the request carries a verified JWT. {@link InternalIdentityFilter} runs next and adds the signed
+ * {@code X-Surge-Identity}; the {@code X-User-*} headers stay until every service reads the signed token (S2b).
  */
 @Component
 public class IdentityHeadersFilter implements GlobalFilter, Ordered {
 
+    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 1;
     public static final String USER_ID = "X-User-Id";
     public static final String USER_EMAIL = "X-User-Email";
     public static final String USER_ROLES = "X-User-Roles";
@@ -38,6 +40,7 @@ public class IdentityHeadersFilter implements GlobalFilter, Ordered {
                         headers.remove(USER_ID);
                         headers.remove(USER_EMAIL);
                         headers.remove(USER_ROLES);
+                        headers.remove(InternalIdentityFilter.HEADER);
                         headers.remove("Authorization");
                         authentication.ifPresent(token -> {
                             var jwt = token.getToken();
@@ -60,6 +63,6 @@ public class IdentityHeadersFilter implements GlobalFilter, Ordered {
 
     @Override
     public int getOrder() {
-        return Ordered.HIGHEST_PRECEDENCE + 1;
+        return ORDER;
     }
 }

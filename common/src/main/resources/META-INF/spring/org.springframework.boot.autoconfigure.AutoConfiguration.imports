@@ -1,1 +1,3 @@
 dev.surge.common.CommonAutoConfiguration
+dev.surge.common.security.InternalIdentitySignerAutoConfiguration
+dev.surge.common.security.InternalSecurityAutoConfiguration

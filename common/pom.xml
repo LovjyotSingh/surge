@@ -20,6 +20,19 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-json</artifactId>
         </dependency>
+        <!-- Internal identity tokens (dev.surge.common.security): signing and verifying need only Nimbus, so every
+             module that depends on common (the reactive gateway included) gets no Spring Security from it. -->
+        <dependency>
+            <groupId>com.nimbusds</groupId>
+            <artifactId>nimbus-jose-jwt</artifactId>
+        </dependency>
+        <!-- The servlet resource-server chain (InternalSecurityAutoConfiguration). Optional: a service opts in by adding
+             the starter itself, so a service without it keeps running with no security filter chain at all. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+            <optional>true</optional>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>

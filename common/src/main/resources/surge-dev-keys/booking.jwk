@@ -1,0 +1,11 @@
+{
+  "x-surge-note" : "DEV ONLY - committed on purpose for local runs and tests. Anyone can read it, so SURGE_ENV=prod refuses this key. Real keys: docker/gen-internal-keys.sh",
+  "kty" : "EC",
+  "d" : "GSVpdoz50-LPhCbNM17MzLGYq8GWtY3OM--rv6YKXOg",
+  "use" : "sig",
+  "crv" : "P-256",
+  "kid" : "svc:booking",
+  "x" : "AcXGIvdmMBdGwzEF8OI9JvflMpWkeVIouI30NmrJJ54",
+  "y" : "rFPphdWg49I96JEloNTP7J_COfUSr9xyng2M5c8u1Rk",
+  "alg" : "ES256"
+}

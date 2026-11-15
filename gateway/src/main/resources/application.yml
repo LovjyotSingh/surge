@@ -26,6 +26,13 @@ spring:
             response-timeout: 30s
 
 surge:
+  # dev (default, local) or prod. Compose's prod overlay sets SURGE_ENV=prod: then no committed development key works.
+  env: ${SURGE_ENV:dev}
+  internal-identity:
+    # The gateway signs every routed request's X-Surge-Identity (ES256, kid=gateway) with this private JWK.
+    # Unset in dev = the committed DEV key (with a warning); prod refuses to start without a real one.
+    issuer: gateway
+    signing-key-location: ${SURGE_INTERNAL_SIGNING_KEY:}
   security:
     issuer: surge-auth
     # Synthetic load-test identities (sub "lt-*" or claim lt=true) are refused unless a loadtest overlay sets this.
