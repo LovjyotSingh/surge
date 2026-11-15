@@ -70,12 +70,20 @@ class GatewaySecurityTest extends GatewayTestBase {
         String ltSubject = token("lt-x-1", "lt-x-1@loadtest.local", List.of("USER"), ISSUER, exp, KEY);
         String ltClaim = token("u-5", "u-5@surge.test", java.util.Map.of("lt", true), List.of("USER"), ISSUER, exp,
                 KEY);
-        for (String bad : List.of(ltSubject, ltClaim)) {
+        String ltString = token("u-5", "u-5@surge.test", java.util.Map.of("lt", "true"), List.of("USER"), ISSUER, exp,
+                KEY);
+        for (String bad : List.of(ltSubject, ltClaim, ltString)) {
             client.post().uri("/api/bookings/holds").header(HttpHeaders.AUTHORIZATION, bearer(bad))
                     .bodyValue("{}").exchange().expectStatus().isUnauthorized()
                     .expectBody().jsonPath("$.type").isEqualTo(PROBLEM + "unauthorized");
         }
         assertThat(BOOKING.sawNothing()).isTrue();
+        // a permitAll route still validates a presented token: an lt token is 401 there too
+        for (String bad : List.of(ltSubject, ltClaim, ltString)) {
+            client.get().uri("/api/catalog/events").header(HttpHeaders.AUTHORIZATION, bearer(bad)).exchange()
+                    .expectStatus().isUnauthorized();
+        }
+        assertThat(CATALOG.sawNothing()).isTrue();
     }
 
     @Test

@@ -26,7 +26,9 @@ class LoadtestSubjectValidatorTest {
         assertThat(v.validate(jwt("u-5", true)).hasErrors()).isTrue();
         assertThat(v.validate(jwt("lt-x-1", true)).hasErrors()).isTrue();
         assertThat(v.validate(jwt("u-5", null)).hasErrors()).isFalse();
-        assertThat(v.validate(jwt("u-5", false)).hasErrors()).isFalse();
+        assertThat(v.validate(jwt("u-5", "true")).hasErrors()).isTrue();
+        assertThat(v.validate(jwt("u-5", false)).hasErrors()).isTrue();
+        assertThat(v.validate(jwt("u-5", 1)).hasErrors()).isTrue();
     }
 
     @Test

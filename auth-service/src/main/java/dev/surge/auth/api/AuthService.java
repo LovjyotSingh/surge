@@ -7,7 +7,7 @@ import dev.surge.auth.user.Role;
 import dev.surge.auth.user.User;
 import dev.surge.auth.user.UserRepository;
 import java.time.Clock;
-import java.util.Locale;
+import dev.surge.auth.user.Emails;
 import java.util.Optional;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -26,7 +26,7 @@ public class AuthService {
 
     AuthService(UserRepository users, PasswordEncoder encoder, TokenService tokens, Clock clock,
                 @org.springframework.beans.factory.annotation.Value("${surge.auth.admin-email}") String adminEmail) {
-        this.adminEmail = normalize(adminEmail);
+        this.adminEmail = Emails.normalize(adminEmail);
         this.users = users;
         this.encoder = encoder;
         this.tokens = tokens;
@@ -34,12 +34,8 @@ public class AuthService {
         this.dummyHash = encoder.encode("surge-dummy-password");
     }
 
-    static String normalize(String email) {
-        return email.trim().toLowerCase(Locale.ROOT);
-    }
-
     public TokenResponse signup(SignupRequest req) {
-        String email = normalize(req.email());
+        String email = Emails.normalize(req.email());
         if (adminEmail.equals(email) || users.existsByEmail(email)) {
             throw new EmailTakenException();
         }
@@ -54,7 +50,7 @@ public class AuthService {
     }
 
     public TokenResponse login(LoginRequest req) {
-        Optional<User> found = users.findByEmail(normalize(req.email()));
+        Optional<User> found = users.findByEmail(Emails.normalize(req.email()));
         boolean matches = encoder.matches(req.password(), found.map(User::getPasswordHash).orElse(dummyHash));
         if (found.isEmpty() || !matches) {
             throw new BadCredentialsException();

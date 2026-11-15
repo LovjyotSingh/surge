@@ -1,21 +1,18 @@
 package dev.surge.catalog.importer;
 
-import dev.surge.catalog.web.AdminAccess;
-import dev.surge.catalog.error.ForbiddenException;
 import dev.surge.catalog.error.InvalidImportException;
 import dev.surge.catalog.error.UploadTooLargeException;
 import java.io.IOException;
 import java.io.InputStream;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 /**
- * Admin-only CSV import. The gateway already rejects non-admins on {@code /api/*}{@code /admin/**}; this repeats the
+ * Admin-only CSV import. The gateway already rejects non-admins on {@code /api/*}{@code /admin/**}; AdminAccess repeats the
  * check on the identity header it sets ({@code X-User-Roles}, comma separated) as defence in depth. Paths stay
  * case-sensitive (Spring MVC's default), matching the gateway, so {@code /api/catalog/ADMIN/...} is simply a 404.
  */
@@ -30,9 +27,8 @@ public class ImportController {
     }
 
     @PostMapping(path = "/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ImportResult importEvents(@RequestHeader(value = "X-User-Roles", required = false) String roles,
-                                     @RequestPart("file") MultipartFile file) throws IOException {
-        AdminAccess.requireAdmin(roles);
+    public ImportResult importEvents(
+            @RequestPart("file") MultipartFile file) throws IOException {
         if (file.getSize() > CsvEventImporter.MAX_BYTES) {
             throw new UploadTooLargeException(CsvEventImporter.MAX_BYTES);
         }

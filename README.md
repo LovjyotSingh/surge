@@ -92,6 +92,10 @@ It resets event 1, runs, prints the report, shows it on the **Ops** page (http:/
 curl -X POST -H "X-User-Id: u-admin" -H "X-User-Roles: ADMIN" "http://localhost:8080/api/bookings/admin/events/1/reset?opensInSeconds=0"
 ```
 
+This curl is **local development only**. Booking checks the `ADMIN` role in the service, but it trusts the `X-User-Id` and `X-User-Roles` headers from whoever can reach it. Until Task 16 (nginx forwards to the gateway only) and S2 (a signed internal identity token) land, never expose booking, or this web/nginx port, beyond your own machine.
+
+If you start auth-service by hand (outside compose), set `SURGE_ENV=dev` explicitly, for example `SURGE_ENV=dev ./mvnw -pl auth-service spring-boot:run`. With the variable missing it also defaults to `dev` and logs a warning that the public development admin password is in use. Never expose such an instance; real deployments set `SURGE_ENV=prod` and a `SURGE_ADMIN_PASSWORD` of at least 16 characters.
+
 Stop everything with `docker compose --profile core down` (add `-v` to also delete the database data).
 
 Ports on your machine, all bound to `127.0.0.1` so nothing is reachable from your network: `8080` web and API through Nginx, `8081` booking-service directly (health and metrics), `3307` MySQL, `6379` Redis.
@@ -108,18 +112,18 @@ All endpoints are under `/api/bookings`. Interactive docs: **http://localhost:80
 | POST | `/holds` | `X-User-Id` | Hold 1 to 8 seats for 5 minutes and lock their prices. Body: `{"eventId":1,"seatIds":[1,2]}`. Returns `holdId`, `expiresAt`, `quotedTotalInr` and per-seat `lines` | 201 |
 | POST | `/orders` | `X-User-Id`, `Idempotency-Key` | Pay the hold's locked quote and confirm the order. Body: `{"holdId":"..."}` | 201, or 200 with `Idempotent-Replayed: true` on a repeat |
 | GET | `/orders/{orderId}` | `X-User-Id` | Your order | 200 |
-| GET | `/admin/events/{eventId}/integrity` | | Sold count and oversell checks (`oversold` must be 0, `consistent` must be true) | 200 |
-| POST | `/admin/events/{eventId}/reset?opensInSeconds=N` | | Reset an event; the sale opens in N seconds | 204 |
-| PUT | `/admin/loadtest-reports/latest` | | Store the latest load-test report (used by the load tester) | 204 |
-| GET | `/admin/loadtest-reports/latest` | | Latest load-test report (used by the Ops page) | 200 |
+| GET | `/admin/events/{eventId}/integrity` | `X-User-Id`, `X-User-Roles: ADMIN` | Sold count and oversell checks (`oversold` must be 0, `consistent` must be true) | 200 |
+| POST | `/admin/events/{eventId}/reset?opensInSeconds=N` | `X-User-Id`, `X-User-Roles: ADMIN` | Reset an event; the sale opens in N seconds | 204 |
+| PUT | `/admin/loadtest-reports/latest` | `X-User-Id`, `X-User-Roles: ADMIN` | Store the latest load-test report (used by the load tester) | 204 |
+| GET | `/admin/loadtest-reports/latest` | `X-User-Id`, `X-User-Roles: ADMIN` | Latest load-test report (used by the Ops page) | 200 |
 
-Every error, including the ones Spring raises itself (unknown route `404 not-found`, wrong method `405 method-not-allowed`, a value of the wrong type `400 validation-failed`) and unexpected failures (`500 internal-error`, without the exception message), uses the Problem Details JSON format (RFC 9457, the successor of RFC 7807) with a `type` under `https://surge.dev/problems/` and a `requestId` field. Common ones: `400` validation, `401` missing user, `402` payment failed, `404` not found, `409` seat taken / hold exists / sale not open, `429` rate limited (with `Retry-After`).
+Every error, including the ones Spring raises itself (unknown route `404 not-found`, wrong method `405 method-not-allowed`, a value of the wrong type `400 validation-failed`) and unexpected failures (`500 internal-error`, without the exception message), uses the Problem Details JSON format (RFC 9457, the successor of RFC 7807) with a `type` under `https://surge.dev/problems/` and a `requestId` field. Common ones: `400` validation, `401` missing user, `403` not an administrator (admin routes), `402` payment failed, `404` not found, `409` seat taken / hold exists / sale not open, `429` rate limited (with `Retry-After`).
 
 Idempotency keys: a repeat of a completed checkout returns the same order for 24 hours. A key whose order no longer exists (an admin reset deletes orders) is treated as a new request.
 
 Health and metrics are on the service port: http://localhost:8081/actuator/health and http://localhost:8081/actuator/prometheus.
 
-**Phase 1 limits, stated plainly:** there is no login yet. The web app sends a demo user id in the `X-User-Id` header, and the admin endpoints check the `ADMIN` role in the service (`X-User-Roles`, set by the gateway). Payment is a fake in-process gateway. Outbox messages are logged, not yet sent to a broker. Run it locally only: every published port is bound to `127.0.0.1`, so Redis (no password), MySQL and the admin API are not reachable from your network. A hold lives only in the open page, so refreshing the page loses its Pay button until the hold expires.
+**Phase 1 limits, stated plainly:** there is no login yet. The web app sends a demo user id in the `X-User-Id` header, and the admin endpoints check the `ADMIN` role in the service from the `X-User-Roles` header, which anyone who can reach booking can forge until Task 16 and S2 land. Payment is a fake in-process gateway. Outbox messages are logged, not yet sent to a broker. Run it locally only: every published port is bound to `127.0.0.1`, so Redis (no password), MySQL and the admin API are not reachable from your network. A hold lives only in the open page, so refreshing the page loses its Pay button until the hold expires.
 
 ## Run the tests
 

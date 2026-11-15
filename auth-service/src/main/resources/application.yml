@@ -31,7 +31,7 @@ surge:
     admin-email: ${SURGE_ADMIN_EMAIL:admin@surge.local}
     test-tokens:
       # Mints JWTs for synthetic load-test users. Off unless a loadtest overlay enables it; never with SURGE_ENV=prod.
-      enabled: false
+      enabled: ${SURGE_AUTH_TEST_TOKENS:false}
 
 eureka:
   client:

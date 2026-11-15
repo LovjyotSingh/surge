@@ -322,6 +322,9 @@ class SalesHandlerTest {
             mvc.perform(get("/api/catalog/admin/stats/daily").param("eventId", "2").header("X-User-Roles", roles))
                     .andExpect(status().isForbidden());
         }
+        // authorization runs before argument binding: a non-admin with a bad or missing eventId still gets 403
+        mvc.perform(get("/api/catalog/admin/stats/daily").param("eventId", "abc")).andExpect(status().isForbidden());
+        mvc.perform(get("/api/catalog/admin/stats/daily")).andExpect(status().isForbidden());
         mvc.perform(get("/api/catalog/stats/daily").param("eventId", "2").header("X-User-Roles", "ADMIN"))
                 .andExpect(status().isNotFound());
     }

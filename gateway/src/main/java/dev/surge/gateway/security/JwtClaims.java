@@ -24,10 +24,10 @@ final class JwtClaims {
         return sub != null && USER_ID.matcher(sub).matches();
     }
 
-    /** Synthetic load-test identity: a {@code lt-} subject or an {@code lt: true} claim. */
+    /** Synthetic load-test identity: a {@code lt-} subject or any {@code lt} claim, whatever its value or type. */
     static boolean isLoadtest(Jwt jwt) {
         String sub = jwt.getSubject();
-        return (sub != null && sub.startsWith("lt-")) || Boolean.TRUE.equals(jwt.getClaim("lt"));
+        return (sub != null && sub.startsWith("lt-")) || jwt.hasClaim("lt");
     }
 
     /** Exact role tokens from the {@code roles} array; a plain string such as {@code "admin"} yields nothing. */

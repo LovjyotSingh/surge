@@ -137,6 +137,31 @@ class AuthFlowTest {
                 .andExpect(jsonPath("$.user.roles[1]").value("ADMIN"));
     }
 
+    private static void seed(UserRepository users, org.springframework.security.crypto.password.PasswordEncoder encoder, java.time.Clock clock, String password) {
+        new dev.surge.auth.user.AdminSeeder(users, encoder, clock, "admin@surge.local", password, "dev").run(null);
+    }
+
+    /** Rotation end to end on the shared context: the seeder re-hashes, the new password logs in, the old one is 401. */
+    @Test
+    void rotatingTheAdminPasswordLocksOutTheOldOne(@Autowired UserRepository users,
+            @Autowired org.springframework.security.crypto.password.PasswordEncoder encoder,
+            @Autowired java.time.Clock clock) throws Exception {
+        try {
+            seed(users, encoder, clock, "rotated-admin-password");
+            mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+                            .content(creds("admin@surge.local", "rotated-admin-password")))
+                    .andExpect(status().isOk());
+            mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+                            .content(creds("admin@surge.local", "surge-admin")))
+                    .andExpect(status().isUnauthorized());
+        } finally {
+            seed(users, encoder, clock, "surge-admin");
+        }
+        mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+                        .content(creds("admin@surge.local", "surge-admin")))
+                .andExpect(status().isOk());
+    }
+
     @Test
     void ordinaryLoginTokensAreNotLoadTestTokens() throws Exception {
         String json = mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
