@@ -54,7 +54,7 @@ public class TicketMailer {
                 Total: %s
 
                 Your ticket is attached. You can also download it any time (sign in first):
-                %s/api/notifications/tickets/%d.pdf
+                %s/tickets/%d
 
                 See you there,
                 Surge

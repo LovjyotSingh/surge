@@ -59,7 +59,7 @@ class TicketWorkflowTest extends TicketTestBase {
         String text = mail.get("Text").asString();
         assertThat(text).contains("Coldplay Tribute Live").contains("JLN Stadium").contains("A1").contains("A2")
                 .contains("INR 4,499").contains("19:30")
-                .contains("http://localhost:8080/api/notifications/tickets/" + orderId + ".pdf");
+                .contains("http://localhost:8080/tickets/" + orderId);
         JsonNode attachment = mail.get("Attachments").get(0);
         assertThat(attachment.get("FileName").asString()).isEqualTo("surge-ticket-" + orderId + ".pdf");
         assertThat(attachment.get("ContentType").asString()).isEqualTo("application/pdf");
