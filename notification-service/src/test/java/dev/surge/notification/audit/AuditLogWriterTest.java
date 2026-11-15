@@ -114,7 +114,7 @@ class AuditLogWriterTest {
     @Test
     void fiftyVirtualThreadsGiveFiftyWellFormedLines() throws Exception {
         AuditLogWriter writer = writer(new SettableClock("2026-11-14T10:00:00Z"));
-        String padding = "x".repeat(2000);
+        String padding = "x".repeat(20_000);
 
         try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
             List<Future<?>> futures = new ArrayList<>();
@@ -133,6 +133,57 @@ class AuditLogWriterTest {
                 .isEqualTo(padding));
         assertThat(lines.stream().map(l -> JSON.readTree(l).get("payload").get("n").asInt()).distinct().count())
                 .isEqualTo(50);
+    }
+
+    @Test
+    void moneyIsWrittenExactlyAsSent() throws Exception {
+        AuditLogWriter writer = writer(new SettableClock("2026-11-14T10:00:00Z"));
+
+        writer.append("OrderConfirmed", "{\"totalInr\":10.00,\"a\":12345678.90,\"b\":123456789012345678.25,\"c\":1500.00}");
+
+        String line = Files.readAllLines(dir.resolve("orders-2026-11-14.jsonl")).getFirst();
+        assertThat(line).contains("\"payload\":{\"totalInr\":10.00,\"a\":12345678.90,\"b\":123456789012345678.25,"
+                + "\"c\":1500.00}");
+        assertThat(writer.tail(LocalDate.parse("2026-11-14"), 1).tail().getFirst()).isEqualTo(line);
+    }
+
+    @Test
+    void aFailedAppendLeavesNoFragmentForTheRetryToMerge() throws Exception {
+        SettableClock clock = new SettableClock("2026-11-14T10:00:00Z");
+        boolean[] failNext = {false};
+        AuditLogWriter writer = new AuditLogWriter(dir.toString(), clock, JSON) {
+            @Override
+            void write(Path file, String text) throws java.io.IOException {
+                if (failNext[0]) {
+                    failNext[0] = false;
+                    Files.writeString(file, text.substring(0, 10), java.nio.file.StandardOpenOption.CREATE,
+                            java.nio.file.StandardOpenOption.APPEND);
+                    throw new java.io.IOException("disk full");
+                }
+                super.write(file, text);
+            }
+        };
+        writer.append("A", "{\"n\":1}");
+        writer.append("B", "{\"n\":2}");
+        failNext[0] = true;
+        assertThatThrownBy(() -> writer.append("C", "{\"n\":3}")).isInstanceOf(java.io.UncheckedIOException.class);
+        writer.append("C", "{\"n\":3}");
+
+        List<String> lines = Files.readAllLines(dir.resolve("orders-2026-11-14.jsonl"));
+        assertThat(lines).hasSize(3);
+        assertThat(lines).allSatisfy(l -> assertThat(JSON.readTree(l).get("type")).isNotNull());
+    }
+
+    @Test
+    void tailSurvivesMalformedUtf8() throws Exception {
+        AuditLogWriter writer = writer(new SettableClock("2026-11-14T10:00:00Z"));
+        writer.append("A", "{}");
+        Files.write(dir.resolve("orders-2026-11-14.jsonl"), new byte[] {(byte) 0xC3, (byte) 0x28, (byte) 10},
+                java.nio.file.StandardOpenOption.APPEND);
+
+        AuditLogWriter.Tail tail = writer.tail(LocalDate.parse("2026-11-14"), 5);
+
+        assertThat(tail.lines()).isEqualTo(2);
     }
 
     @Test

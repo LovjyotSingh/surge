@@ -1,6 +1,6 @@
 package dev.surge.notification.messaging;
 
-import dev.surge.notification.error.ForbiddenException;
+import dev.surge.notification.api.RequestIdentity;
 import dev.surge.notification.error.InvalidParameterException;
 import java.util.List;
 import java.util.Map;
@@ -27,27 +27,15 @@ public class DlqController {
     @GetMapping
     public List<DlqOperations.DlqMessage> list(@RequestHeader(name = "X-User-Roles", required = false) String roles,
                                                @RequestParam(name = "limit", defaultValue = "20") String limit) {
-        requireAdmin(roles);
+        RequestIdentity.requireAdmin(roles);
         return dlq.list(parseLimit(limit));
     }
 
     @PostMapping("/replay")
     public Map<String, Integer> replay(@RequestHeader(name = "X-User-Roles", required = false) String roles,
                                        @RequestParam(name = "limit", defaultValue = "20") String limit) {
-        requireAdmin(roles);
+        RequestIdentity.requireAdmin(roles);
         return Map.of("replayed", dlq.replay(parseLimit(limit)));
-    }
-
-    /** The exact token ADMIN in a comma-separated list; "SUPERADMIN" or "admin" do not count. */
-    public static void requireAdmin(String roles) {
-        if (roles != null) {
-            for (String role : roles.split(",")) {
-                if (role.trim().equals("ADMIN")) {
-                    return;
-                }
-            }
-        }
-        throw new ForbiddenException();
     }
 
     static int parseLimit(String raw) {

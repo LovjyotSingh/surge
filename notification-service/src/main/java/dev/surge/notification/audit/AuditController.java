@@ -1,12 +1,10 @@
 package dev.surge.notification.audit;
 
 import dev.surge.notification.error.InvalidParameterException;
-import dev.surge.notification.error.MissingUserException;
-import dev.surge.notification.messaging.DlqController;
+import dev.surge.notification.api.RequestIdentity;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.List;
-import java.util.regex.Pattern;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -20,7 +18,6 @@ import tools.jackson.databind.json.JsonMapper;
 @RequestMapping("/api/notifications/admin/audit")
 public class AuditController {
 
-    private static final Pattern USER_ID = Pattern.compile("^[A-Za-z0-9_-]{1,64}$");
     private static final int MAX_TAIL = 500;
 
     private final AuditLogWriter writer;
@@ -39,10 +36,8 @@ public class AuditController {
                            @RequestHeader(name = "X-User-Roles", required = false) String roles,
                            @RequestParam(name = "date", required = false) String date,
                            @RequestParam(name = "tail", defaultValue = "50") String tail) {
-        if (userId == null || !USER_ID.matcher(userId).matches()) {
-            throw new MissingUserException();
-        }
-        DlqController.requireAdmin(roles);
+        RequestIdentity.requireUser(userId);
+        RequestIdentity.requireAdmin(roles);
         LocalDate day = date == null ? writer.today() : parseDate(date);
         AuditLogWriter.Tail result = writer.tail(day, parseTail(tail));
         return new AuditView(day.toString(), result.lines(), result.tail().stream().map(this::parseLine).toList());
@@ -50,7 +45,7 @@ public class AuditController {
 
     private JsonNode parseLine(String line) {
         try {
-            return json.readTree(line);
+            return writer.parse(line);
         } catch (RuntimeException e) {
             return json.getNodeFactory().stringNode(line);
         }

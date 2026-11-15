@@ -130,7 +130,7 @@ class OrdersAuditListenerTest {
     }
 
     @Test
-    void orderConfirmedIsLoggedWithTypeAndRawPayload() {
+    void orderConfirmedIsLoggedWithTypeAndRawPayload() throws Exception {
         UUID id = UUID.randomUUID();
 
         send("3", MessageTypes.ORDER_CONFIRMED, id, order(id));
@@ -139,6 +139,8 @@ class OrdersAuditListenerTest {
         JsonNode line = linesFor(id).getFirst();
         assertThat(line.get("type").asString()).isEqualTo("OrderConfirmed");
         assertThat(line.get("payload").isObject()).isTrue();
+        assertThat(Files.readString(TestcontainersConfig.AUDIT_DIR.resolve("orders-" + writer.today() + ".jsonl")))
+                .contains("\"totalInr\":10.00");
         assertThat(line.get("payload").get("orderId").asInt()).isEqualTo(1);
         assertThat(line.get("at").asString()).endsWith("Z");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM processed_message WHERE message_id = ? AND consumer = 'audit'",
