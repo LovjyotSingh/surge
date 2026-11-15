@@ -2,21 +2,33 @@ package dev.surge.loadtest;
 
 import java.net.URI;
 import java.nio.file.Path;
+import java.util.function.UnaryOperator;
 
+/** {@code adminPassword} may be null (nothing supplied); it is never printed, see {@link #toString()}. */
 public record LoadTestConfig(int users, long eventId, URI baseUrl, Path outDir, boolean reset,
-                             double hotShare, int maxAttempts) {
+                             double hotShare, int maxAttempts, String adminEmail, String adminPassword) {
+
+    public static final String PASSWORD_ENV = "SURGE_ADMIN_PASSWORD";
 
     public static final String USAGE = """
         Usage: java -jar loadtest.jar [options]
-          --users <n>          concurrent buyers (default 10000)
-          --event <id>         event id (default 1)
-          --base-url <url>     booking service URL (default http://localhost:8080)
-          --out <dir>          report directory (default reports)
-          --no-reset           do not reset the event before the run
-          --hot-share <0..1>   share of picks aimed at hot seats (default 0.7)
-          --max-attempts <n>   hold attempts per buyer (default 10)""";
+          --users <n>            concurrent buyers (default 10000)
+          --event <id>           event id (default 1)
+          --base-url <url>       gateway URL (default http://localhost:8080)
+          --out <dir>            report directory (default reports)
+          --no-reset             do not reset the event before the run
+          --hot-share <0..1>     share of picks aimed at hot seats (default 0.7)
+          --max-attempts <n>     hold attempts per buyer (default 10)
+          --admin-email <email>  admin account used to mint buyer tokens (default admin@surge.local)
+          --admin-password <pw>  admin password (default: the SURGE_ADMIN_PASSWORD environment variable;
+                                 required, there is no built-in default)""";
 
     public static LoadTestConfig parse(String[] args) {
+        return parse(args, System::getenv);
+    }
+
+    /** {@code env} looks up an environment variable (null when unset); a seam for tests. */
+    public static LoadTestConfig parse(String[] args, UnaryOperator<String> env) {
         int users = 10000;
         long event = 1;
         URI base = URI.create("http://localhost:8080");
@@ -24,6 +36,8 @@ public record LoadTestConfig(int users, long eventId, URI baseUrl, Path outDir, 
         boolean reset = true;
         double hot = 0.7;
         int attempts = 10;
+        String email = "admin@surge.local";
+        String password = null;
         try {
             for (int i = 0; i < args.length; i++) {
                 switch (args[i]) {
@@ -34,6 +48,8 @@ public record LoadTestConfig(int users, long eventId, URI baseUrl, Path outDir, 
                     case "--no-reset" -> reset = false;
                     case "--hot-share" -> hot = Double.parseDouble(value(args, ++i));
                     case "--max-attempts" -> attempts = Integer.parseInt(value(args, ++i));
+                    case "--admin-email" -> email = value(args, ++i);
+                    case "--admin-password" -> password = value(args, ++i);
                     default -> throw new IllegalArgumentException("Unknown option: " + args[i]);
                 }
             }
@@ -43,7 +59,11 @@ public record LoadTestConfig(int users, long eventId, URI baseUrl, Path outDir, 
         if (users < 1 || attempts < 1 || hot < 0 || hot > 1) {
             throw new IllegalArgumentException("users/max-attempts must be >= 1 and hot-share within 0..1");
         }
-        return new LoadTestConfig(users, event, base, out, reset, hot, attempts);
+        if (password == null || password.isEmpty()) {
+            String fromEnv = env.apply(PASSWORD_ENV);
+            password = fromEnv == null || fromEnv.isEmpty() ? null : fromEnv;
+        }
+        return new LoadTestConfig(users, event, base, out, reset, hot, attempts, email, password);
     }
 
     private static String value(String[] args, int i) {
@@ -51,5 +71,11 @@ public record LoadTestConfig(int users, long eventId, URI baseUrl, Path outDir, 
             throw new IllegalArgumentException("Missing value for " + args[i - 1]);
         }
         return args[i];
+    }
+
+    @Override
+    public String toString() {
+        return "LoadTestConfig[users=" + users + ", eventId=" + eventId + ", baseUrl=" + baseUrl
+            + ", adminEmail=" + adminEmail + ", adminPassword=" + (adminPassword == null ? "unset" : "***") + "]";
     }
 }

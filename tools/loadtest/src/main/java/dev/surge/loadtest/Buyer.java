@@ -15,7 +15,9 @@ public final class Buyer implements Callable<BuyerOutcome> {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final int MAX_RATE_LIMIT_WAITS = 30;
 
+    @SuppressWarnings("unused") // identifies the buyer when debugging; the server reads identity from the bearer
     private final String userId;
+    private final String bearer;
     private final String idempotencyKey;
     private final long eventId;
     private final List<Long> seatIds;
@@ -33,15 +35,17 @@ public final class Buyer implements Callable<BuyerOutcome> {
     }
 
     /** {@code idempotencyKey} is sent on the checkout; it must be unique per run (see LoadTestMain). */
-    public Buyer(String userId, String idempotencyKey, long eventId, List<Long> seatIds, BookingApi api,
+    public Buyer(String userId, String bearer, String idempotencyKey, long eventId, List<Long> seatIds, BookingApi api,
                  CountDownLatch startGate, double hotShare, int maxAttempts, RandomGenerator rnd) {
-        this(userId, idempotencyKey, eventId, seatIds, api, startGate, hotShare, maxAttempts, rnd, Thread::sleep);
+        this(userId, bearer, idempotencyKey, eventId, seatIds, api, startGate, hotShare, maxAttempts, rnd,
+            Thread::sleep);
     }
 
-    Buyer(String userId, String idempotencyKey, long eventId, List<Long> seatIds, BookingApi api,
+    Buyer(String userId, String bearer, String idempotencyKey, long eventId, List<Long> seatIds, BookingApi api,
           CountDownLatch startGate, double hotShare, int maxAttempts, RandomGenerator rnd, Sleeper sleeper) {
         this.sleeper = sleeper;
         this.userId = userId;
+        this.bearer = bearer;
         this.idempotencyKey = idempotencyKey;
         this.eventId = eventId;
         this.seatIds = seatIds;
@@ -66,7 +70,7 @@ public final class Buyer implements Callable<BuyerOutcome> {
             while (holdId == null && attempts < maxAttempts) {
                 long seat = SeatPicker.pick(seatIds, hotShare, rnd);
                 long t0 = System.nanoTime();
-                HttpResponse<String> r = api.hold(userId, eventId, seat);
+                HttpResponse<String> r = api.hold(bearer, eventId, seat);
                 holdLat.add(elapsedMs(t0));
                 int status = r.statusCode();
                 if (status == 201) {
@@ -92,7 +96,7 @@ public final class Buyer implements Callable<BuyerOutcome> {
                 return new BuyerOutcome(false, conflicts, rateLimited, errors, holdLat, checkoutLat);
             }
             long t0 = System.nanoTime();
-            HttpResponse<String> order = api.checkout(userId, idempotencyKey, holdId);
+            HttpResponse<String> order = api.checkout(bearer, idempotencyKey, holdId);
             checkoutLat.add(elapsedMs(t0));
             if (order.statusCode() == 201) {
                 return new BuyerOutcome(true, conflicts, rateLimited, errors, holdLat, checkoutLat);

@@ -34,8 +34,9 @@ public final class LoadTestMain {
 
     /**
      * Idempotency key for one buyer in one run. A fresh run id per run means a re-run never reuses the keys of an
-     * earlier run (whose orders a reset has deleted). A UUID (36) + "-" + "lt-" + an int (at most 13) stays under
-     * the server's 64-character limit.
+     * earlier run (whose orders a reset has deleted). A UUID (36) + "-" + the user id stays under
+     * the server's 64-character limit. (Minted ids are "lt-" + 8 hex + optional batch suffix + "-" + an int: at
+     * most 20 characters, so the key is at most 57.)
      */
     static String idempotencyKey(String runId, String userId) {
         return runId + "-" + userId;
@@ -45,9 +46,26 @@ public final class LoadTestMain {
         return run(cfg, System.out, System.err);
     }
 
+    /** Exit codes: 0 pass, 1 verdict failed, 2 the run could not start (no password, login or minting failed). */
     static int run(LoadTestConfig cfg, PrintStream out, PrintStream err) throws Exception {
+        if (cfg.adminPassword() == null || cfg.adminPassword().isEmpty()) {
+            err.println("Set " + LoadTestConfig.PASSWORD_ENV + " or pass --admin-password");
+            return 2;
+        }
+        try {
+            return execute(cfg, out, err);
+        } catch (SetupException e) {
+            err.println("ERROR: " + e.getMessage());
+            return 2;
+        }
+    }
+
+    private static int execute(LoadTestConfig cfg, PrintStream out, PrintStream err) throws Exception {
         String runId = UUID.randomUUID().toString();
         try (BookingApi api = new BookingApi(cfg.baseUrl())) {
+            api.login(cfg.adminEmail(), cfg.adminPassword());
+            // One synthetic user per buyer. Tokens live 60 minutes (TokenService.LIFETIME), far longer than a run.
+            List<BookingApi.TestToken> buyers = api.mintTokens("lt-" + runId.substring(0, 8), cfg.users());
             if (cfg.reset()) {
                 api.reset(cfg.eventId());
             }
@@ -66,8 +84,9 @@ public final class LoadTestMain {
             List<Long> checkoutLat = new ArrayList<>();
             try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
                 for (int n = 0; n < cfg.users(); n++) {
-                    String userId = "lt-" + n;
-                    futures.add(pool.submit(new Buyer(userId, idempotencyKey(runId, userId), cfg.eventId(), seatIds,
+                    BookingApi.TestToken buyer = buyers.get(n);
+                    futures.add(pool.submit(new Buyer(buyer.userId(), buyer.token(),
+                        idempotencyKey(runId, buyer.userId()), cfg.eventId(), seatIds,
                         api, gate, cfg.hotShare(), cfg.maxAttempts(), RandomGenerator.getDefault())));
                 }
                 gate.countDown();

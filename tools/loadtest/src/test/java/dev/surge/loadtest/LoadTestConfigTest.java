@@ -19,6 +19,7 @@ class LoadTestConfigTest {
         assertThat(c.reset()).isTrue();
         assertThat(c.hotShare()).isEqualTo(0.7);
         assertThat(c.maxAttempts()).isEqualTo(10);
+        assertThat(c.adminEmail()).isEqualTo("admin@surge.local");
     }
 
     @Test

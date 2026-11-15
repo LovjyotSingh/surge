@@ -29,6 +29,8 @@ class LoadTestMainTest {
             .mapToObj(i -> "{\"id\":" + i + ",\"rowLabel\":\"A\",\"number\":" + i + "}")
             .collect(Collectors.joining(","));
         return new StubServer()
+            .on("POST /api/auth/login", Reply.of(200, "{\"token\":\"admin-jwt\"}"))
+            .onBody("POST /api/auth/admin/test-tokens", GatewayAuthTest::mintReply)
             .on("POST /api/bookings/admin/events/1/reset", Reply.of(204, ""))
             .on("GET /api/bookings/events/1", Reply.of(200, "{\"id\":1,\"seats\":[" + seats + "]}"))
             .on("POST /api/bookings/holds", Reply.of(201, "{\"holdId\":\"h-1\"}"))
@@ -41,7 +43,8 @@ class LoadTestMainTest {
 
     private static LoadTestConfig config(StubServer s, Path out) {
         return LoadTestConfig.parse(new String[] {
-            "--users", "3", "--base-url", s.baseUrl().toString(), "--out", out.toString()});
+            "--users", "3", "--base-url", s.baseUrl().toString(), "--out", out.toString(),
+            "--admin-password", "pw"});
     }
 
     private static List<String> checkoutKeys(StubServer s) {
@@ -84,7 +87,7 @@ class LoadTestMainTest {
             // runId + "-" + userId: one shared prefix per run, a different one for the next run.
             Set<String> prefixes = new HashSet<>();
             for (String k : both) {
-                assertThat(k).matches("[0-9a-f-]{36}-lt-[0-2]").hasSizeLessThanOrEqualTo(64);
+                assertThat(k).matches("[0-9a-f-]{36}-lt-[0-9a-f]{8}-[0-2]").hasSizeLessThanOrEqualTo(64);
                 prefixes.add(k.substring(0, 36));
             }
             assertThat(prefixes).hasSize(2);

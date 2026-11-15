@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Function;
 
 /** Minimal scripted HTTP stub: per "METHOD path" a queue of canned responses (the last one repeats). */
 final class StubServer implements AutoCloseable {
@@ -24,6 +25,11 @@ final class StubServer implements AutoCloseable {
 
     private final HttpServer server;
     private final Map<String, Deque<Reply>> scripts = new ConcurrentHashMap<>();
+    private final Map<String, Function<String, Reply>> dynamic = new ConcurrentHashMap<>();
+    /** Authorization header of each request, or "" when absent (same index as {@link #received}). */
+    final List<String> receivedAuth = new CopyOnWriteArrayList<>();
+    /** True per request when an X-User-Id header was present (same index as {@link #received}). */
+    final List<Boolean> receivedUserIdHeader = new CopyOnWriteArrayList<>();
     final List<String> received = new CopyOnWriteArrayList<>();
     final List<String> receivedBodies = new CopyOnWriteArrayList<>();
     /** Idempotency-Key header of each request, or "" when absent (same index as {@link #received}). */
@@ -41,7 +47,14 @@ final class StubServer implements AutoCloseable {
         for (Reply r : replies) {
             q.add(r);
         }
+        dynamic.remove(methodAndPath);
         scripts.put(methodAndPath, q);
+        return this;
+    }
+
+    /** The reply is computed from the request body. */
+    StubServer onBody(String methodAndPath, Function<String, Reply> reply) {
+        dynamic.put(methodAndPath, reply);
         return this;
     }
 
@@ -57,10 +70,15 @@ final class StubServer implements AutoCloseable {
             received.add(key);
             receivedBodies.add(body);
             receivedIdempotencyKeys.add(idem == null ? "" : idem);
+            String auth = ex.getRequestHeaders().getFirst("Authorization");
+            receivedAuth.add(auth == null ? "" : auth);
+            receivedUserIdHeader.add(ex.getRequestHeaders().containsKey("X-User-Id"));
         }
         Deque<Reply> q = scripts.get(key);
         Reply reply;
-        if (q == null) {
+        if (dynamic.containsKey(key)) {
+            reply = dynamic.get(key).apply(body);
+        } else if (q == null) {
             reply = Reply.of(404, "");
         } else {
             synchronized (q) {

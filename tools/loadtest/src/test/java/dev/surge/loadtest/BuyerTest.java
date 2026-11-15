@@ -37,7 +37,7 @@ class BuyerTest {
 
     private BuyerOutcome run() throws Exception {
         CountDownLatch gate = new CountDownLatch(0);
-        return new Buyer("lt-0", "run-1-lt-0", 1, List.of(1L, 2L, 3L, 4L, 5L), api, gate, 0.7, 10,
+        return new Buyer("lt-0", "tok-0", "run-1-lt-0", 1, List.of(1L, 2L, 3L, 4L, 5L), api, gate, 0.7, 10,
             new Random(1), sleeps::add).call();
     }
 
@@ -109,5 +109,13 @@ class BuyerTest {
         BuyerOutcome o = run();
         assertThat(o.bought()).isFalse();
         assertThat(o.errors()).isEqualTo(1);
+    }
+
+    @Test
+    void sendsOnlyItsOwnBearerAndNeverXUserId() throws Exception {
+        stub.on(HOLDS, HOLD_OK).on(ORDERS, ORDER_OK);
+        run();
+        assertThat(stub.receivedAuth).containsExactly("Bearer tok-0", "Bearer tok-0");
+        assertThat(stub.receivedUserIdHeader).containsOnly(false);
     }
 }
