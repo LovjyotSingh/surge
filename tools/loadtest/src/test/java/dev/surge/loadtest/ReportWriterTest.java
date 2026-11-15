@@ -15,13 +15,13 @@ class ReportWriterTest {
 
     private static LoadTestReport report(int sold, int oversold, boolean consistent, int succeeded) {
         return new LoadTestReport(Instant.parse("2026-11-12T06:30:00Z"), 10, 1, 500, sold, oversold, consistent,
-            succeeded, 2, 0, 0, 0, 1, ZERO, ZERO);
+            succeeded, 2, 0, 0, 0, 1, ZERO, ZERO, 0);
     }
 
     @Test
     void writesJsonAndMarkdown(@TempDir Path dir) throws Exception {
         var r = new LoadTestReport(Instant.parse("2026-11-12T06:30:00Z"), 10000, 1, 500, 500, 0, true,
-            500, 640, 321, 7, 0, 4200, new LatencyStats(5, 20, 40, 90), new LatencyStats(8, 25, 50, 120));
+            500, 640, 321, 7, 0, 4200, new LatencyStats(5, 20, 40, 90), new LatencyStats(8, 25, 50, 120), 0);
 
         List<Path> files = ReportWriter.write(dir, r);
 

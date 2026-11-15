@@ -37,6 +37,10 @@ public final class ReportWriter {
 
     public static String markdown(LoadTestReport r) {
         String verdict = r.passed() ? "PASS " + OK : "FAIL " + BAD;
+        if (r.unauthorized() > 0) {
+            String note = "NOT VALID: " + r.unauthorized() + " buyer tokens rejected";
+            verdict = r.passed() ? note : verdict + " (" + note + ")";
+        }
         return """
             # Surge load test
 

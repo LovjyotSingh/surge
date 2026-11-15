@@ -263,6 +263,15 @@ class GatewayAuthTest {
             assertThat(r.stderr()).contains("the gateway rejected 3 buyer tokens "
                 + "(expired, or load-test subjects not enabled)");
             assertThat(r.stdout()).contains("# Surge load test"); // the full report is still printed
+            assertThat(r.stdout()).contains("NOT VALID: 3 buyer tokens rejected");
+            assertThat(r.stdout() + r.stderr()).doesNotContain("PASS");
+            assertThat(r.stderr()).contains("not published");
+            assertThat(count(s, PUT_REPORT)).isZero();
+            try (java.util.stream.Stream<Path> files = java.nio.file.Files.list(out)) {
+                for (Path p : files.toList()) {
+                    assertThat(java.nio.file.Files.readString(p)).doesNotContain("PASS");
+                }
+            }
         }
     }
 
@@ -335,10 +344,8 @@ class GatewayAuthTest {
 
     @Test
     void connectionRefusedExitsTwoWithoutAStackTrace(@TempDir Path out) throws Exception {
-        LoadTestConfig cfg;
-        try (StubServer s = stub()) {
-            cfg = config(s, out, "--admin-password", PASSWORD);
-        }
+        LoadTestConfig cfg = LoadTestConfig.parse(new String[] {"--users", "3", "--base-url", "http://127.0.0.1:1",
+            "--out", out.toString(), "--admin-password", PASSWORD}, name -> null); // port 1: nothing listens
         Run r = run(cfg);
         assertThat(r.exit()).isEqualTo(2);
         assertThat(r.stderr()).contains("ERROR: cannot talk to the gateway").doesNotContain("\tat ");
@@ -377,6 +384,7 @@ class GatewayAuthTest {
             assertThat(r.exit()).isEqualTo(1);
             assertThat(r.stdout()).contains("# Surge load test");
             assertThat(r.stderr()).contains("the gateway rejected 3 buyer tokens");
+            assertThat(r.stdout()).contains("FAIL").contains("NOT VALID: 3 buyer tokens rejected");
         }
     }
 
@@ -389,6 +397,17 @@ class GatewayAuthTest {
 
             assertThat(r.exit()).isEqualTo(1);
             assertThat(r.stderr()).contains("the report could not be sent");
+        }
+    }
+
+    @Test
+    void integrityBodyThatIsNotJsonExitsTwoWithoutAStackTrace(@TempDir Path out) throws Exception {
+        try (StubServer s = stub()) {
+            s.on(INTEGRITY, Reply.of(200, "<html>oops</html>"));
+            Run r = run(config(s, out, "--admin-password", PASSWORD));
+
+            assertThat(r.exit()).isEqualTo(2);
+            assertThat(r.stderr()).contains("ERROR: unexpected response from the gateway").doesNotContain("\tat ");
         }
     }
     @Test

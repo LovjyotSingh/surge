@@ -62,8 +62,11 @@ public final class LoadTestMain {
         } catch (UncheckedIOException e) {
             err.println("ERROR: cannot talk to the gateway at " + cfg.baseUrl() + " ("
                 + (e.getCause() == null ? e : e.getCause()).getClass().getSimpleName() + ")");
-        }
             return 2;
+        } catch (RuntimeException e) {
+            err.println("ERROR: unexpected response from the gateway (" + e.getClass().getSimpleName() + ")");
+            return 2;
+        }
     }
 
     private static int execute(LoadTestConfig cfg, PrintStream out, PrintStream err) throws Exception {
@@ -120,7 +123,7 @@ public final class LoadTestMain {
                 integrity.get("totalSeats").asInt(), integrity.get("soldSeats").asInt(),
                 integrity.get("oversold").asInt(), integrity.path("consistent").asBoolean(false), succeeded,
                 holdLat.size() + checkoutLat.size(), conflicts, rateLimited, errors,
-                durationMs, LatencyStats.of(holdLat), LatencyStats.of(checkoutLat));
+                durationMs, LatencyStats.of(holdLat), LatencyStats.of(checkoutLat), unauthorized);
 
             // Show the result and save the local files first: a failing publish must not lose a finished run.
             out.println(ReportWriter.markdown(report));
@@ -130,11 +133,15 @@ public final class LoadTestMain {
                     + " buyer tokens (expired, or load-test subjects not enabled)");
             }
             boolean published = true;
-            try {
-                api.putReport(ReportWriter.json(report));
-            } catch (RuntimeException e) {
-                published = false;
-                err.println("ERROR: the report could not be sent to the Ops page: " + e.getMessage());
+            if (unauthorized > 0) {
+                err.println("WARN: the report was not published to the Ops page because the run is invalid.");
+            } else {
+                try {
+                    api.putReport(ReportWriter.json(report));
+                } catch (RuntimeException e) {
+                    published = false;
+                    err.println("ERROR: the report could not be sent to the Ops page: " + e.getMessage());
+                }
             }
             // A failed verdict always wins (1); otherwise any auth or publishing problem is a setup problem (2).
             if (!report.passed()) {
