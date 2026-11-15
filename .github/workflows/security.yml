@@ -65,15 +65,16 @@ jobs:
 
           jq -r '
             [.results[] | .source.path as $src | .packages[]? | .package as $p
-             | .groups[]? | select(((try (.max_severity | tonumber) catch 0) // 0) >= 7)
-             | "($src): ($p.name)@($p.version) (.ids | join(", ")) (CVSS (.max_severity))"]
+             | .groups[]? | select((try (.max_severity | tonumber) catch (-1)) >= 7)
+             | "\($src): \($p.name)@\($p.version) \(.ids | join(", ")) (CVSS \(.max_severity))"]
             | unique | .[]' osv-results.json > osv-high.txt
 
-          # Advisories without a usable CVSS score cannot be gated; make them visible.
+          # Advisories without a usable CVSS score (missing, unparseable, or osv-scanner's -1 "unknown")
+          # cannot be gated; make them visible.
           jq -r '
             [.results[] | .source.path as $src | .packages[]? | .package as $p
-             | .groups[]? | select((try (.max_severity | tonumber) catch null) == null)
-             | "($src): ($p.name)@($p.version) (.ids | join(", "))"]
+             | .groups[]? | select((try (.max_severity | tonumber) catch (-1)) < 0)
+             | "\($src): \($p.name)@\($p.version) \(.ids | join(", "))"]
             | unique | .[]' osv-results.json > osv-unscored.txt
 
           while IFS= read -r line; do

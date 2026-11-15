@@ -88,12 +88,14 @@ jobs:
       # anything in it is readable by all of them. Secrets must come from the environment or a
       # secret store, never from this directory. Fail on password, secret, token, credential or
       # private-key anywhere, and on any key: or key= line that carries a value. Case-insensitive.
-      # A value that is only a ${...} placeholder is allowed.
+      # A whole value that is only a plain ${NAME} placeholder (no ":default", nothing else on the
+      # line) is allowed; "${A:hunter2}", "hunter2:${A}" and "${A}secret" are still flagged.
       - name: Reject secrets in config-repo
         shell: bash
         run: |
           test -d config-repo || { echo "::error::config-repo missing"; exit 1; }
-          hits=$(grep -rniE 'password|secret|token|credential|private[-_]?key|key[[:space:]]*[:=][[:space:]]*[^[:space:]#]' config-repo/             | grep -vE '[:=][[:space:]]*"?${[^}]*}"?[[:space:]]*$' || true)
+          hits=$(grep -rniE 'password|secret|token|credential|private[-_]?key|key[[:space:]]*[:=][[:space:]]*[^[:space:]#]' config-repo/ \
+            | grep -vE '^[^:]+:[0-9]+:[^:=]*[:=][[:space:]]*"?\$\{[A-Za-z_][A-Za-z0-9_.-]*\}"?[[:space:]]*$' || true)
           if [ -n "$hits" ]; then
             echo "$hits"
             echo "::error::config-repo/ must not contain passwords, secrets, tokens or key values"

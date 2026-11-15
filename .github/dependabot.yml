@@ -52,7 +52,8 @@ updates:
         update-types: [minor, patch]
 
   # Maven and npm are separate from compose: this tracks the image tags in compose.yaml
-  # (mysql, redis, nginx). The docker-compose ecosystem is supported by Dependabot.
+  # (today mysql and redis; Task 16 adds the platform images). The docker-compose ecosystem is
+  # supported by Dependabot.
   - package-ecosystem: docker-compose
     directory: /
     schedule:
