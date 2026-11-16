@@ -2,8 +2,11 @@ package dev.surge.payment;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.head;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -37,6 +40,8 @@ class PaymentSecurityTest {
     MockMvc mvc;
     @Autowired
     ChaosController chaos;
+    @Autowired
+    PaymentController payments;
 
     private static MockHttpServletRequestBuilder charge() {
         return post("/api/payments").contentType(MediaType.APPLICATION_JSON)
@@ -109,10 +114,41 @@ class PaymentSecurityTest {
     }
 
     @Test
+    void anythingNoRuleNamesIsDeniedEvenToBooking() throws Exception {
+        // the payments API is three operations; anything else is refused before MVC, even with booking's token
+        mvc.perform(put("/api/payments").with(Identity.booking())).andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.type").value(PROBLEM + "forbidden"));
+        mvc.perform(get("/api/payments/pay_x").with(Identity.booking())).andExpect(status().isForbidden());
+        mvc.perform(delete("/api/payments/pay_x").with(Identity.booking())).andExpect(status().isForbidden());
+        mvc.perform(get("/api/payments/pay_x/refund").with(Identity.booking())).andExpect(status().isForbidden());
+        mvc.perform(head("/api/payments").param("reference", "x").with(Identity.booking()))
+                .andExpect(status().isForbidden());
+        mvc.perform(get("/nope").with(Identity.admin())).andExpect(status().isForbidden());
+    }
+
+    @Test
     void onlyHealthIsOpenOnActuator() throws Exception {
         mvc.perform(get("/actuator/health")).andExpect(status().isOk());
         mvc.perform(get("/actuator/prometheus")).andExpect(status().isUnauthorized());
         mvc.perform(get("/actuator/info")).andExpect(status().isUnauthorized());
+        // denied with any token too, until phase 3 adds a scrape identity
+        mvc.perform(get("/actuator/prometheus").with(Identity.admin())).andExpect(status().isForbidden());
+        mvc.perform(get("/actuator/info").with(Identity.booking())).andExpect(status().isForbidden());
+    }
+
+    @Test
+    void thePaymentsApiChecksTheCallerItself() {
+        String audience = Identity.AUDIENCE;
+        Runnable find = () -> payments.find("no-such-reference");
+        // booking passes the check (and then learns the reference is unknown)
+        IdentityTokens.runAs(IdentityTokens.service("svc:booking", audience), audience, () -> assertThatThrownBy(
+                find::run).isInstanceOf(dev.surge.payment.error.PaymentNotFoundException.class));
+        IdentityTokens.runAs(null, audience, () -> assertStatus(find, 401));
+        IdentityTokens.runAs(IdentityTokens.service("svc:notification", audience), audience,
+                () -> assertStatus(find, 403));
+        IdentityTokens.runAs(IdentityTokens.admin(audience, "u-admin"), audience, () -> assertStatus(find, 403));
+        IdentityTokens.runAs(IdentityTokens.anonymous(audience), audience,
+                () -> assertStatus(() -> payments.refund("pay_x"), 403));
     }
 
     // ---- the second layer: the chaos endpoints read only the verified identity ------------------------------------

@@ -4,6 +4,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import dev.surge.booking.error.IdempotencyKeyReusedException;
+import dev.surge.common.security.IdentityTokens;
+import dev.surge.common.security.InternalIdentity;
+import dev.surge.common.security.InternalKeys;
+import dev.surge.common.security.InternalTokenVerifier;
+import dev.surge.common.security.SurgeEnv;
+import dev.surge.common.web.RequestIdFilter;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker.State;
@@ -22,6 +28,8 @@ import mockwebserver3.RecordedRequest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
+import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
@@ -101,6 +109,39 @@ class HttpPaymentGatewayTest {
         for (int i = 0; i < times; i++) {
             server.enqueue(json(code, body));
         }
+    }
+
+    /**
+     * booking's real client (PaymentClientConfig): every attempt, retries included, carries a fresh svc:booking
+     * token and the request id.
+     */
+    @Test
+    void everyAttemptIsSignedAsBookingForPayment() throws Exception {
+        HttpPaymentGateway signed = new HttpPaymentGateway(PaymentClientConfig.restClient(RestClient.builder(),
+                server.url("/").toString(), IdentityTokens.signer("svc:booking")), breaker, retries.retry("signed"));
+        server.enqueue(json(503, "{}"));
+        enqueue(1, 200, APPROVED);
+        MDC.put(RequestIdFilter.MDC_KEY, "req-pay-1");
+        try {
+            assertThat(signed.charge(REQUEST).approved()).isTrue();
+        } finally {
+            MDC.clear();
+        }
+
+        var verifier = new InternalTokenVerifier(InternalKeys.loadVerificationKeys(null, SurgeEnv.DEV,
+                new DefaultResourceLoader()), java.util.Set.of("svc:booking"), "payment-service");
+        String first = server.takeRequest().getHeaders().get("X-Surge-Identity");
+        RecordedRequest retried = server.takeRequest();
+        String second = retried.getHeaders().get("X-Surge-Identity");
+        assertThat(first).isNotEqualTo(second);
+        for (String token : java.util.List.of(first, second)) {
+            InternalIdentity identity = verifier.verify(token);
+            assertThat(identity.subject()).isEqualTo("svc:booking");
+            assertThat(identity.roles()).isEmpty();
+            assertThat(identity.requestId()).isEqualTo("req-pay-1");
+        }
+        assertThat(retried.getHeaders().get("X-Request-Id")).isEqualTo("req-pay-1");
+        assertThat(retried.getHeaders().get("X-User-Id")).isNull();
     }
 
     @Test

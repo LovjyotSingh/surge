@@ -1,8 +1,10 @@
 package dev.surge.booking.stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -51,6 +53,25 @@ class SeatStreamTest {
         } finally {
             registry.completeAll(1L);
         }
+    }
+
+    /**
+     * The whole stream through the identity chain: started with the gateway's anonymous token under the
+     * {@code fromGateway()} event rule, then the async dispatch that writes it out is authorized again (Spring Security
+     * filters ASYNC dispatches) and must still see that identity.
+     */
+    @Test
+    void anAnonymousStreamCompletesThroughItsAsyncDispatch() throws Exception {
+        MvcResult started = mvc.perform(get("/api/bookings/events/1/stream").with(Identity.anonymous()))
+                .andExpect(request().asyncStarted()).andReturn();
+        mvc.perform(post("/api/bookings/holds").with(Identity.user("stream-u2")).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"eventId\":1,\"seatIds\":[5]}")).andExpect(status().is2xxSuccessful());
+        registry.completeAll(1L);
+
+        mvc.perform(asyncDispatch(started))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_EVENT_STREAM))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("\"seatIds\":[5]")));
     }
 
     @Test

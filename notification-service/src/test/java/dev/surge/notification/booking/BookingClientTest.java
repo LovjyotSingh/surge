@@ -3,7 +3,9 @@ package dev.surge.notification.booking;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import dev.surge.common.security.IdentityTokens;
 import dev.surge.notification.config.ClientsConfig;
+import dev.surge.notification.support.SignedRequests;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
@@ -26,7 +28,8 @@ class BookingClientTest {
     void start() throws Exception {
         server.start();
         client = new BookingClient(ClientsConfig.restClient(RestClient.builder(),
-                server.url("/").toString(), Duration.ofMillis(300)));
+                server.url("/").toString(), Duration.ofMillis(300), IdentityTokens.signer("svc:notification"),
+                "booking-service"));
     }
 
     @AfterEach
@@ -35,7 +38,7 @@ class BookingClientTest {
     }
 
     @Test
-    void returnsTheOrderAndSendsTheOwnerHeader() throws Exception {
+    void readsTheOwnersOrderFromTheInternalEndpointAsNotification() throws Exception {
         server.enqueue(new MockResponse.Builder().code(200).headers(Headers.of("Content-Type", "application/json"))
                 .body("""
                         {"orderId":42,"eventId":3,"status":"CONFIRMED","totalInr":4499.00,"createdAt":"2027-01-01T10:00:00Z",
@@ -52,8 +55,9 @@ class BookingClientTest {
         assertThat(order.lines().get(1).number()).isEqualTo(2);
         assertThat(order.seatLabels()).containsExactly("A1", "A2");
         var request = server.takeRequest();
-        assertThat(request.getTarget()).isEqualTo("/api/bookings/orders/42");
-        assertThat(request.getHeaders().get("X-User-Id")).isEqualTo("u-7");
+        assertThat(request.getTarget()).isEqualTo("/internal/orders/42?userId=u-7");
+        // signed as notification for booking, and never as the user
+        SignedRequests.assertSignedFor(request, "booking-service");
     }
 
     @Test

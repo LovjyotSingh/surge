@@ -63,9 +63,13 @@ surge:
     enforce: true
     # Public JWKS of every issuer. Blank = the committed DEV keys (dev/tests, with a warning); prod refuses blank.
     jwks-location: ${SURGE_INTERNAL_JWKS:}
-    # Only the gateway: notification receives no service-to-service calls (it makes them; S3 signs those).
+    # Only the gateway: notification receives no service-to-service calls (it makes them, signed below).
     allowed-issuers:
       - gateway
+    # notification signs its calls to booking, auth and catalog as svc:notification with this private JWK.
+    # Blank = the committed DEV key (dev/tests, with a warning); prod refuses blank.
+    issuer: "svc:notification"
+    signing-key-location: ${SURGE_INTERNAL_SIGNING_KEY:}
   s3:
     # Empty endpoint = real AWS. Locally this is Adobe S3Mock (compose: http://s3mock:9090).
     endpoint: ${S3_ENDPOINT:}

@@ -3,9 +3,9 @@ package dev.surge.booking.error;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -73,14 +73,16 @@ class ApiErrorsTest {
 
     @Test
     void unknownRouteIs404() throws Exception {
-        perform(get("/api/bookings/nope").with(Identity.anonymous()), HttpStatus.NOT_FOUND, "not-found");
+        // a route the chain lets through (GET under /events) but no controller serves
+        perform(get("/api/bookings/events/1/nope").with(Identity.anonymous()), HttpStatus.NOT_FOUND, "not-found");
     }
 
     @Test
     void wrongMethodIs405() throws Exception {
-        perform(delete("/api/bookings/events").with(Identity.anonymous()), HttpStatus.METHOD_NOT_ALLOWED,
+        // the holds rule admits any method for a user; MVC serves only POST there
+        perform(put("/api/bookings/holds").with(Identity.user("u1")), HttpStatus.METHOD_NOT_ALLOWED,
                 "method-not-allowed")
-                .andExpect(header().string("Allow", Matchers.containsString("GET")));
+                .andExpect(header().string("Allow", Matchers.containsString("POST")));
     }
 
     @Test

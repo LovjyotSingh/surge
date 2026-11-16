@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -16,6 +17,7 @@ import dev.surge.common.security.InternalIdentityException;
 import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -29,7 +31,8 @@ import org.springframework.web.method.annotation.ExceptionHandlerMethodResolver;
 /**
  * catalog-service trusts only a verified {@code X-Surge-Identity} addressed to it (SEC-03). Rules, mirroring the
  * gateway: {@code /api/catalog/admin/**} a gateway ADMIN; every other GET under {@code /api/catalog} any gateway
- * request (anonymous included). Only the gateway is a trusted issuer until S3 signs notification's catalog reads.
+ * request (anonymous included), and one event by id also {@code svc:notification} (the ticket). Anything else is
+ * denied.
  */
 @IntegrationTest
 class CatalogSecurityTest {
@@ -67,13 +70,26 @@ class CatalogSecurityTest {
     }
 
     @Test
-    void serviceTokensAreNotTrustedYet() throws Exception {
-        for (String issuer : new String[] {"svc:notification", "svc:booking"}) {
-            mvc.perform(get("/api/catalog/events/2").with(Identity.service(issuer)))
-                    .andExpect(status().isUnauthorized());
-            mvc.perform(get(STATS).param("eventId", "2").with(Identity.service(issuer)))
-                    .andExpect(status().isUnauthorized());
-        }
+    void notificationReadsOneEventByIdAndNothingElse() throws Exception {
+        mvc.perform(get("/api/catalog/events/2").with(Identity.service("svc:notification")))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.id").value(2));
+        // the list, search and admin stay the gateway's
+        mvc.perform(get("/api/catalog/events").with(Identity.service("svc:notification")))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.type").value(PROBLEM + "forbidden"));
+        mvc.perform(get("/api/catalog/events/search").param("q", "x").with(Identity.service("svc:notification")))
+                .andExpect(status().isForbidden());
+        mvc.perform(get(STATS).param("eventId", "2").with(Identity.service("svc:notification")))
+                .andExpect(status().isForbidden());
+        // read-only, and only with a token addressed to catalog
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/api/catalog/events/2")
+                .with(Identity.service("svc:notification"))).andExpect(status().isForbidden());
+        mvc.perform(get("/api/catalog/events/2").with(IdentityTokens.asService("svc:notification", "booking-service")))
+                .andExpect(status().isUnauthorized());
+        // booking is not a trusted issuer of catalog at all
+        mvc.perform(get("/api/catalog/events/2").with(Identity.service("svc:booking")))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(get(STATS).param("eventId", "2").with(Identity.service("svc:booking")))
+                .andExpect(status().isUnauthorized());
     }
 
     @Test
@@ -112,10 +128,29 @@ class CatalogSecurityTest {
     }
 
     @Test
+    void anythingNoRuleNamesIsDeniedEvenWithAToken() throws Exception {
+        mvc.perform(multipart("/api/catalog/events").file(new MockMultipartFile("file", "x".getBytes(
+                StandardCharsets.UTF_8))).with(Identity.admin())).andExpect(status().isForbidden());
+        mvc.perform(get("/internal/events/1").with(Identity.service("svc:notification")))
+                .andExpect(status().isForbidden());
+        // the read rules are GET-only: any other method is refused here, never an MVC 405
+        for (HttpMethod method : java.util.List.of(HttpMethod.HEAD, HttpMethod.OPTIONS, HttpMethod.PUT,
+                HttpMethod.DELETE)) {
+            mvc.perform(request(method, "/api/catalog/events").with(Identity.user("u-1")))
+                    .andExpect(status().isForbidden());
+            mvc.perform(request(method, "/api/catalog/events/2").with(Identity.anonymous()))
+                    .andExpect(status().isUnauthorized());
+        }
+    }
+
+    @Test
     void onlyHealthIsOpenOnActuator() throws Exception {
         mvc.perform(get("/actuator/health")).andExpect(status().isOk());
         mvc.perform(get("/actuator/prometheus")).andExpect(status().isUnauthorized());
         mvc.perform(get("/actuator/info")).andExpect(status().isUnauthorized());
+        // denied with any token too, until phase 3 adds a scrape identity
+        mvc.perform(get("/actuator/prometheus").with(Identity.admin())).andExpect(status().isForbidden());
+        mvc.perform(get("/actuator/info").with(Identity.admin())).andExpect(status().isForbidden());
     }
 
     // ---- the second layer: the admin interceptor reads only the verified identity ----------------------------------

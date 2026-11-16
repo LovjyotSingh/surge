@@ -112,15 +112,20 @@ class CatalogEventsTest {
                 .andExpect(status().isBadRequest());
     }
 
-    /** The gateway matches /api/catalog/admin/** case-sensitively, so catalog must not match it case-insensitively. */
+    /**
+     * The gateway matches /api/catalog/admin/** case-sensitively, so catalog must not match it case-insensitively:
+     * a case variant of the admin prefix is no admin path, and as no rule names it either, it is denied before MVC.
+     * A case variant below the real prefix passes the admin rule and is simply no endpoint (404).
+     */
     @Test
     void adminPathIsCaseSensitive() throws Exception {
         MockMultipartFile file = new MockMultipartFile("file", "events.csv", "text/csv",
                 "title,artist,category,venueId,startsAt,saleOpensAt,rows,description\n".getBytes(StandardCharsets.UTF_8));
-        for (String path : List.of("/api/catalog/ADMIN/events/import", "/api/catalog/Admin/events/import",
-                "/api/catalog/admin/EVENTS/import")) {
+        for (String path : List.of("/api/catalog/ADMIN/events/import", "/api/catalog/Admin/events/import")) {
             mvc.perform(multipart(path).file(file).with(Identity.admin()))
-                    .andExpect(status().isNotFound());
+                    .andExpect(status().isForbidden());
         }
+        mvc.perform(multipart("/api/catalog/admin/EVENTS/import").file(file).with(Identity.admin()))
+                .andExpect(status().isNotFound());
     }
 }

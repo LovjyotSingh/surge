@@ -61,9 +61,14 @@ surge:
     enforce: true
     # Public JWKS of every issuer. Blank = the committed DEV keys (dev/tests, with a warning); prod refuses blank.
     jwks-location: ${SURGE_INTERNAL_JWKS:}
-    # Only the gateway for now; S3 adds svc:notification for GET /internal/orders/{id}.
+    # gateway: routed requests. svc:notification: GET /internal/orders/{id} (the ticket's order lookup).
     allowed-issuers:
       - gateway
+      - "svc:notification"
+    # booking signs its own calls to payment-service as svc:booking with this private JWK.
+    # Blank = the committed DEV key (dev/tests, with a warning); prod refuses blank.
+    issuer: "svc:booking"
+    signing-key-location: ${SURGE_INTERNAL_SIGNING_KEY:}
   hold:
     ttl: PT5M
   payment:

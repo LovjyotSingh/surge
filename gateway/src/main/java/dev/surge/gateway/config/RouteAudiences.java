@@ -1,5 +1,6 @@
 package dev.surge.gateway.config;
 
+import dev.surge.common.security.InternalAudiences;
 import java.net.URI;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -18,13 +19,13 @@ public final class RouteAudiences {
 
     public static final String METADATA_KEY = "surge.audience";
 
-    public static final String AUTH = "auth-service";
-    public static final String CATALOG = "catalog-service";
-    public static final String BOOKING = "booking-service";
-    public static final String NOTIFICATION = "notification-service";
-    public static final String PAYMENT = "payment-service";
-    /** Every service the gateway routes to. */
-    public static final Set<String> KNOWN = Set.of(AUTH, CATALOG, BOOKING, NOTIFICATION, PAYMENT);
+    public static final String AUTH = InternalAudiences.AUTH;
+    public static final String CATALOG = InternalAudiences.CATALOG;
+    public static final String BOOKING = InternalAudiences.BOOKING;
+    public static final String NOTIFICATION = InternalAudiences.NOTIFICATION;
+    public static final String PAYMENT = InternalAudiences.PAYMENT;
+    /** Every service the gateway routes to: common's list, shared with the service-to-service clients. */
+    public static final Set<String> KNOWN = InternalAudiences.KNOWN;
 
     private RouteAudiences() {
     }

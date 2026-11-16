@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -17,6 +18,7 @@ import dev.surge.notification.support.Identity;
 import dev.surge.notification.support.IntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -105,10 +107,24 @@ class NotificationSecurityTest {
     }
 
     @Test
+    void anythingNoRuleNamesIsDeniedEvenWithAToken() throws Exception {
+        mvc.perform(get("/api/notifications/nope").with(Identity.admin())).andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.type").value(PROBLEM + "forbidden"));
+        // the ticket rule is GET-only: any other method is refused here, never an MVC 405
+        for (HttpMethod method : java.util.List.of(HttpMethod.HEAD, HttpMethod.OPTIONS, HttpMethod.POST,
+                HttpMethod.DELETE)) {
+            mvc.perform(request(method, TICKET).with(Identity.user("u-1"))).andExpect(status().isForbidden());
+        }
+    }
+
+    @Test
     void onlyHealthIsOpenOnActuator() throws Exception {
         mvc.perform(get("/actuator/health")).andExpect(status().isOk());
         mvc.perform(get("/actuator/prometheus")).andExpect(status().isUnauthorized());
         mvc.perform(get("/actuator/info")).andExpect(status().isUnauthorized());
+        // denied with any token too, until phase 3 adds a scrape identity
+        mvc.perform(get("/actuator/prometheus").with(Identity.admin())).andExpect(status().isForbidden());
+        mvc.perform(get("/actuator/info").with(Identity.admin())).andExpect(status().isForbidden());
     }
 
     // ---- the second layer: the controllers read only the verified identity ----------------------------------------

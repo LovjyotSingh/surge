@@ -1,5 +1,8 @@
 package dev.surge.booking.payment;
 
+import dev.surge.common.security.InternalAudiences;
+import dev.surge.common.security.InternalTokenSigner;
+import dev.surge.common.security.InternalTokenSigningInterceptor;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import io.github.resilience4j.retry.RetryRegistry;
 import java.net.http.HttpClient;
@@ -15,7 +18,7 @@ import org.springframework.context.annotation.Scope;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
-/** The HTTP payment client, active only for surge.payment.mode=http (compose). */
+/** The HTTP payment client, active only for surge.payment.mode=http (compose); every call is signed as svc:booking. */
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnProperty(name = "surge.payment.mode", havingValue = "http")
 public class PaymentClientConfig {
@@ -44,13 +47,26 @@ public class PaymentClientConfig {
     @Bean
     HttpPaymentGateway paymentGateway(@LoadBalanced RestClient.Builder loadBalanced,
                                       @Value("${surge.payment.base-url:http://payment-service}") String baseUrl,
-                                      CircuitBreakerRegistry breakers, RetryRegistry retries) {
+                                      InternalTokenSigner signer, CircuitBreakerRegistry breakers,
+                                      RetryRegistry retries) {
+        return new HttpPaymentGateway(restClient(loadBalanced, baseUrl, signer), breakers.circuitBreaker("payment"),
+                retries.retry("payment"));
+    }
+
+    /**
+     * The payment client: base URL, timeouts, and booking's signing interceptor. Every HTTP attempt (retries
+     * included) carries a fresh {@code svc:booking} token addressed to {@code payment-service}, the only caller
+     * payment accepts on {@code /api/payments/**}. The audience is fixed here from the configured base URL
+     * ({@link InternalAudiences#forClient}), never from a request.
+     */
+    static RestClient restClient(RestClient.Builder builder, String baseUrl, InternalTokenSigner signer) {
         HttpClient http = HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT)
                 .version(HttpClient.Version.HTTP_1_1).build();
         JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(http);
         factory.setReadTimeout(READ_TIMEOUT);
+        String audience = InternalAudiences.forClient(InternalAudiences.PAYMENT, baseUrl);
         // clone(): the shared builder is never mutated (the load-balancer customizer owns its interceptors).
-        RestClient client = loadBalanced.clone().baseUrl(baseUrl).requestFactory(factory).build();
-        return new HttpPaymentGateway(client, breakers.circuitBreaker("payment"), retries.retry("payment"));
+        return builder.clone().baseUrl(baseUrl).requestFactory(factory)
+                .requestInterceptor(new InternalTokenSigningInterceptor(signer, audience)).build();
     }
 }

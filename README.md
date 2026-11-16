@@ -88,17 +88,17 @@ docker compose --profile core --profile loadtest run --rm loadtest --users 10000
 
 It resets event 1, runs, prints the report, shows it on the **Ops** page (http://localhost:8080/ops) and writes it to `reports/`. It exits with code 1 unless every check passes: 0 oversold, sold seats matching order lines, and as many `201`s as seats sold. Each run uses fresh idempotency keys (`<runId>-<userId>`), so you can run it again right away. On native Linux, run `export UID` first (or `chmod o+w reports`) so the container can write `reports/`; otherwise it only prints a warning. The run leaves event 1 sold out; an administrator resets it with `POST /api/bookings/admin/events/1/reset?opensInSeconds=0` through the gateway.
 
-**Identity.** Only the gateway reads the user's JWT. For every request it routes, it signs a 60-second ES256 identity token (`X-Surge-Identity`) for exactly the target service, and every service verifies that token and trusts nothing else: `X-User-*` headers are ignored, so a forged header gets `401` even from inside the network. Without a valid token only `/actuator/health` (and auth-service's public JWKS) answers. Service-to-service calls (notification to booking, auth and catalog; booking to payment) get their own signed tokens in task S3, and are refused until then. So is the `core` profile's web-to-booking path, until Task 16 puts the gateway into compose.
+**Identity.** Only the gateway reads the user's JWT. For every request it routes, it signs a 60-second ES256 identity token (`X-Surge-Identity`) for exactly the target service, and every service verifies that token and trusts nothing else: `X-User-*` headers are ignored, so a forged header gets `401` even from inside the network. Service-to-service calls (notification to booking, auth and catalog; booking to payment) are signed too, each with the calling service's own key and addressed to the one service it calls, and every service accepts only the callers it needs. Everything is denied by default: without a valid token only `/actuator/health` (and auth-service's public JWKS) answers, and a path or method no rule names is refused even with one. The `core` profile's web-to-booking path is refused until Task 16 puts the gateway into compose.
 
 If you start auth-service by hand (outside compose), set `SURGE_ENV=dev` explicitly, for example `SURGE_ENV=dev ./mvnw -pl auth-service spring-boot:run`. With the variable missing it also defaults to `dev` and logs a warning that the public development admin password is in use. Never expose such an instance; real deployments set `SURGE_ENV=prod` and a `SURGE_ADMIN_PASSWORD` of at least 16 characters.
 
 Stop everything with `docker compose --profile core down` (add `-v` to also delete the database data).
 
-Ports on your machine, all bound to `127.0.0.1` so nothing is reachable from your network: `8080` web and API through Nginx, `8081` booking-service directly (health only without a token), `3307` MySQL, `6379` Redis.
+Ports on your machine, all bound to `127.0.0.1` so nothing is reachable from your network: `8080` web and API through Nginx, `8081` booking-service directly (health, and the API docs in dev), `3307` MySQL, `6379` Redis.
 
 ## API
 
-All endpoints are under `/api/bookings`. Interactive docs: **http://localhost:8080/api/bookings/docs** (Swagger UI). OpenAPI JSON: http://localhost:8080/api/bookings/v3/api-docs.
+All endpoints are under `/api/bookings`. Interactive docs exist in development only (`SURGE_ENV=dev`), on booking's own port: Swagger UI at **http://localhost:8081/api/bookings/docs**, OpenAPI JSON at http://localhost:8081/api/bookings/v3/api-docs. The gateway does not route them, and booking refuses them outside dev.
 
 | Method | Path | Caller | What it does | Success |
 |---|---|---|---|---|
@@ -117,7 +117,7 @@ Every error, including the ones Spring raises itself (unknown route `404 not-fou
 
 Idempotency keys: a repeat of a completed checkout returns the same order for 24 hours. A key whose order no longer exists (an admin reset deletes orders) is treated as a new request.
 
-Health is on the service port without a token: http://localhost:8081/actuator/health. `/actuator/prometheus` and `/actuator/info` need an identity token, so nothing scrapes metrics until phase 3 adds a scrape identity or a separate management port.
+Health is on the service port without a token: http://localhost:8081/actuator/health. `/actuator/prometheus` and `/actuator/info` are refused to every caller until phase 3 adds a scrape identity or a separate management port.
 
 **Phase 1 limits, stated plainly:** identity now comes only from the gateway-signed token (see **Identity** above). Payment is a fake in-process gateway. Outbox messages are logged, not yet sent to a broker. Run it locally only: every published port is bound to `127.0.0.1`, so Redis (no password), MySQL and the admin API are not reachable from your network. A hold lives only in the open page, so refreshing the page loses its Pay button until the hold expires.
 

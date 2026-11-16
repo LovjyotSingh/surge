@@ -27,14 +27,22 @@
  * {@code allowed-issuers}, and declares one {@link dev.surge.common.security.SurgeAccessRules} bean that mirrors the
  * gateway's rules for its paths. Controllers read the caller only through
  * {@link dev.surge.common.security.CurrentIdentity}; nothing reads {@code X-User-*}, and the gateway no longer sends
- * them. With {@code SURGE_ENV=prod} a servlet service refuses to start unless {@code enforce=true}
+ * them. The chain denies by default: a path or method no rule names is refused, whoever asks. With
+ * {@code SURGE_ENV=prod} a servlet service refuses to start unless {@code enforce=true}
  * ({@code CommonAutoConfiguration}). Tests sign tokens with {@code IdentityTokens} from common's test-jar.
+ *
+ * <h2>Service-to-service calls</h2>
+ * booking (to payment) and notification (to booking, auth and catalog) sign every call with their own key through
+ * {@link dev.surge.common.security.InternalTokenSigningInterceptor}: a fresh {@code svc:*} token per HTTP attempt,
+ * addressed to the one service the client talks to ({@link dev.surge.common.security.InternalAudiences#forClient},
+ * fixed at startup, never taken from a request). Each callee trusts exactly the issuers it needs and names the
+ * endpoints they may use ({@code InternalAccess.service}); internal controllers check again with
+ * {@code CurrentIdentity.requireService}.
  *
  * <h2>Actuator</h2>
  * Only {@code /actuator/health} and {@code /actuator/health/**} are open (container health checks; status only).
- * Every other exposed endpoint, {@code /actuator/info} and {@code /actuator/prometheus} included, needs a valid
- * identity token like any other request, and the gateway has no route to them, so nothing can scrape metrics yet.
- * Phase 3 (observability) adds a scrape identity or a separate management port; until then nothing new is exposed.
+ * Every other actuator endpoint, {@code /actuator/info} and {@code /actuator/prometheus} included, is denied to every
+ * caller, token or not. Phase 3 (observability) adds a scrape identity or a separate management port.
  *
  * <h2>Replay</h2>
  * {@code jti} is not tracked. A captured token is accepted again by design, but only within its 60 s lifetime and

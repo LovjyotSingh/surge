@@ -30,6 +30,22 @@ public final class CurrentIdentity {
     }
 
     /**
+     * The identity of a call made by service {@code issuer} itself ({@code svc:notification}: issuer and subject both
+     * that name), for internal endpoints. 401 {@code unauthorized} without an identity; 403 {@code forbidden} for any
+     * other caller, gateway users and admins included.
+     */
+    public static InternalIdentity requireService(String issuer) {
+        if (!InternalTokens.isServiceIssuer(issuer)) {
+            throw new IllegalArgumentException("Not a service issuer: " + issuer);
+        }
+        InternalIdentity identity = get().orElseThrow(InternalIdentityException::unauthorized);
+        if (!issuer.equals(identity.issuer()) || !issuer.equals(identity.subject())) {
+            throw InternalIdentityException.forbidden();
+        }
+        return identity;
+    }
+
+    /**
      * The identity of a signed-in user routed by the gateway with the exact {@code ADMIN} role. 401
      * {@code missing-user} when there is no identity or it is anonymous; 403 {@code forbidden} for anyone else,
      * including a service identity and roles such as {@code SUPERADMIN}.

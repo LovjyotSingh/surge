@@ -20,6 +20,12 @@ public final class InternalIdentityException extends ErrorResponseException {
                 "A signed-in user is required");
     }
 
+    /** No verified identity at all (the same problem the chain answers for a missing or bad token). */
+    public static InternalIdentityException unauthorized() {
+        return new InternalIdentityException(HttpStatus.UNAUTHORIZED, "unauthorized", "Unauthorized",
+                "A valid internal identity token is required");
+    }
+
     public static InternalIdentityException forbidden() {
         return new InternalIdentityException(HttpStatus.FORBIDDEN, "forbidden", "Forbidden",
                 "You are not allowed to do this");

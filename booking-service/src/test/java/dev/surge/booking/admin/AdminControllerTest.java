@@ -252,7 +252,7 @@ class AdminControllerTest {
 
     @Test
     void openApiIsServed() throws Exception {
-        mvc.perform(get("/api/bookings/v3/api-docs").with(Identity.anonymous())).andExpect(status().isOk())
+        mvc.perform(get("/api/bookings/v3/api-docs")).andExpect(status().isOk())
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("/api/bookings/holds")));
     }
 }

@@ -2,14 +2,17 @@ package dev.surge.booking;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import dev.surge.booking.support.Identity;
 import dev.surge.booking.support.IntegrationTest;
 import dev.surge.common.security.IdentityTokens;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
@@ -17,7 +20,8 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 /**
  * booking-service trusts only a verified {@code X-Surge-Identity} addressed to it (SEC-03). Rules, mirroring the
  * gateway: admin a gateway ADMIN; event reads and the seat stream any gateway request (anonymous included); holds and
- * orders a gateway user. Only the gateway is a trusted issuer until S3 adds {@code /internal/orders} for notification.
+ * orders a gateway user; {@code /internal/orders/*} only {@code svc:notification} (see InternalOrderTest). Anything
+ * else is denied, whoever asks.
  */
 @IntegrationTest
 class BookingSecurityTest {
@@ -65,13 +69,19 @@ class BookingSecurityTest {
     }
 
     @Test
-    void serviceTokensAreNotTrustedYet() throws Exception {
-        for (String issuer : new String[] {"svc:notification", "svc:booking"}) {
-            mvc.perform(get("/api/bookings/orders/1").with(Identity.service(issuer)))
-                    .andExpect(status().isUnauthorized());
-            mvc.perform(hold().with(Identity.service(issuer))).andExpect(status().isUnauthorized());
-            mvc.perform(get(INTEGRITY).with(Identity.service(issuer))).andExpect(status().isUnauthorized());
-        }
+    void serviceTokensAreNeverUsers() throws Exception {
+        // svc:notification is trusted, but only for /internal/orders: a service is never a user or an admin
+        mvc.perform(get("/api/bookings/orders/1").with(Identity.service("svc:notification")))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.type").value(PROBLEM + "forbidden"));
+        mvc.perform(hold().with(Identity.service("svc:notification"))).andExpect(status().isForbidden());
+        mvc.perform(get(INTEGRITY).with(Identity.service("svc:notification"))).andExpect(status().isForbidden());
+        mvc.perform(get("/api/bookings/events").with(Identity.service("svc:notification")))
+                .andExpect(status().isForbidden());
+        // booking's own key is not a trusted issuer of booking at all
+        mvc.perform(get("/api/bookings/orders/1").with(Identity.service("svc:booking")))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(get("/internal/orders/1").param("userId", "u-1").with(Identity.service("svc:booking")))
+                .andExpect(status().isUnauthorized());
     }
 
     @Test
@@ -117,7 +127,37 @@ class BookingSecurityTest {
         mvc.perform(get("/api/bookings/nope")).andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.type").value(PROBLEM + "unauthorized"));
         mvc.perform(get("/internal/orders/1")).andExpect(status().isUnauthorized());
-        mvc.perform(get("/api/bookings/v3/api-docs")).andExpect(status().isUnauthorized());
+        mvc.perform(get("/internal/nope")).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void anythingNoRuleNamesIsDeniedEvenWithAToken() throws Exception {
+        // deny by default: an unknown path is no longer an MVC 404 for whoever holds a token
+        mvc.perform(get("/api/bookings/nope").with(Identity.admin())).andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.type").value(PROBLEM + "forbidden"));
+        mvc.perform(get("/api/bookings/nope").with(Identity.anonymous())).andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.type").value(PROBLEM + "missing-user"));
+        mvc.perform(get("/internal/nope").with(Identity.service("svc:notification")))
+                .andExpect(status().isForbidden());
+        // a method the GET-only event rule does not name is refused here, never an MVC 405
+        for (HttpMethod method : List.of(HttpMethod.HEAD, HttpMethod.OPTIONS, HttpMethod.DELETE, HttpMethod.PUT,
+                HttpMethod.POST)) {
+            mvc.perform(request(method, "/api/bookings/events").with(Identity.user("u-1")))
+                    .andExpect(status().isForbidden());
+            mvc.perform(request(method, "/api/bookings/events/1/stream").with(Identity.anonymous()))
+                    .andExpect(status().isUnauthorized());
+        }
+    }
+
+    @Test
+    void apiDocsAreOpenInDevOnly() throws Exception {
+        // tests run with SURGE_ENV=dev: a developer's browser needs no token (AccessRulesConfigTest covers prod)
+        mvc.perform(get("/api/bookings/v3/api-docs")).andExpect(status().isOk());
+        String location = mvc.perform(get("/api/bookings/docs")).andExpect(status().is3xxRedirection())
+                .andReturn().getResponse().getRedirectedUrl();
+        mvc.perform(get(location)).andExpect(status().isOk());
+        // reading only
+        mvc.perform(post("/api/bookings/v3/api-docs")).andExpect(status().isUnauthorized());
     }
 
     @Test
@@ -125,5 +165,8 @@ class BookingSecurityTest {
         mvc.perform(get("/actuator/health")).andExpect(status().isOk());
         mvc.perform(get("/actuator/prometheus")).andExpect(status().isUnauthorized());
         mvc.perform(get("/actuator/info")).andExpect(status().isUnauthorized());
+        // denied with any token too, until phase 3 adds a scrape identity
+        mvc.perform(get("/actuator/prometheus").with(Identity.admin())).andExpect(status().isForbidden());
+        mvc.perform(get("/actuator/info").with(Identity.admin())).andExpect(status().isForbidden());
     }
 }

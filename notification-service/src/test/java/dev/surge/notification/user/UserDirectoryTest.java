@@ -3,7 +3,9 @@ package dev.surge.notification.user;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import dev.surge.common.security.IdentityTokens;
 import dev.surge.notification.config.ClientsConfig;
+import dev.surge.notification.support.SignedRequests;
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 import mockwebserver3.MockResponse;
@@ -24,7 +26,8 @@ class UserDirectoryTest {
     void start() throws Exception {
         server.start();
         directory = new UserDirectory(ClientsConfig.restClient(RestClient.builder(),
-                server.url("/").toString(), Duration.ofMillis(300)));
+                server.url("/").toString(), Duration.ofMillis(300), IdentityTokens.signer("svc:notification"),
+                "auth-service"));
     }
 
     @AfterEach
@@ -39,7 +42,9 @@ class UserDirectoryTest {
                         {"id":"u-7","email":"asha@example.com","displayName":"Asha","roles":["USER"]}""").build());
 
         assertThat(directory.email("u-7")).isEqualTo("asha@example.com");
-        assertThat(server.takeRequest().getTarget()).isEqualTo("/internal/users/u-7");
+        var request = server.takeRequest();
+        assertThat(request.getTarget()).isEqualTo("/internal/users/u-7");
+        SignedRequests.assertSignedFor(request, "auth-service");
     }
 
     @Test

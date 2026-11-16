@@ -1,5 +1,8 @@
 package dev.surge.notification.config;
 
+import dev.surge.common.security.InternalAudiences;
+import dev.surge.common.security.InternalTokenSigner;
+import dev.surge.common.security.InternalTokenSigningInterceptor;
 import dev.surge.notification.booking.BookingClient;
 import dev.surge.notification.catalog.CatalogClient;
 import dev.surge.notification.user.UserDirectory;
@@ -15,7 +18,10 @@ import org.springframework.context.annotation.Scope;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
-/** Service-to-service clients (catalog, auth). Hostnames are Eureka service names, resolved by the load balancer. */
+/**
+ * Service-to-service clients (booking, auth, catalog), each signed as {@code svc:notification} for its one target.
+ * Hostnames are Eureka service names, resolved by the load balancer.
+ */
 @Configuration(proxyBeanMethods = false)
 public class ClientsConfig {
 
@@ -40,29 +46,37 @@ public class ClientsConfig {
     }
 
     @Bean
-    CatalogClient catalogClient(@LoadBalanced RestClient.Builder loadBalanced,
+    CatalogClient catalogClient(@LoadBalanced RestClient.Builder loadBalanced, InternalTokenSigner signer,
                                 @Value("${surge.clients.catalog-base-url:http://catalog-service}") String baseUrl) {
-        return new CatalogClient(restClient(loadBalanced, baseUrl, READ_TIMEOUT));
+        return new CatalogClient(restClient(loadBalanced, baseUrl, READ_TIMEOUT, signer, InternalAudiences.CATALOG));
     }
 
     @Bean
-    BookingClient bookingClient(@LoadBalanced RestClient.Builder loadBalanced,
+    BookingClient bookingClient(@LoadBalanced RestClient.Builder loadBalanced, InternalTokenSigner signer,
                                 @Value("${surge.clients.booking-base-url:http://booking-service}") String baseUrl) {
-        return new BookingClient(restClient(loadBalanced, baseUrl, READ_TIMEOUT));
+        return new BookingClient(restClient(loadBalanced, baseUrl, READ_TIMEOUT, signer, InternalAudiences.BOOKING));
     }
 
     @Bean
-    UserDirectory userDirectory(@LoadBalanced RestClient.Builder loadBalanced,
+    UserDirectory userDirectory(@LoadBalanced RestClient.Builder loadBalanced, InternalTokenSigner signer,
                                 @Value("${surge.clients.auth-base-url:http://auth-service}") String baseUrl) {
-        return new UserDirectory(restClient(loadBalanced, baseUrl, READ_TIMEOUT));
+        return new UserDirectory(restClient(loadBalanced, baseUrl, READ_TIMEOUT, signer, InternalAudiences.AUTH));
     }
 
-    /** Clones the builder (the shared one is never mutated) and applies the base URL and timeouts. */
-    public static RestClient restClient(RestClient.Builder builder, String baseUrl, Duration readTimeout) {
+    /**
+     * Clones the builder (the shared one is never mutated) and applies the base URL, the timeouts, and notification's
+     * signing interceptor: every HTTP attempt carries a fresh {@code svc:notification} token addressed to
+     * {@code service}. The audience is decided here, once, from the client's target and its configured base URL
+     * ({@link InternalAudiences#forClient}: a base URL naming another service fails startup); no request can change it.
+     */
+    public static RestClient restClient(RestClient.Builder builder, String baseUrl, Duration readTimeout,
+                                        InternalTokenSigner signer, String service) {
         HttpClient http = HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT)
                 .version(HttpClient.Version.HTTP_1_1).build();
         JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(http);
         factory.setReadTimeout(readTimeout);
-        return builder.clone().baseUrl(baseUrl).requestFactory(factory).build();
+        String audience = InternalAudiences.forClient(service, baseUrl);
+        return builder.clone().baseUrl(baseUrl).requestFactory(factory)
+                .requestInterceptor(new InternalTokenSigningInterceptor(signer, audience)).build();
     }
 }

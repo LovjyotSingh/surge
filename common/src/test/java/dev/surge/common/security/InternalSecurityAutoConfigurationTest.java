@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
@@ -27,6 +28,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.core.io.DefaultResourceLoader;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
@@ -52,7 +54,7 @@ class InternalSecurityAutoConfigurationTest {
                     InternalIdentitySignerAutoConfiguration.class, SecurityAutoConfiguration.class,
                     ServletWebSecurityAutoConfiguration.class, SecurityFilterAutoConfiguration.class,
                     UserDetailsServiceAutoConfiguration.class, OAuth2ResourceServerAutoConfiguration.class))
-            .withUserConfiguration(TestWeb.class)
+            .withUserConfiguration(TestWeb.class, TestRules.class)
             .withPropertyValues("spring.application.name=booking-service");
 
     private final WebApplicationContextRunner enforcing = runner.withPropertyValues(
@@ -133,6 +135,65 @@ class InternalSecurityAutoConfigurationTest {
             mvc.perform(get("/hello").header(HEADER, devSigner("svc:notification").signForService("booking-service",
                     null))).andExpect(status().isUnauthorized());
         });
+    }
+
+    @Test
+    void anythingNoRuleNamesIsDeniedWhoeverAsks() {
+        enforcing.run(context -> {
+            MockMvc mvc = mvc(context);
+            InternalTokenSigner gateway = context.getBean(InternalTokenSigner.class);
+            String user = gateway.sign("booking-service", "u-1", List.of("USER", "ADMIN"), null);
+            String anonymous = gateway.sign("booking-service", null, List.of(), null);
+
+            // a path no rule names: no token 401, the gateway's anonymous token 401 missing-user, anyone else 403
+            mvc.perform(get("/unmapped")).andExpect(status().isUnauthorized())
+                    .andExpect(jsonPath("$.type").value(PROBLEM + "unauthorized"));
+            mvc.perform(get("/unmapped").header(HEADER, anonymous)).andExpect(status().isUnauthorized())
+                    .andExpect(jsonPath("$.type").value(PROBLEM + "missing-user"));
+            mvc.perform(get("/unmapped").header(HEADER, user)).andExpect(status().isForbidden())
+                    .andExpect(jsonPath("$.type").value(PROBLEM + "forbidden"));
+            // a method a GET-only rule does not name is refused here, never an MVC 405 (or a HEAD served by GET)
+            mvc.perform(get("/hello").header(HEADER, user)).andExpect(status().isOk());
+            for (HttpMethod method : List.of(HttpMethod.HEAD, HttpMethod.OPTIONS, HttpMethod.POST, HttpMethod.DELETE)) {
+                mvc.perform(request(method, "/hello").header(HEADER, user)).andExpect(status().isForbidden());
+                mvc.perform(request(method, "/hello")).andExpect(status().isUnauthorized());
+            }
+            // every actuator endpoint but health: denied even with a token (phase 3 adds a scrape identity)
+            for (String path : List.of("/actuator/info", "/actuator/prometheus", "/actuator", "/actuator/env")) {
+                mvc.perform(get(path).header(HEADER, user)).andExpect(status().isForbidden());
+                mvc.perform(get(path)).andExpect(status().isUnauthorized());
+            }
+        });
+    }
+
+    @Test
+    void requireServiceAcceptsOnlyThatService() {
+        enforcingWithServices.withUserConfiguration(Rules.class).run(context -> {
+            MockMvc mvc = mvc(context);
+            InternalTokenSigner gateway = context.getBean(InternalTokenSigner.class);
+            mvc.perform(get("/internal/in-service").header(HEADER, devSigner("svc:notification")
+                    .signForService("booking-service", null))).andExpect(status().isOk())
+                    .andExpect(content().string("svc:notification"));
+        });
+        // the second layer on its own (the chain normally answers first)
+        IdentityTokens.runAs(IdentityTokens.service("svc:notification", "booking-service"), "booking-service",
+                () -> assertThat(CurrentIdentity.requireService("svc:notification").subject())
+                        .isEqualTo("svc:notification"));
+        for (String token : new String[] {IdentityTokens.service("svc:booking", "booking-service"),
+                IdentityTokens.admin("booking-service", "u-1"), IdentityTokens.anonymous("booking-service")}) {
+            IdentityTokens.runAs(token, "booking-service", () -> assertThatThrownBy(
+                    () -> CurrentIdentity.requireService("svc:notification"))
+                    .isInstanceOfSatisfying(InternalIdentityException.class,
+                            e -> assertThat(e.getStatusCode().value()).isEqualTo(403)));
+        }
+        IdentityTokens.runAs(null, "booking-service", () -> assertThatThrownBy(
+                () -> CurrentIdentity.requireService("svc:notification"))
+                .isInstanceOfSatisfying(InternalIdentityException.class, e -> {
+                    assertThat(e.getStatusCode().value()).isEqualTo(401);
+                    assertThat(e.getBody().getType().toString()).isEqualTo(PROBLEM + "unauthorized");
+                }));
+        assertThatThrownBy(() -> CurrentIdentity.requireService("gateway"))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -335,6 +396,17 @@ class InternalSecurityAutoConfigurationTest {
     static class TestWeb {
     }
 
+    /** The probe endpoints most tests use; anything else is left to the deny-by-default fallback. */
+    @Configuration(proxyBeanMethods = false)
+    static class TestRules {
+        @Bean
+        SurgeAccessRules probeRules() {
+            return rules -> rules
+                    .requestMatchers(HttpMethod.GET, "/hello").authenticated()
+                    .requestMatchers("/me", "/in-service-admin", "/authorities", "/async").authenticated();
+        }
+    }
+
     @Configuration(proxyBeanMethods = false)
     static class Rules {
         @Bean
@@ -347,7 +419,7 @@ class InternalSecurityAutoConfigurationTest {
 
     @RestController
     static class TestController {
-        @GetMapping("/hello")
+        @org.springframework.web.bind.annotation.RequestMapping("/hello")
         String hello() {
             return CurrentIdentity.get()
                     .map(i -> i.issuer() + "|" + i.subject() + "|" + new TreeSet<>(i.roles()))
@@ -372,6 +444,21 @@ class InternalSecurityAutoConfigurationTest {
         @GetMapping("/internal/x")
         String internal() {
             return "internal";
+        }
+
+        @GetMapping("/internal/in-service")
+        String internalInService() {
+            return CurrentIdentity.requireService("svc:notification").subject();
+        }
+
+        @GetMapping("/unmapped")
+        String unmapped() {
+            return "should never be reached";
+        }
+
+        @GetMapping({"/actuator/info", "/actuator/prometheus", "/actuator", "/actuator/env"})
+        String actuator() {
+            return "should never be reached";
         }
 
         @GetMapping("/authorities")

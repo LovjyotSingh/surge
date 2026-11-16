@@ -3,7 +3,9 @@ package dev.surge.notification.catalog;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import dev.surge.common.security.IdentityTokens;
 import dev.surge.notification.config.ClientsConfig;
+import dev.surge.notification.support.SignedRequests;
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 import mockwebserver3.MockResponse;
@@ -24,7 +26,8 @@ class CatalogClientTest {
     void start() throws Exception {
         server.start();
         client = new CatalogClient(ClientsConfig.restClient(RestClient.builder(),
-                server.url("/").toString(), Duration.ofMillis(300)));
+                server.url("/").toString(), Duration.ofMillis(300), IdentityTokens.signer("svc:notification"),
+                "catalog-service"));
     }
 
     @AfterEach
@@ -45,7 +48,9 @@ class CatalogClientTest {
         assertThat(event.venueName()).isEqualTo("JLN Stadium");
         assertThat(event.zoneId()).isEqualTo("Asia/Kolkata");
         assertThat(event.startsAtLocal().toLocalTime().toString()).isEqualTo("19:30");
-        assertThat(server.takeRequest().getTarget()).isEqualTo("/api/catalog/events/3");
+        var request = server.takeRequest();
+        assertThat(request.getTarget()).isEqualTo("/api/catalog/events/3");
+        SignedRequests.assertSignedFor(request, "catalog-service");
     }
 
     @Test

@@ -25,8 +25,11 @@ import org.springframework.security.web.SecurityFilterChain;
  * and {@code X-User-*} are never read. Rules:
  * <ol>
  *   <li>{@code /actuator/health/**} open, and error dispatches open (they only render an already-decided error);</li>
+ *   <li>every other {@code /actuator/**} endpoint denied ({@code info}, {@code prometheus}: phase 3 adds a scrape
+ *       identity);</li>
  *   <li>every {@link SurgeAccessRules} bean, in order;</li>
- *   <li>anything else: any valid identity.</li>
+ *   <li>anything else: denied, whoever asks (deny by default). A path or method no rule names, such as
+ *       {@code HEAD}/{@code OPTIONS} on a GET-only rule, is 401/403 here and never reaches MVC.</li>
  * </ol>
  * Ordered before Boot's security auto-configuration, which then backs off (no default chain, no generated password).
  */
@@ -84,8 +87,10 @@ public class InternalSecurityAutoConfiguration {
                 .authorizeHttpRequests(rules -> {
                     rules.dispatcherTypeMatchers(DispatcherType.ERROR).permitAll();
                     rules.requestMatchers("/actuator/health", "/actuator/health/**").permitAll();
+                    // info, prometheus and anything else exposed: no caller yet (phase 3 adds a scrape identity)
+                    rules.requestMatchers("/actuator", "/actuator/**").denyAll();
                     accessRules.orderedStream().forEach(r -> r.configure(rules));
-                    rules.anyRequest().authenticated();
+                    rules.anyRequest().denyAll();
                 })
                 .build();
     }

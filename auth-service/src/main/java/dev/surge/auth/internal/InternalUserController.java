@@ -4,13 +4,16 @@ import dev.surge.auth.api.AuthController;
 import dev.surge.auth.api.UserLookup;
 import dev.surge.auth.api.UserView;
 import dev.surge.auth.error.UserNotFoundException;
+import dev.surge.common.security.CurrentIdentity;
+import dev.surge.common.security.InternalTokens;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Service-to-service lookup for notification's ticket email. The gateway has no route to /internal, and the identity
- * chain lets only {@code svc:notification} in ({@code AccessRulesConfig}).
+ * Service-to-service lookup for notification's ticket email. The gateway has no route to /internal, the identity
+ * chain lets only {@code svc:notification} in ({@code AccessRulesConfig}), and the method checks again
+ * ({@link CurrentIdentity#requireService}) before reading anything.
  */
 @RestController
 public class InternalUserController {
@@ -22,6 +25,7 @@ public class InternalUserController {
 
     @GetMapping("/internal/users/{id}")
     UserView get(@PathVariable String id) {
+        CurrentIdentity.requireService(InternalTokens.SVC_NOTIFICATION);
         if (!AuthController.USER_ID.matcher(id).matches()) {
             throw new UserNotFoundException();
         }
