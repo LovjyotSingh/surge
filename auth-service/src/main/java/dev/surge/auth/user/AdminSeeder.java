@@ -70,15 +70,26 @@ public class AdminSeeder implements SmartInitializingSingleton {
                 throw new IllegalStateException("SURGE_ADMIN_EMAIL names an existing account that is not an "
                         + "administrator; refusing to take it over. Choose another admin email");
             }
+            boolean changed = false;
             if (!encoder.matches(adminPassword, admin.getPasswordHash())) {
                 admin.setPasswordHash(encoder.encode(adminPassword));
-                users.save(admin);
+                changed = true;
                 log.info("Admin account password re-hashed to match the configured SURGE_ADMIN_PASSWORD");
+            }
+            if (!admin.isEmailVerified()) {
+                // the operator configured this address; there is nobody to send a code to (S5)
+                admin.setEmailVerified(true);
+                changed = true;
+            }
+            if (changed) {
+                users.save(admin);
             }
         } else {
             try {
-                users.save(new User(adminEmail, encoder.encode(adminPassword), "Surge Admin", Role.ADMIN,
-                        clock.instant()));
+                User admin = new User(adminEmail, encoder.encode(adminPassword), "Surge Admin", Role.ADMIN,
+                        clock.instant());
+                admin.setEmailVerified(true);
+                users.save(admin);
             } catch (DataIntegrityViolationException raced) {
                 // another instance seeded it first
             }

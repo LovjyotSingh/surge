@@ -17,7 +17,8 @@
  *
  * <h2>Who can say what</h2>
  * Only the gateway states users: a gateway token's {@code sub} is a user id (or absent: anonymous) and its
- * {@code roles} are that user's. A service token ({@code svc:*}) states only the service: {@code sub} equals its
+ * {@code roles} are that user's; for a user it may also carry {@code ev}, copied from the user JWT, which says the
+ * user's email is verified ({@code CurrentIdentity.requireVerifiedUser}, e.g. for booking holds). A service token ({@code svc:*}) states only the service: {@code sub} equals its
  * {@code iss} and it has no roles. A compromised service can therefore call another service as itself, where the
  * callee allows it ({@code allowed-issuers}, default gateway only, plus {@code InternalAccess.service}), but it can
  * never act as a user or an admin.

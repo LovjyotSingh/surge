@@ -109,6 +109,8 @@ export interface UserView {
   email: string
   displayName: string
   roles: string[]
+  /** False until the emailed 6-digit code is entered; holds need it. Missing in sessions stored before it existed. */
+  emailVerified?: boolean
 }
 
 export interface TokenResponse {

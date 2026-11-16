@@ -41,9 +41,17 @@ public final class IdentityTokens {
 
     // ---- tokens --------------------------------------------------------------------------------------------------
 
-    /** A gateway token for signed-in user {@code userId} with exactly {@code roles} (none given: no roles). */
+    /**
+     * A gateway token for signed-in user {@code userId} with exactly {@code roles} (none given: no roles) and a
+     * verified email ({@code ev: true}), the usual case; see {@link #unverifiedUser} for the other one.
+     */
     public static String user(String audience, String userId, String... roles) {
-        return signer(InternalTokens.GATEWAY).sign(audience, userId, List.of(roles), null);
+        return signer(InternalTokens.GATEWAY).sign(audience, userId, List.of(roles), null, true);
+    }
+
+    /** A gateway token for an ordinary user (role {@code USER}) who has not verified their email yet. */
+    public static String unverifiedUser(String audience, String userId) {
+        return signer(InternalTokens.GATEWAY).sign(audience, userId, List.of(USER), null, false);
     }
 
     /** A gateway token for an ordinary user: role {@code USER}. */
@@ -105,6 +113,10 @@ public final class IdentityTokens {
 
     public static RequestPostProcessor asOrdinaryUser(String audience, String userId) {
         return with(() -> ordinaryUser(audience, userId));
+    }
+
+    public static RequestPostProcessor asUnverifiedUser(String audience, String userId) {
+        return with(() -> unverifiedUser(audience, userId));
     }
 
     public static RequestPostProcessor asAdmin(String audience, String userId) {

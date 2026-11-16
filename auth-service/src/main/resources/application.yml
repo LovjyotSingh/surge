@@ -13,6 +13,14 @@ spring:
     url: ${MYSQL_URL:jdbc:mysql://localhost:3307/auth}
     username: ${MYSQL_USER:surge}
     password: ${MYSQL_PASSWORD:surge}
+  mail:
+    # The email verification code (S5). Mailpit locally, like notification-service; no auth, no TLS.
+    host: ${MAIL_HOST:localhost}
+    port: ${MAIL_PORT:1025}
+    properties:
+      mail.smtp.connectiontimeout: 5000
+      mail.smtp.timeout: 10000
+      mail.smtp.writetimeout: 10000
   jpa:
     open-in-view: false
     hibernate:
@@ -59,6 +67,10 @@ eureka:
     prefer-ip-address: true
 
 management:
+  health:
+    mail:
+      # Sign-in must keep working when the mail server is down (a code can be re-sent), so mail never fails health.
+      enabled: false
   endpoints:
     web:
       exposure:

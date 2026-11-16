@@ -21,6 +21,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSession({ token: res.token, expiresAt: res.expiresAt, user: res.user })
   }, [])
 
+  // A verified email comes with a new token (ev: true); the old one stays unverified, so it is replaced.
+  const verifyEmail = useCallback(async (code: string) => {
+    const res = await api.verifyEmail(code)
+    setSession({ token: res.token, expiresAt: res.expiresAt, user: res.user })
+  }, [])
+
   // Revoke the token at the gateway, then forget it. The session is cleared even when the call fails (offline,
   // already expired): logging out must always work on this device.
   const logout = useCallback(async () => {
@@ -51,8 +57,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       signup,
       logout,
+      verifyEmail,
     }),
-    [session, login, signup, logout],
+    [session, login, signup, logout, verifyEmail],
   )
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

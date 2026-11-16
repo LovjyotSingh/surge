@@ -8,7 +8,8 @@ import java.util.regex.Pattern;
  * The internal identity token protocol in one place (see {@code package-info}). A token is a compact ES256 JWS sent
  * in {@value #HEADER}; its header has {@code typ} {@value #TYPE} and {@code kid} = issuer name, and its claims are
  * {@code iss}, {@code aud} (the one target {@code spring.application.name}), {@code sub}, {@code roles} (string
- * array), {@code iat}, {@code exp} ({@code iat} + 60 s), {@code jti} and optional {@code rid} (request id).
+ * array), {@code iat}, {@code exp} ({@code iat} + 60 s), {@code jti}, optional {@code rid} (request id) and, on gateway
+ * user tokens only, optional {@code ev} (the user's email is verified).
  *
  * <p>Gateway tokens carry the user ({@code sub} absent when anonymous) and the user's roles. Service tokens
  * ({@code svc:*}) speak only for the service itself: {@code sub} equals {@code iss} and there are no roles.
@@ -44,6 +45,11 @@ public final class InternalTokens {
 
     static final String ROLES = "roles";
     static final String REQUEST_ID = "rid";
+    /**
+     * Optional boolean, gateway user tokens only: whether the user's email is verified (the user JWT's {@code ev}).
+     * Absent means "not stated", which is never treated as verified.
+     */
+    static final String EMAIL_VERIFIED = "ev";
     /** Far more than a real token (about 500 bytes); anything longer is refused before parsing. */
     static final int MAX_TOKEN_LENGTH = 4096;
 

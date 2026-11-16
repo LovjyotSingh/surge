@@ -22,6 +22,8 @@ public class CurrentUserArgumentResolver implements HandlerMethodArgumentResolve
     @Override
     public Object resolveArgument(MethodParameter parameter, ModelAndViewContainer mavContainer,
                                   NativeWebRequest webRequest, WebDataBinderFactory binderFactory) {
-        return CurrentIdentity.requireUser();
+        CurrentUser annotation = parameter == null ? null : parameter.getParameterAnnotation(CurrentUser.class);
+        return annotation != null && annotation.verifiedEmail() ? CurrentIdentity.requireVerifiedUser()
+                : CurrentIdentity.requireUser();
     }
 }

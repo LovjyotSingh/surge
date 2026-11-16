@@ -36,9 +36,12 @@ public class HoldStore {
 
     /**
      * Atomically holds all seats or none, via a single Lua script. The locked price of each seat is stored in the
-     * same step, so a hold never exists without its prices.
+     * same step, so a hold never exists without its prices. It refuses ({@link HoldResult.TooManyHolds}) when the user
+     * already has {@code maxActiveHolds} unexpired holds across all events, in the same atomic step (S5, SEC-13
+     * hoarding). Checkout and release take a hold off the user's count at once; an expired one stops counting at its
+     * expiry (an admin event reset leaves its holds counted until then, at most the hold TTL).
      */
-    public HoldResult tryHold(String userId, long eventId, List<HoldLine> lines, Duration ttl) {
+    public HoldResult tryHold(String userId, long eventId, List<HoldLine> lines, Duration ttl, int maxActiveHolds) {
         String holdId = UUID.randomUUID().toString();
         Instant expiresAt = clock.instant().plus(ttl);
         List<Long> seatIds = lines.stream().map(HoldLine::seatId).toList();
@@ -48,6 +51,7 @@ public class HoldStore {
         keys.add(RedisKeys.hold(holdId));
         keys.add(RedisKeys.userHold(eventId, userId));
         keys.add(RedisKeys.HOLD_EXPIRY);
+        keys.add(RedisKeys.userHolds(userId));
         seatIds.forEach(s -> keys.add(RedisKeys.seat(eventId, s)));
 
         List<String> args = new ArrayList<>();
@@ -58,6 +62,7 @@ public class HoldStore {
         args.add(String.valueOf(expiresAt.toEpochMilli()));
         args.add(csv(seatIds.stream().map(String::valueOf).toList()));
         args.add(csv(lines.stream().map(l -> l.priceInr().toPlainString()).toList()));
+        args.add(String.valueOf(maxActiveHolds));
         seatIds.forEach(s -> args.add(String.valueOf(s)));
 
         List<?> result = redis.execute(holdScript, keys, args.toArray());
@@ -65,6 +70,7 @@ public class HoldStore {
         return switch (status) {
             case "OK" -> new HoldResult.Held(holdId, expiresAt);
             case "HOLD_EXISTS" -> new HoldResult.HoldExists(String.valueOf(result.get(1)));
+            case "TOO_MANY_HOLDS" -> new HoldResult.TooManyHolds(Integer.parseInt(String.valueOf(result.get(1))));
             case "TAKEN" -> new HoldResult.SeatsTaken(
                     result.subList(1, result.size()).stream().map(o -> Long.parseLong(String.valueOf(o))).toList());
             default -> throw new IllegalStateException("Unexpected hold script result: " + status);
@@ -96,6 +102,7 @@ public class HoldStore {
         keys.add(RedisKeys.hold(hold.holdId()));
         keys.add(RedisKeys.userHold(hold.eventId(), hold.userId()));
         keys.add(RedisKeys.HOLD_EXPIRY);
+        keys.add(RedisKeys.userHolds(hold.userId()));
         hold.seatIds().forEach(s -> keys.add(RedisKeys.seat(hold.eventId(), s)));
 
         List<String> args = new ArrayList<>();
@@ -114,6 +121,7 @@ public class HoldStore {
         keys.add(RedisKeys.hold(hold.holdId()));
         keys.add(RedisKeys.userHold(hold.eventId(), hold.userId()));
         keys.add(RedisKeys.HOLD_EXPIRY);
+        keys.add(RedisKeys.userHolds(hold.userId()));
         hold.seatIds().forEach(s -> keys.add(RedisKeys.seat(hold.eventId(), s)));
         redis.execute(releaseScript, keys, hold.holdId(), hold.member());
     }

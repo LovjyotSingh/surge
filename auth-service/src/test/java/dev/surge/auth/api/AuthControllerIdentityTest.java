@@ -24,7 +24,7 @@ class AuthControllerIdentityTest {
 
     @Test
     void meIsTheUserTheTokenStates() {
-        UserView view = new UserView("u-1", "u-1@example.com", "Ada", List.of("USER"));
+        UserView view = new UserView("u-1", "u-1@example.com", "Ada", List.of("USER"), true);
         when(lookup.find("u-1")).thenReturn(view);
         IdentityTokens.runAs(IdentityTokens.ordinaryUser(AUDIENCE, "u-1"), AUDIENCE,
                 () -> assertThat(controller.me()).isSameAs(view));

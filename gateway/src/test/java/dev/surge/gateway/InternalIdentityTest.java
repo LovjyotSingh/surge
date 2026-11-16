@@ -70,6 +70,31 @@ class InternalIdentityTest extends GatewayTestBase {
                 .verify(token)).isInstanceOf(InvalidInternalTokenException.class);
     }
 
+    /** S5: the user JWT's ev reaches the services; only the JSON boolean true counts as verified. */
+    @Test
+    void theEmailVerifiedFlagIsCopiedStrictly() throws Exception {
+        java.util.Map<Object, Boolean> cases = new java.util.LinkedHashMap<>();
+        cases.put(true, true);
+        cases.put(false, false);
+        cases.put("true", false);
+        cases.put(1, false);
+        for (var entry : cases.entrySet()) {
+            String token = token("u-ev", "u-ev@surge.test", java.util.Map.of("ev", entry.getKey()),
+                    java.util.List.of("USER"), ISSUER, java.time.Instant.now().plusSeconds(600), KEY);
+            client.post().uri("/api/bookings/holds").header(HttpHeaders.AUTHORIZATION, bearer(token)).bodyValue("{}")
+                    .exchange().expectStatus().isOk();
+            InternalIdentity identity = identityFor(BOOKING.next(), "booking-service");
+            assertThat(identity.emailVerified()).as("ev %s", entry.getKey()).isEqualTo(entry.getValue());
+        }
+        // no ev claim at all: stated as not verified
+        client.post().uri("/api/bookings/holds").header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-ev")))
+                .bodyValue("{}").exchange().expectStatus().isOk();
+        assertThat(identityFor(BOOKING.next(), "booking-service").emailVerified()).isFalse();
+        // anonymous requests state nothing
+        client.get().uri("/api/bookings/events/7").exchange().expectStatus().isOk();
+        assertThat(identityFor(BOOKING.next(), "booking-service").emailVerified()).isNull();
+    }
+
     @Test
     void adminRolesAreCarried() throws Exception {
         client.post().uri("/api/bookings/admin/reset").header(HttpHeaders.AUTHORIZATION,

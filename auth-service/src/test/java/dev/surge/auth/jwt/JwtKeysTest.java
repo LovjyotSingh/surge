@@ -52,7 +52,7 @@ class JwtKeysTest {
     }
 
     private static UserView user() {
-        return new UserView("u-7", "ada@example.com", "Ada", List.of("USER"));
+        return new UserView("u-7", "ada@example.com", "Ada", List.of("USER"), true);
     }
 
     @Test

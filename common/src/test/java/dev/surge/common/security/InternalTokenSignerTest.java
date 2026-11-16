@@ -120,6 +120,30 @@ class InternalTokenSignerTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    /** S5: {@code ev} is the gateway's statement about a signed-in user's email, and nobody else's. */
+    @Test
+    void emailVerifiedIsSignedOnlyForAGatewayUser() throws Exception {
+        JWTClaimsSet verified = SignedJWT.parse(signer.sign("booking-service", "u-1", List.of("USER"), null, true))
+                .getJWTClaimsSet();
+        assertThat(verified.getBooleanClaim("ev")).isTrue();
+        JWTClaimsSet unverified = SignedJWT.parse(signer.sign("booking-service", "u-1", List.of("USER"), null, false))
+                .getJWTClaimsSet();
+        assertThat(unverified.getBooleanClaim("ev")).isFalse();
+        // not stated: no claim at all
+        assertThat(SignedJWT.parse(signer.sign("booking-service", "u-1", List.of("USER"), null)).getJWTClaimsSet()
+                .getClaim("ev")).isNull();
+
+        // an anonymous request has no email; a service never speaks for a user's email
+        assertThatThrownBy(() -> signer.sign("booking-service", null, List.of(), null, true))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> booking.sign("payment-service", "svc:booking", List.of(), null, false))
+                .isInstanceOf(IllegalArgumentException.class);
+        // the identity's flag is carried through
+        String fromIdentity = signer.sign(new InternalIdentity("gateway", "u-1", Set.of("USER"), null,
+                "booking-service", true));
+        assertThat(SignedJWT.parse(fromIdentity).getJWTClaimsSet().getBooleanClaim("ev")).isTrue();
+    }
+
     @Test
     void refusesKeysThatDoNotFitTheIssuer() {
         // public key only

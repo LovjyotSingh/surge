@@ -47,6 +47,8 @@ import reactor.netty.http.client.HttpClient;
  * /api/auth/me                                USER
  * POST /api/auth/logout                       any valid token (answered here, never routed: LogoutConfig)
  * /api/auth/logout (other methods)            deny
+ * POST /api/auth/verify, /verify/resend       USER    (email verification code, S5)
+ * /api/auth/verify/** (anything else)         deny
  * /api/auth/**                                public  (signup, login, JWKS)
  * GET /api/catalog/**                         public
  * GET /api/bookings/events/**                 public  (includes the SSE stream)
@@ -61,6 +63,8 @@ class SecurityConfig {
 
     /** The {@code aud} every user token must carry; auth-service's {@code TokenService.AUDIENCE}. */
     static final String AUDIENCE = "surge-api";
+    /** Email verification, routed to auth by the {@code auth-public} route ({@code /api/auth/**}). */
+    static final String VERIFY = "/api/auth/verify";
 
     @Bean
     SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http, SecurityProblemHandlers problems,
@@ -84,6 +88,9 @@ class SecurityConfig {
                         // answered by the gateway itself (LogoutConfig): any valid token may revoke itself
                         .pathMatchers(HttpMethod.POST, LogoutConfig.PATH).authenticated()
                         .pathMatchers(LogoutConfig.PATH, LogoutConfig.PATH + "/**").denyAll()
+                        // email verification (S5): the signed-in user enters the code or asks for a new one
+                        .pathMatchers(HttpMethod.POST, VERIFY, VERIFY + "/resend").hasRole("USER")
+                        .pathMatchers(VERIFY, VERIFY + "/**").denyAll()
                         .pathMatchers("/api/auth/**").permitAll()
                         .pathMatchers(HttpMethod.GET, "/api/catalog/**").permitAll()
                         .pathMatchers(HttpMethod.GET, "/api/bookings/events/**").permitAll()

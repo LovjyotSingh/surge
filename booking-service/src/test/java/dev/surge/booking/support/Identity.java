@@ -20,6 +20,11 @@ public final class Identity {
         return IdentityTokens.asOrdinaryUser(AUDIENCE, userId);
     }
 
+    /** A signed-in user (role USER) whose email is not verified yet: holds are refused (S5). */
+    public static RequestPostProcessor unverifiedUser(String userId) {
+        return IdentityTokens.asUnverifiedUser(AUDIENCE, userId);
+    }
+
     /** A signed-in user with exactly these roles (none: no roles at all). */
     public static RequestPostProcessor userWithRoles(String userId, String... roles) {
         return IdentityTokens.asUser(AUDIENCE, userId, roles);

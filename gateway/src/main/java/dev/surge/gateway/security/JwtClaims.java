@@ -33,6 +33,14 @@ final class JwtClaims {
         return jti != null && TOKEN_ID.matcher(jti).matches();
     }
 
+    /**
+     * The user JWT's {@code ev} (email verified, S5): true only for the JSON boolean {@code true}. Missing, false or
+     * anything else (a string, a number) is "not verified", never guessed at.
+     */
+    static boolean emailVerified(Jwt jwt) {
+        return Boolean.TRUE.equals(jwt.getClaims().get("ev"));
+    }
+
     /** Synthetic load-test identity: a {@code lt-} subject or any {@code lt} claim, whatever its value or type. */
     static boolean isLoadtest(Jwt jwt) {
         String sub = jwt.getSubject();

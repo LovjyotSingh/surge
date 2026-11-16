@@ -12,6 +12,7 @@ import OpsPage from './pages/OpsPage'
 import SearchPage from './pages/SearchPage'
 import SignupPage from './pages/SignupPage'
 import TicketPage from './pages/TicketPage'
+import VerifyPage from './pages/VerifyPage'
 
 /** A 401 on an authenticated call means the session is over: the client clears it, this sends the user to log in again. */
 function SessionGuard() {
@@ -98,6 +99,7 @@ export default function App() {
             <Route path="/tickets/:orderId" element={<TicketPage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/signup" element={<SignupPage />} />
+            <Route path="/verify" element={<VerifyPage />} />
             <Route
               path="/ops"
               element={

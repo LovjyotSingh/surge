@@ -11,4 +11,10 @@ import java.lang.annotation.Target;
 @Retention(RetentionPolicy.RUNTIME)
 @Documented
 public @interface CurrentUser {
+
+    /**
+     * Also require the gateway's statement that the user's email is verified (S5): 403 {@code email-unverified}
+     * otherwise, before the request body is even read.
+     */
+    boolean verifiedEmail() default false;
 }

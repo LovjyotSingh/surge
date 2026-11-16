@@ -3,7 +3,7 @@ import type { FormEvent } from 'react'
 import { Link, Navigate, useSearchParams } from 'react-router'
 import { ApiError } from '../api/client'
 import { useAuth } from '../auth/context'
-import { safeNext } from '../auth/redirect'
+import { safeNext, verifyPath } from '../auth/redirect'
 import { getSession } from '../auth/session'
 import { GENERIC_ERROR } from '../format'
 
@@ -11,6 +11,14 @@ export type AuthMode = 'login' | 'signup'
 type Field = 'name' | 'email' | 'password'
 
 const CLOCK_ERROR = 'Your device clock seems to be wrong — please fix it and try again.'
+
+/** The server's reason a signup password was refused (too common, contains the email), never the password itself. */
+function passwordProblem(err: ApiError): string | null {
+  const errors = err.problem.errors
+  if (err.status !== 400 || errors === null || typeof errors !== 'object') return null
+  const reason = (errors as Record<string, unknown>).password
+  return typeof reason === 'string' ? `This password ${reason}.` : null
+}
 
 function authErrorText(err: unknown, mode: AuthMode): string {
   if (err instanceof ApiError) {
@@ -21,6 +29,10 @@ function authErrorText(err: unknown, mode: AuthMode): string {
     }
     if (mode === 'login' && err.status === 401) return 'Wrong email or password.'
     if (mode === 'signup' && err.status === 409) return 'That email is already registered.'
+    if (mode === 'signup') {
+      const reason = passwordProblem(err)
+      if (reason) return reason
+    }
   }
   return GENERIC_ERROR
 }
@@ -30,6 +42,7 @@ function invalidFieldsFor(err: unknown, mode: AuthMode): ReadonlySet<Field> {
   if (err instanceof ApiError) {
     if (mode === 'login' && err.status === 401) return new Set<Field>(['email', 'password'])
     if (mode === 'signup' && err.status === 409) return new Set<Field>(['email'])
+    if (mode === 'signup' && passwordProblem(err)) return new Set<Field>(['password'])
   }
   return new Set<Field>()
 }
@@ -47,8 +60,9 @@ export default function AuthForm({ mode }: { mode: AuthMode }) {
   const [invalid, setInvalid] = useState<ReadonlySet<Field>>(new Set())
   const [busy, setBusy] = useState(false)
 
-  // Logged in already (or just now): the form has done its job.
-  if (user) return <Navigate to={next} replace />
+  // Logged in already (or just now): the form has done its job. A new or unverified account is nudged to enter the
+  // emailed code first (it can skip it there); holds need a verified email.
+  if (user) return <Navigate to={user.emailVerified === false ? verifyPath(next) : next} replace />
 
   const otherPath = mode === 'login' ? '/signup' : '/login'
   const otherHref = rawNext ? `${otherPath}?next=${encodeURIComponent(next).replace(/%2F/g, '/')}` : otherPath

@@ -129,6 +129,11 @@ export const api = {
     })
     if (!res.ok) throw await toApiError(res)
   },
+  /** The emailed 6-digit code; answers a fresh token whose user (and `ev` claim) is verified. */
+  verifyEmail: (code: string) =>
+    call<TokenResponse>(`${AUTH}/verify`, { method: 'POST', body: { code }, auth: true }),
+  /** Emails a new code (202); 429 with Retry-After when asked again too soon. */
+  resendVerification: () => call<{ sent: boolean }>(`${AUTH}/verify/resend`, { method: 'POST', auth: true }),
 
   catalogEvents: (page = 0, size = 100) => call<CatalogPage>(`${CATALOG}/events${query({ page, size })}`),
   catalogEvent: (id: number) => call<CatalogEvent>(`${CATALOG}/events/${id}`),

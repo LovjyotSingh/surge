@@ -71,6 +71,13 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(pd);
     }
 
+    @ExceptionHandler(TooManyHoldsException.class)
+    ResponseEntity<ProblemDetail> tooManyHolds(TooManyHoldsException e) {
+        ProblemDetail pd = Problems.of(HttpStatus.CONFLICT, "too-many-holds", "Too many active holds", e.getMessage());
+        pd.setProperty("maxActiveHolds", e.max());
+        return problem(pd);
+    }
+
     @ExceptionHandler(RateLimitedException.class)
     ResponseEntity<ProblemDetail> rateLimited(RateLimitedException e) {
         ProblemDetail pd = Problems.of(HttpStatus.TOO_MANY_REQUESTS, "rate-limited", "Too many requests", e.getMessage());

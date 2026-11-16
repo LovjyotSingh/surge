@@ -61,6 +61,40 @@ class IdentityTokensTest {
                 () -> assertThat(CurrentIdentity.get()).hasValueSatisfying(i -> assertThat(i.isUser()).isFalse()));
     }
 
+    /** Test users are verified unless a test asks for an unverified one (holds need a verified email, S5). */
+    @Test
+    void testUsersAreVerifiedUnlessAskedOtherwise() {
+        assertThat(verify(IdentityTokens.ordinaryUser("booking-service", "u-1"), "booking-service", "gateway")
+                .isEmailVerified()).isTrue();
+        assertThat(verify(IdentityTokens.admin("booking-service", "u-9"), "booking-service", "gateway")
+                .isEmailVerified()).isTrue();
+        InternalIdentity unverified = verify(IdentityTokens.unverifiedUser("booking-service", "u-2"),
+                "booking-service", "gateway");
+        assertThat(unverified.isEmailVerified()).isFalse();
+        assertThat(unverified.roles()).containsExactly("USER");
+        assertThat(verify(IdentityTokens.anonymous("booking-service"), "booking-service", "gateway").emailVerified())
+                .isNull();
+    }
+
+    @Test
+    void requireVerifiedUserAcceptsOnlyAGatewayUserWithAVerifiedEmail() {
+        IdentityTokens.runAs(IdentityTokens.ordinaryUser("booking-service", "u-1"), "booking-service",
+                () -> assertThat(CurrentIdentity.requireVerifiedUser()).isEqualTo("u-1"));
+        IdentityTokens.runAs(IdentityTokens.unverifiedUser("booking-service", "u-2"), "booking-service",
+                () -> assertThatThrownBy(CurrentIdentity::requireVerifiedUser)
+                        .isInstanceOfSatisfying(InternalIdentityException.class, e -> {
+                            assertThat(e.getStatusCode().value()).isEqualTo(403);
+                            assertThat(e.getBody().getType().toString())
+                                    .isEqualTo("https://surge.dev/problems/email-unverified");
+                        }));
+        for (String token : new String[] {IdentityTokens.anonymous("booking-service"),
+                IdentityTokens.service("svc:notification", "booking-service"), null}) {
+            IdentityTokens.runAs(token, "booking-service", () -> assertThatThrownBy(CurrentIdentity::requireVerifiedUser)
+                    .isInstanceOfSatisfying(InternalIdentityException.class,
+                            e -> assertThat(e.getStatusCode().value()).isEqualTo(401)));
+        }
+    }
+
     @Test
     void thePostProcessorSignsAFreshTokenPerRequest() {
         var processor = IdentityTokens.asOrdinaryUser("booking-service", "u-1");

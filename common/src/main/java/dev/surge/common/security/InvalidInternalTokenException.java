@@ -39,7 +39,9 @@ public class InvalidInternalTokenException extends RuntimeException {
         /** {@code rid} is malformed. */
         REQUEST_ID,
         /** A service-issued token whose {@code sub} is not its issuer, or that carries roles. */
-        SERVICE_IMPERSONATION
+        SERVICE_IMPERSONATION,
+        /** {@code ev} is not a boolean, or is on a token that is not a gateway user's. */
+        EMAIL_VERIFIED
     }
 
     private final Reason reason;

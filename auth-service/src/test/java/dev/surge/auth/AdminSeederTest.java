@@ -33,7 +33,25 @@ class AdminSeederTest {
     }
 
     private User admin(String email, String password) {
-        return new User(email, encoder.encode(password), "Surge Admin", Role.ADMIN, Instant.now());
+        User admin = new User(email, encoder.encode(password), "Surge Admin", Role.ADMIN, Instant.now());
+        admin.setEmailVerified(true);
+        return admin;
+    }
+
+    /** S5: the admin's email is the operator's configuration, never waiting for a code. */
+    @Test
+    void theAdminIsCreatedVerifiedAndAnUnverifiedAdminIsMarkedVerified() {
+        when(users.findByEmail(EMAIL)).thenReturn(Optional.empty());
+        seeder("first-password", "dev").seed();
+        ArgumentCaptor<User> saved = ArgumentCaptor.forClass(User.class);
+        verify(users).save(saved.capture());
+        assertThat(saved.getValue().isEmailVerified()).isTrue();
+
+        User unverified = new User(EMAIL, encoder.encode("same-password"), "Surge Admin", Role.ADMIN, Instant.now());
+        when(users.findByEmail(EMAIL)).thenReturn(Optional.of(unverified));
+        seeder("same-password", "dev").seed();
+        verify(users).save(unverified);
+        assertThat(unverified.isEmailVerified()).isTrue();
     }
 
     /**

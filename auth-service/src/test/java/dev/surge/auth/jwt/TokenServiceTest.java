@@ -39,7 +39,7 @@ class TokenServiceTest {
     }
 
     private static UserView user() {
-        return new UserView("u-7", "ada@example.com", "Ada", List.of("USER"));
+        return new UserView("u-7", "ada@example.com", "Ada", List.of("USER"), false);
     }
 
     @Test
@@ -68,11 +68,22 @@ class TokenServiceTest {
     @Test
     void loadTestTokensKeepFifteenMinutesAndTheirFlag() throws Exception {
         Jwt jwt = decode(new TokenService(KEY, Clock.systemUTC()).issueLoadTest(
-                new UserView("lt-run-1", "lt-run-1@loadtest.local", "lt-run-1", List.of("USER"))).token());
+                new UserView("lt-run-1", "lt-run-1@loadtest.local", "lt-run-1", List.of("USER"), true)).token());
         assertThat(Duration.between(jwt.getIssuedAt(), jwt.getExpiresAt())).isEqualTo(Duration.ofMinutes(15));
         assertThat(jwt.<Boolean>getClaim("lt")).isTrue();
         assertThat(jwt.getAudience()).containsExactly("surge-api");
         assertThat(jwt.getId()).isNotBlank();
+    }
+
+    /** S5: ev mirrors the account's verified flag; load-test identities are verified. */
+    @Test
+    void theTokenSaysWhetherTheEmailIsVerified() throws Exception {
+        TokenService live = new TokenService(KEY, Clock.systemUTC());
+        assertThat(decode(live.issue(user()).token()).<Boolean>getClaim("ev")).isFalse();
+        UserView verified = new UserView("u-8", "b@example.com", "B", List.of("USER", "ADMIN"), true);
+        assertThat(decode(live.issue(verified).token()).<Boolean>getClaim("ev")).isTrue();
+        assertThat(decode(live.issueLoadTest(new UserView("lt-x-1", "lt-x-1@loadtest.local", "lt-x-1",
+                List.of("USER"), true)).token()).<Boolean>getClaim("ev")).isTrue();
     }
 
     @Test

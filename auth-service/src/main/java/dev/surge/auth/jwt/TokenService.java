@@ -33,6 +33,7 @@ public class TokenService {
     /** Load-test tokens are short-lived and flagged so the gateway can refuse them in production. */
     public static final Duration LOADTEST_LIFETIME = Duration.ofMinutes(15);
     public static final String LOADTEST_CLAIM = "lt";
+    public static final String EMAIL_VERIFIED_CLAIM = "ev";
 
     private final JwtEncoder encoder;
     private final Clock clock;
@@ -62,7 +63,9 @@ public class TokenService {
                 .issuedAt(now)
                 .expiresAt(expiresAt)
                 .claim("email", user.email())
-                .claim("roles", user.roles());
+                .claim("roles", user.roles())
+                // S5: email verified; booking refuses holds without it (the gateway copies it into X-Surge-Identity)
+                .claim(EMAIL_VERIFIED_CLAIM, user.emailVerified());
         if (loadTest) {
             builder.claim(LOADTEST_CLAIM, true);
         }

@@ -4,6 +4,7 @@ import dev.surge.booking.error.HoldExistsException;
 import dev.surge.booking.error.InvalidSeatsException;
 import dev.surge.booking.error.SaleNotOpenException;
 import dev.surge.booking.error.SeatsTakenException;
+import dev.surge.booking.error.TooManyHoldsException;
 import dev.surge.booking.event.SeatState;
 import dev.surge.booking.inventory.EventInventory;
 import dev.surge.booking.inventory.InventoryCache;
@@ -34,9 +35,18 @@ public class HoldService {
     private final SeatEventPublisher publisher;
     private final Clock clock;
     private final Duration ttl;
+    private final int maxActiveHolds;
 
+    /**
+     * @param maxActiveHolds {@code surge.hold.max-active-per-user} (default 3): how many events a user may hold seats
+     *                       in at the same time (one hold per event already applies)
+     */
     public HoldService(InventoryCache inventory, HoldStore store, PriceCalculator calculator, TierPrices tierPrices,
-                       SeatEventPublisher publisher, Clock clock, @Value("${surge.hold.ttl}") Duration ttl) {
+                       SeatEventPublisher publisher, Clock clock, @Value("${surge.hold.ttl}") Duration ttl,
+                       @Value("${surge.hold.max-active-per-user:3}") int maxActiveHolds) {
+        if (maxActiveHolds < 1) {
+            throw new IllegalStateException("surge.hold.max-active-per-user must be at least 1");
+        }
         this.inventory = inventory;
         this.store = store;
         this.calculator = calculator;
@@ -44,6 +54,7 @@ public class HoldService {
         this.publisher = publisher;
         this.clock = clock;
         this.ttl = ttl;
+        this.maxActiveHolds = maxActiveHolds;
     }
 
     public HoldResponse hold(String userId, long eventId, List<Long> seatIds) {
@@ -65,7 +76,7 @@ public class HoldService {
         }
 
         List<HoldLine> lines = price(inv, seatIds, now);
-        return switch (store.tryHold(userId, eventId, lines, ttl)) {
+        return switch (store.tryHold(userId, eventId, lines, ttl, maxActiveHolds)) {
             case HoldResult.Held h -> {
                 publisher.publish(eventId, seatIds, SeatState.HELD);
                 BigDecimal total = lines.stream().map(HoldLine::priceInr).reduce(BigDecimal.ZERO, BigDecimal::add)
@@ -74,6 +85,7 @@ public class HoldService {
             }
             case HoldResult.SeatsTaken t -> throw new SeatsTakenException(t.seatIds());
             case HoldResult.HoldExists e -> throw new HoldExistsException(e.holdId());
+            case HoldResult.TooManyHolds t -> throw new TooManyHoldsException(maxActiveHolds);
         };
     }
 

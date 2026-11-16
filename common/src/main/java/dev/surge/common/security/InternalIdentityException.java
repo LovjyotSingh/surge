@@ -26,6 +26,12 @@ public final class InternalIdentityException extends ErrorResponseException {
                 "A valid internal identity token is required");
     }
 
+    /** A signed-in user whose email is not verified yet (S5): the web links the user to its verify page. */
+    public static InternalIdentityException emailUnverified() {
+        return new InternalIdentityException(HttpStatus.FORBIDDEN, "email-unverified", "Email not verified",
+                "Verify your email address first: enter the 6-digit code we emailed you");
+    }
+
     public static InternalIdentityException forbidden() {
         return new InternalIdentityException(HttpStatus.FORBIDDEN, "forbidden", "Forbidden",
                 "You are not allowed to do this");

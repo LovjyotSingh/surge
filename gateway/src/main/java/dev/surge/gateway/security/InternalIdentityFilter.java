@@ -22,7 +22,8 @@ import reactor.core.publisher.Mono;
 
 /**
  * Signs an {@code X-Surge-Identity} token (audit §3) for every routed request, addressed to the route's target
- * service ({@link RouteAudiences}): {@code sub} and {@code roles} from the verified user JWT, or an anonymous token
+ * service ({@link RouteAudiences}): {@code sub}, {@code roles} and {@code ev} (email verified, false unless the JWT
+ * says exactly {@code true}) from the verified user JWT, or an anonymous token
  * (no {@code sub}, no roles) on public routes. Whatever the client sent in that header is removed first (as
  * {@link IdentityHeadersFilter} also does). A route without an audience fails the request rather than forwarding it
  * unsigned. Runs right after {@link IdentityHeadersFilter}; tokens are minted per request and nothing is cached.
@@ -68,11 +69,14 @@ public class InternalIdentityFilter implements GlobalFilter, Ordered {
     private String sign(String audience, Optional<Jwt> jwt, String requestId) {
         String subject = null;
         List<String> roles = List.of();
+        Boolean emailVerified = null;
         if (jwt.isPresent() && JwtClaims.validUserId(jwt.get().getSubject())) {
             subject = jwt.get().getSubject();
             roles = JwtClaims.roles(jwt.get());
+            // always stated for a user, so services never have to guess: true only for the boolean true
+            emailVerified = JwtClaims.emailVerified(jwt.get());
         }
-        return signer.sign(audience, subject, roles, requestId.isEmpty() ? null : requestId);
+        return signer.sign(audience, subject, roles, requestId.isEmpty() ? null : requestId, emailVerified);
     }
 
     @Override

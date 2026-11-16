@@ -192,6 +192,62 @@ class HoldControllerTest {
         assertThat(Long.parseLong(r.getResponse().getHeader("Retry-After"))).isGreaterThanOrEqualTo(1);
     }
 
+    /** S5: a hold needs the gateway's word that the user's email is verified; it works once the token says so. */
+    @Test
+    void anUnverifiedUsersHoldIs403EmailUnverifiedAndWorksAfterVerifying() throws Exception {
+        mvc.perform(post("/api/bookings/holds").with(Identity.unverifiedUser("u-ev"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"eventId\":1,\"seatIds\":[5]}"))
+                .andExpect(status().isForbidden())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/email-unverified"))
+                .andExpect(jsonPath("$.requestId").isString());
+        // before the body is read: an invalid body from an unverified user is still 403
+        mvc.perform(post("/api/bookings/holds").with(Identity.unverifiedUser("u-ev"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isForbidden());
+        assertThat(seatState(5)).isEqualTo("AVAILABLE");
+
+        // the token after POST /api/auth/verify carries ev: true
+        hold("u-ev", 1, "[5]").andExpect(status().isCreated());
+        assertThat(seatState(5)).isEqualTo("HELD");
+    }
+
+    @Test
+    void aUserHoldsSeatsInAtMostThreeEventsAtOnce(@Autowired org.springframework.jdbc.core.JdbcTemplate jdbc)
+            throws Exception {
+        long extraEvent = 9101;
+        jdbc.update("INSERT INTO event_ref (id, title, venue_name, sale_opens_at, zone_id, status) VALUES "
+                + "(?, 'Cap test', 'Nowhere', '2026-01-01 00:00:00', 'UTC', 'ACTIVE')", extraEvent);
+        jdbc.update("INSERT INTO seat (id, event_id, section, row_label, number, tier, status, version) VALUES "
+                + "(910101, ?, 'MAIN', 'A', 1, 'GOLD', 'AVAILABLE', 0)", extraEvent);
+        try {
+            long seat2 = jdbc.queryForObject("SELECT MIN(id) FROM seat WHERE event_id = 2", Long.class);
+            long seat3 = jdbc.queryForObject("SELECT MIN(id) FROM seat WHERE event_id = 3", Long.class);
+            String first = JsonPath.read(hold("u-cap", 1, "[7]").andExpect(status().isCreated()).andReturn()
+                    .getResponse().getContentAsString(), "$.holdId");
+            hold("u-cap", 2, "[" + seat2 + "]").andExpect(status().isCreated());
+            hold("u-cap", 3, "[" + seat3 + "]").andExpect(status().isCreated());
+
+            hold("u-cap", extraEvent, "[910101]").andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.type").value("https://surge.dev/problems/too-many-holds"))
+                    .andExpect(jsonPath("$.maxActiveHolds").value(3));
+            // nothing was held, and another user is not affected
+            hold("u-other", extraEvent, "[910101]").andExpect(status().isCreated());
+            assertThat(redis.opsForZSet().size(RedisKeys.userHolds("u-cap"))).isEqualTo(3);
+
+            // buying one of them frees a slot at once
+            mvc.perform(post("/api/bookings/orders").with(Identity.user("u-cap")).header("Idempotency-Key",
+                            "cap-" + first).contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"holdId\":\"" + first + "\"}"))
+                    .andExpect(status().is2xxSuccessful());
+            assertThat(redis.opsForZSet().size(RedisKeys.userHolds("u-cap"))).isEqualTo(2);
+            hold("u-cap", 1, "[8]").andExpect(status().isCreated());
+        } finally {
+            testData.resetEvent(1L);
+            testData.deleteEvent(extraEvent);
+        }
+    }
+
     @Test
     void missingUserWinsOverBodyValidation() throws Exception {
         hold(null, 1, "[]").andExpect(status().isUnauthorized())
