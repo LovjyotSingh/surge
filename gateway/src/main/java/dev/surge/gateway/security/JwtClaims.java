@@ -14,7 +14,7 @@ import org.springframework.security.oauth2.jwt.Jwt;
  * The user-id and role rules are common's ({@link InternalTokens#USER_ID}, {@link InternalTokens#ROLE}): exactly what
  * the gateway accepts here is what it can sign into {@code X-Surge-Identity}, and services verify the same rules.
  */
-final class JwtClaims {
+public final class JwtClaims {
 
     static final Pattern USER_ID = InternalTokens.USER_ID;
     private static final Pattern ROLE = InternalTokens.ROLE;
@@ -27,7 +27,7 @@ final class JwtClaims {
     }
 
     /** Synthetic load-test identity: a {@code lt-} subject or any {@code lt} claim, whatever its value or type. */
-    static boolean isLoadtest(Jwt jwt) {
+    public static boolean isLoadtest(Jwt jwt) {
         String sub = jwt.getSubject();
         return (sub != null && sub.startsWith("lt-")) || jwt.hasClaim("lt");
     }

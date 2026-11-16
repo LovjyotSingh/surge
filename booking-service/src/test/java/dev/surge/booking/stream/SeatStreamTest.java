@@ -5,6 +5,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -14,6 +16,7 @@ import dev.surge.booking.support.TestData;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -24,6 +27,8 @@ class SeatStreamTest {
     @Autowired MockMvc mvc;
     @Autowired SeatStreamRegistry registry;
     @Autowired TestData testData;
+    @Value("${surge.stream.max-subscribers-per-event}") int maxPerEvent;
+    @Value("${surge.stream.max-subscribers-total}") int maxTotal;
 
     @BeforeEach
     void setUp() {
@@ -72,6 +77,52 @@ class SeatStreamTest {
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_EVENT_STREAM))
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("\"seatIds\":[5]")));
+    }
+
+    /** SEC-09: past the per-event cap a new stream is a 503 problem the client can tell apart; closing frees room. */
+    @Test
+    void anEventOverItsStreamCapIs503StreamCapacity() throws Exception {
+        try {
+            for (int i = 0; i < maxPerEvent; i++) {
+                registry.subscribe(1L);
+            }
+            assertCapacityRefusal(1L);
+        } finally {
+            registry.completeAll(1L);
+        }
+        mvc.perform(get("/api/bookings/events/1/stream").with(Identity.anonymous()))
+                .andExpect(request().asyncStarted());
+        registry.completeAll(1L);
+    }
+
+    @Test
+    void streamsOverTheTotalCapAre503StreamCapacity() throws Exception {
+        int perEvent = Math.min(maxPerEvent, maxTotal);
+        long event = 90_000L;
+        try {
+            for (int opened = 0; opened < maxTotal; opened++) {
+                if (opened > 0 && opened % perEvent == 0) {
+                    event++;
+                }
+                registry.subscribe(event);
+            }
+            // event 1 has no stream at all, but the service as a whole is full
+            assertCapacityRefusal(1L);
+        } finally {
+            for (long e = 90_000L; e <= event; e++) {
+                registry.completeAll(e);
+            }
+        }
+    }
+
+    private void assertCapacityRefusal(long eventId) throws Exception {
+        mvc.perform(get("/api/bookings/events/" + eventId + "/stream").with(Identity.anonymous())
+                        .accept(MediaType.TEXT_EVENT_STREAM))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(header().exists("Retry-After"))
+                .andExpect(jsonPath("$.type").value("https://surge.dev/problems/stream-capacity"))
+                .andExpect(jsonPath("$.requestId").isNotEmpty());
     }
 
     @Test

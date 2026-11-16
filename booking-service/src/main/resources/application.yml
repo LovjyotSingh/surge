@@ -71,6 +71,11 @@ surge:
     signing-key-location: ${SURGE_INTERNAL_SIGNING_KEY:}
   hold:
     ttl: PT5M
+  stream:
+    # SEC-09: open seat streams (SSE). Past either cap a new stream is 503 stream-capacity. The total leaves room in
+    # Tomcat's 20,000 connections (server.tomcat.max-connections) for holds and checkout.
+    max-subscribers-per-event: 5000
+    max-subscribers-total: 15000
   payment:
     mode: fake
     base-url: http://payment-service

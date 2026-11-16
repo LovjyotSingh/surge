@@ -22,6 +22,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.Date;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import mockwebserver3.RecordedRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -81,8 +82,14 @@ public abstract class GatewayTestBase {
         registry.add("surge.routes.payment-uri", PAYMENT::url);
     }
 
+    private static final AtomicInteger CLIENTS = new AtomicInteger();
+
+    /** Sends every request as coming from {@link #clientIp} (a request's own X-Forwarded-For header wins). */
     @Autowired
     protected WebTestClient client;
+
+    /** This test's own client address, so per-IP buckets never carry over from another test. */
+    protected String clientIp;
 
     @LocalServerPort
     protected int port;
@@ -94,6 +101,18 @@ public abstract class GatewayTestBase {
         BOOKING.reset();
         NOTIFICATION.reset();
         PAYMENT.reset();
+    }
+
+    @BeforeEach
+    void ownClientAddress() {
+        clientIp = freshClientIp();
+        client = client.mutate().defaultHeader("X-Forwarded-For", clientIp).build();
+    }
+
+    /** An IPv4 address (198.18.0.0/15, the benchmarking range) that no other test in this JVM uses. */
+    protected static String freshClientIp() {
+        int n = CLIENTS.incrementAndGet();
+        return "198.18." + (n / 250) + "." + (n % 250 + 1);
     }
 
     // ---- tokens -------------------------------------------------------------------------------------------

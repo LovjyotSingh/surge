@@ -7,17 +7,22 @@ import java.lang.annotation.Target;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.web.multipart.MultipartResolver;
 
 /**
  * One shared Spring context for every integration test (never add field-level mocks or test properties: each
  * variation would start a second context with new containers). The outbox poll interval is pushed to PT1H so the
  * scheduler never races the tests; tests drive the relay explicitly through {@code OutboxRelay.relayBatch()}.
+ * The {@link MultipartResolver} is a Mockito spy delegating to the real one, so a test can see whether a request
+ * reached multipart parsing; Mockito resets it after each test.
  */
 @Target(ElementType.TYPE)
 @Retention(RetentionPolicy.RUNTIME)
 @SpringBootTest(properties = {"surge.outbox.poll-interval=PT1H", "eureka.client.enabled=false",
         "spring.cloud.config.enabled=false"})
 @AutoConfigureMockMvc
+@MockitoSpyBean(types = MultipartResolver.class)
 @Import(TestcontainersConfig.class)
 public @interface IntegrationTest {
 }

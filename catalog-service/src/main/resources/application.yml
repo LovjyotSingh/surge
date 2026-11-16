@@ -14,6 +14,9 @@ spring:
       # The CSV import is capped at 5 MB; the importer enforces the same limit itself.
       max-file-size: 5MB
       max-request-size: 6MB
+      # SEC-24: parse the body only when the import controller asks for the file, i.e. after the identity chain and
+      # the admin interceptor (AdminAccess) have let the caller through. A non-admin's upload is never parsed.
+      resolve-lazily: true
   datasource:
     url: ${MYSQL_URL:jdbc:mysql://localhost:3307/catalog}
     username: ${MYSQL_USER:surge}

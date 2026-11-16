@@ -127,6 +127,18 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
                 .header(HttpHeaders.RETRY_AFTER, "10").body(pd);
     }
 
+    /**
+     * SEC-09: the per-event or total seat-stream cap is reached. A browser's EventSource does not reconnect after a
+     * non-200 answer, so the seat map stays without live updates until the page is reloaded.
+     */
+    @ExceptionHandler(StreamCapacityException.class)
+    ResponseEntity<ProblemDetail> streamCapacity(StreamCapacityException e) {
+        ProblemDetail pd = Problems.of(HttpStatus.SERVICE_UNAVAILABLE, "stream-capacity", "Too many live streams",
+                e.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).contentType(MediaType.APPLICATION_PROBLEM_JSON)
+                .header(HttpHeaders.RETRY_AFTER, "30").body(pd);
+    }
+
     @ExceptionHandler(SeatConflictException.class)
     ResponseEntity<ProblemDetail> seatConflict(SeatConflictException e) {
         return problem(Problems.of(HttpStatus.CONFLICT, "seat-taken", "Seat taken", e.getMessage()));
