@@ -5,6 +5,18 @@ spring:
   application:
     name: discovery
 
+surge:
+  # dev (default, local) or prod; SURGE_PUBLIC_DEPLOYMENT=true (prod overlay) refuses dev.
+  env: ${SURGE_ENV:dev}
+  security:
+    public-deployment: ${SURGE_PUBLIC_DEPLOYMENT:false}
+  discovery:
+    # HTTP Basic for the registry and the dashboard (SEC-04, DiscoverySecurity). Unset in dev = the development
+    # credentials, with a warning; SURGE_ENV=prod refuses to start without both, or with the development password.
+    # Clients send the same pair in their defaultZone URL, so it must be URL-safe (letters, digits, - _ . ~).
+    username: ${EUREKA_USER:}
+    password: ${EUREKA_PASSWORD:}
+
 eureka:
   client:
     register-with-eureka: false

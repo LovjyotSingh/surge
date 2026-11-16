@@ -1,6 +1,6 @@
 # Shared by every service that talks to the config server.
 # No ${...} placeholders here: the config server may resolve them against ITS OWN environment, and remote
-# config outranks local config. Per-service values (e.g. eureka defaultZone from EUREKA_URL) live in each
+# config outranks local config. Per-service values (e.g. eureka defaultZone from EUREKA_HOST) live in each
 # service's own application.yml.
 management:
   endpoints:

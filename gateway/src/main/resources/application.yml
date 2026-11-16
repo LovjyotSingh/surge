@@ -13,6 +13,10 @@ spring:
       # signup fail closed (503) once a command fails, the other buckets fail open.
       timeout: 1s
       connect-timeout: 1s
+      # SEC-05: an ACL user (REDIS_USER, blank = Redis' default user) and its password. Blank = no AUTH (local
+      # Redis); SURGE_ENV=prod refuses a blank password (common's StoreCredentials).
+      username: ${REDIS_USER:}
+      password: ${REDIS_PASSWORD:}
   security:
     oauth2:
       resourceserver:
@@ -21,6 +25,11 @@ spring:
           # so OIDC discovery would fail. The issuer is checked by string comparison in SecurityConfig.
           jwk-set-uri: ${AUTH_JWKS_URI:http://auth-service:8082/api/auth/.well-known/jwks.json}
   cloud:
+    config:
+      # HTTP Basic for the config server (SEC-15). Unset = the development pair, which only a dev config server
+      # accepts; SURGE_ENV=prod refuses it (common's StoreCredentials).
+      username: ${CONFIG_USER:surge-dev}
+      password: ${CONFIG_PASSWORD:dev-only-config-password}
     gateway:
       server:
         webflux:
@@ -62,7 +71,9 @@ surge:
 eureka:
   client:
     service-url:
-      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka}
+      # HTTP Basic in the URL (SEC-04): EUREKA_USER / EUREKA_PASSWORD (URL-safe), EUREKA_HOST = host:port. Unset =
+      # the development pair, which only a dev discovery server accepts; SURGE_ENV=prod refuses it (StoreCredentials).
+      defaultZone: http://${EUREKA_USER:surge-dev}:${EUREKA_PASSWORD:dev-only-eureka-password}@${EUREKA_HOST:localhost:8761}/eureka
   instance:
     prefer-ip-address: true
 

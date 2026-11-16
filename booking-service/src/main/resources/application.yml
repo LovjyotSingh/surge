@@ -9,6 +9,12 @@ spring:
     name: booking-service
   config:
     import: optional:configserver:${CONFIG_URL:http://localhost:8888}
+  cloud:
+    config:
+      # HTTP Basic for the config server (SEC-15). Unset = the development pair, which only a dev config server
+      # accepts; SURGE_ENV=prod refuses it (common's StoreCredentials).
+      username: ${CONFIG_USER:surge-dev}
+      password: ${CONFIG_PASSWORD:dev-only-config-password}
   threads:
     virtual:
       enabled: true
@@ -29,6 +35,13 @@ spring:
           time_zone: UTC
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    properties:
+      # SEC-06: SASL/SCRAM with KAFKA_SECURITY_PROTOCOL=SASL_PLAINTEXT (or SASL_SSL) and KAFKA_USER/KAFKA_PASSWORD
+      # (surge.kafka below). The default PLAINTEXT is the local unauthenticated broker; the client then ignores the
+      # SASL settings. SURGE_ENV=prod refuses PLAINTEXT and a missing user (common's StoreCredentials).
+      security.protocol: ${KAFKA_SECURITY_PROTOCOL:PLAINTEXT}
+      sasl.mechanism: ${KAFKA_SASL_MECHANISM:SCRAM-SHA-512}
+      sasl.jaas.config: 'org.apache.kafka.common.security.scram.ScramLoginModule required username="${surge.kafka.username}" password="${surge.kafka.password}";'
     consumer:
       group-id: booking-catalog
       auto-offset-reset: earliest
@@ -39,6 +52,10 @@ spring:
         max.block.ms: 5000
   rabbitmq:
     host: ${RABBIT_HOST:localhost}
+    # SEC-05: this service's own RabbitMQ user. The defaults are a local broker's; SURGE_ENV=prod refuses guest.
+    username: ${RABBIT_USER:guest}
+    password: ${RABBIT_PASSWORD:guest}
+    virtual-host: ${RABBIT_VHOST:/}
     connection-timeout: 5s
     publisher-confirm-type: correlated
     publisher-returns: true
@@ -47,10 +64,18 @@ spring:
   data:
     redis:
       host: ${REDIS_HOST:localhost}
+      # SEC-05: an ACL user (REDIS_USER, blank = Redis' default user) and its password. Blank = no AUTH (local
+      # Redis); SURGE_ENV=prod refuses a blank password.
+      username: ${REDIS_USER:}
+      password: ${REDIS_PASSWORD:}
       repositories:
         enabled: false
 
 surge:
+  kafka:
+    # Read by spring.kafka.properties.sasl.jaas.config above (and checked in prod). No quotes or backslashes.
+    username: ${KAFKA_USER:}
+    password: ${KAFKA_PASSWORD:}
   # dev (default, local) or prod; SURGE_PUBLIC_DEPLOYMENT=true (prod overlay) refuses dev. Checked by common (SurgeEnv).
   env: ${SURGE_ENV:dev}
   security:
@@ -97,7 +122,9 @@ surge:
 eureka:
   client:
     service-url:
-      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka}
+      # HTTP Basic in the URL (SEC-04): EUREKA_USER / EUREKA_PASSWORD (URL-safe), EUREKA_HOST = host:port. Unset =
+      # the development pair, which only a dev discovery server accepts; SURGE_ENV=prod refuses it (StoreCredentials).
+      defaultZone: http://${EUREKA_USER:surge-dev}:${EUREKA_PASSWORD:dev-only-eureka-password}@${EUREKA_HOST:localhost:8761}/eureka
   instance:
     prefer-ip-address: true
 

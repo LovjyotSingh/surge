@@ -12,7 +12,9 @@ import dev.surge.common.messaging.EventScheduled;
 import dev.surge.common.messaging.RowSpec;
 import java.time.Clock;
 import java.time.DateTimeException;
+import java.time.Instant;
 import java.time.ZoneId;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -33,6 +35,8 @@ public class EventScheduledHandler {
     private static final String SECTION = "MAIN";
     private static final int MAX_LABEL = 10;
     private static final int MAX_SEATS_PER_ROW = 100;
+    /** SEC-29: catalog's own limit (RowSpecs.MAX_ROWS), so at most 10,000 seats per event. */
+    private static final int MAX_ROWS = 100;
     private static final Logger log = LoggerFactory.getLogger(EventScheduledHandler.class);
 
     private final ProcessedMessageRepository processed;
@@ -60,6 +64,7 @@ public class EventScheduledHandler {
         long eventId = message.eventId();
         Optional<EventRef> existing = events.findById(eventId);
         if (existing.isPresent()) {
+            refuseSaleMoveAfterSales(existing.get(), message);
             existing.get().updateDetails(message.title(), message.venueName(), message.saleOpensAt(), message.zoneId());
         } else {
             events.saveAndFlush(new EventRef(eventId, message.title(), message.venueName(), message.saleOpensAt(),
@@ -67,6 +72,32 @@ public class EventScheduledHandler {
             seats.saveAll(seatsFor(eventId, message.rows()));
         }
         evictAfterCommit(eventId);
+    }
+
+    /**
+     * SEC-06: once seats are sold, the sale time is history. A message that would move it (open a sale early,
+     * postpone it, reopen it) is forged or a bug: it goes to the DLT (non-retryable) and the transaction rolls back,
+     * the processed-message claim included, so the event keeps all its details. The log names ids only, never the
+     * payload. The column holds microseconds, so the comparison does too.
+     */
+    private void refuseSaleMoveAfterSales(EventRef event, EventScheduled message) {
+        Instant stored = event.getSaleOpensAt().truncatedTo(ChronoUnit.MICROS);
+        if (stored.equals(message.saleOpensAt().truncatedTo(ChronoUnit.MICROS))) {
+            return;
+        }
+        if (seats.countByEventIdAndStatus(event.getId(), SeatStatus.SOLD) > 0) {
+            log.warn("EventScheduled {} would move the sale of event {}, which has sold seats; sent to the DLT",
+                    message.messageId(), event.getId());
+            throw new SaleMoveRefusedException(event.getId());
+        }
+    }
+
+    /** Not retryable: an {@link IllegalArgumentException}, so the error handler dead-letters it at once. */
+    static final class SaleMoveRefusedException extends IllegalArgumentException {
+
+        SaleMoveRefusedException(long eventId) {
+            super("event " + eventId + " has sold seats; its sale time cannot move");
+        }
     }
 
     /** Rejects a message that can never succeed, before any write. Failures are non-retryable (straight to the DLT). */
@@ -87,6 +118,9 @@ public class EventScheduledHandler {
         }
         if (m.rows() == null || m.rows().isEmpty()) {
             throw new IllegalArgumentException("rows must not be empty");
+        }
+        if (m.rows().size() > MAX_ROWS) {
+            throw new IllegalArgumentException("at most " + MAX_ROWS + " rows are allowed");
         }
         Set<String> labels = new HashSet<>();
         for (RowSpec row : m.rows()) {

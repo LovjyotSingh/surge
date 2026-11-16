@@ -49,6 +49,8 @@ class EventScheduledHandlerTest {
 
     @BeforeEach
     void reset() {
+        // existingEventKeepsSeats moves event 1's sale: other test classes may have left it with sold seats
+        testData.resetEvent(1L);
         cleanUp();
     }
 
@@ -168,6 +170,84 @@ class EventScheduledHandlerTest {
     @Test
     void zeroSeatRowGoesToDltAndCreatesNothing() {
         assertRejected(scheduled(UUID.randomUUID(), NEW_EVENT, "Zero Seats", List.of(new RowSpec("A", 0, "GOLD"))));
+    }
+
+    /** SEC-29: catalog never sends more than 100 rows (RowSpecs.MAX_ROWS); booking refuses a forged bigger layout. */
+    @Test
+    void moreThan100RowsGoesToDltAndCreatesNothing() {
+        assertRejected(scheduled(UUID.randomUUID(), NEW_EVENT, "Too Many Rows", rows(101)));
+    }
+
+    @Test
+    void exactly100RowsAreFine() throws Exception {
+        publish(scheduled(UUID.randomUUID(), NEW_EVENT, "Hundred Rows", rows(100)));
+        await(() -> count("SELECT COUNT(*) FROM seat WHERE event_id = ?", NEW_EVENT) == 100);
+    }
+
+    /**
+     * SEC-06: a forged (or buggy) EventScheduled must not open, postpone or reopen a sale that has already sold
+     * seats. It goes to the DLT without retries, and the event keeps its sale time and its other details.
+     */
+    @Test
+    void movingTheSaleOfAnEventWithSoldSeatsGoesToDltAndChangesNothing() throws Exception {
+        createWithOneSeatSold("Sold Out Soon");
+        Instant opens = saleOpensAt(NEW_EVENT);
+
+        EventScheduled earlier = scheduledWithSale(NEW_EVENT, "Forged Early Sale", opens.minusSeconds(86_400));
+        EventScheduled later = scheduledWithSale(NEW_EVENT, "Forged Late Sale", opens.plusSeconds(86_400));
+        for (EventScheduled forged : List.of(earlier, later)) {
+            String payload = json.writeValueAsString(forged);
+            send(String.valueOf(NEW_EVENT), payload);
+
+            assertThat(awaitDltWithoutRetry(payload)).as("reached the DLT without retries").isTrue();
+            assertThat(saleOpensAt(NEW_EVENT)).isEqualTo(opens);
+            assertThat(jdbc.queryForObject("SELECT title FROM event_ref WHERE id = ?", String.class, NEW_EVENT))
+                    .isEqualTo("Sold Out Soon");
+            assertThat(count("SELECT COUNT(*) FROM processed_message WHERE message_id = ?",
+                    forged.messageId().toString())).isZero();
+        }
+    }
+
+    @Test
+    void anEventWithSoldSeatsMayStillBeRenamedWhenItsSaleStays() throws Exception {
+        createWithOneSeatSold("Old Name");
+        Instant opens = saleOpensAt(NEW_EVENT);
+
+        publish(scheduledWithSale(NEW_EVENT, "New Name", opens));
+        await(() -> "New Name".equals(
+                jdbc.queryForObject("SELECT title FROM event_ref WHERE id = ?", String.class, NEW_EVENT)));
+        assertThat(saleOpensAt(NEW_EVENT)).isEqualTo(opens);
+    }
+
+    @Test
+    void anEventWithoutSoldSeatsMayMoveItsSale() throws Exception {
+        publish(scheduled(UUID.randomUUID(), NEW_EVENT, "Unsold", List.of(new RowSpec("A", 3, "GOLD"))));
+        await(() -> count("SELECT COUNT(*) FROM seat WHERE event_id = ?", NEW_EVENT) == 3);
+        Instant moved = saleOpensAt(NEW_EVENT).plusSeconds(7200);
+
+        publish(scheduledWithSale(NEW_EVENT, "Unsold", moved));
+        await(() -> moved.equals(saleOpensAt(NEW_EVENT)));
+    }
+
+    private void createWithOneSeatSold(String title) throws InterruptedException {
+        publish(scheduled(UUID.randomUUID(), NEW_EVENT, title, List.of(new RowSpec("A", 3, "GOLD"))));
+        await(() -> count("SELECT COUNT(*) FROM seat WHERE event_id = ?", NEW_EVENT) == 3);
+        jdbc.update("UPDATE seat SET status = 'SOLD' WHERE event_id = ? AND number = 1", NEW_EVENT);
+    }
+
+    private EventScheduled scheduledWithSale(long eventId, String title, Instant saleOpensAt) {
+        Instant now = Instant.parse("2026-11-14T10:00:00Z");
+        return new EventScheduled(UUID.randomUUID(), eventId, title, "Test Arena", "Delhi", "Asia/Kolkata",
+                now.plusSeconds(86_400 * 30L), saleOpensAt, List.of(new RowSpec("A", 3, "GOLD")), now);
+    }
+
+    private Instant saleOpensAt(long eventId) {
+        return jdbc.queryForObject("SELECT sale_opens_at FROM event_ref WHERE id = ?", java.time.LocalDateTime.class,
+                eventId).toInstant(java.time.ZoneOffset.UTC);
+    }
+
+    private static List<RowSpec> rows(int count) {
+        return java.util.stream.IntStream.range(0, count).mapToObj(i -> new RowSpec("R" + i, 1, "SILVER")).toList();
     }
 
     private void assertRejected(EventScheduled message) {

@@ -12,6 +12,17 @@ spring:
         native:
           search-locations: ${CONFIG_REPO:file:./config-repo}
 
+surge:
+  # dev (default, local) or prod; SURGE_PUBLIC_DEPLOYMENT=true (prod overlay) refuses dev.
+  env: ${SURGE_ENV:dev}
+  security:
+    public-deployment: ${SURGE_PUBLIC_DEPLOYMENT:false}
+  config-server:
+    # HTTP Basic for everything but health (SEC-15, ConfigServerSecurity). Unset in dev = the development
+    # credentials, with a warning; SURGE_ENV=prod refuses to start without both, or with the development password.
+    username: ${CONFIG_USER:}
+    password: ${CONFIG_PASSWORD:}
+
 management:
   endpoints:
     web:
