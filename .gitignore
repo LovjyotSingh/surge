@@ -14,3 +14,6 @@ reports/*
 internal-jwks.json
 !common/src/main/resources/surge-dev-keys/*.jwk
 !common/src/main/resources/surge-dev-keys/internal-jwks.json
+
+# Claude Code worktrees for parallel tasks (local only)
+.claude/worktrees/
