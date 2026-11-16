@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.regex.Pattern;
 import org.springframework.core.env.Environment;
 
 /**
@@ -41,14 +42,27 @@ public final class StoreCredentials {
             "notification-service", EnumSet.of(Store.MYSQL, Store.KAFKA, Store.RABBIT, Store.EUREKA, Store.CONFIG));
 
     private static final Set<String> SASL_PROTOCOLS = Set.of("SASL_PLAINTEXT", "SASL_SSL");
+    /**
+     * Eureka and config-server user names and passwords: they travel in a URL's userinfo (Eureka) or must match what
+     * discovery and config-server accept, so only unreserved URL characters, never percent-encoding.
+     */
+    private static final Pattern URL_SAFE = Pattern.compile("[A-Za-z0-9._~-]+");
 
     private StoreCredentials() {
     }
 
-    /** Refuses to start in prod while {@link #problems} lists anything; dev is never checked. */
+    /**
+     * Refuses to start in prod while {@link #problems} lists anything, or when this application is not in
+     * {@link #STORES_BY_SERVICE} at all (nothing would be checked). Dev is never checked.
+     */
     public static void check(Environment environment) {
         if (SurgeEnv.from(environment) != SurgeEnv.PROD) {
             return;
+        }
+        String application = environment.getProperty("spring.application.name", "");
+        if (!STORES_BY_SERVICE.containsKey(application)) {
+            throw new IllegalStateException("SURGE_ENV=prod: spring.application.name '" + application
+                    + "' is not in StoreCredentials.STORES_BY_SERVICE; list the stores it uses");
         }
         List<String> problems = problems(environment);
         if (!problems.isEmpty()) {
@@ -74,10 +88,10 @@ public final class StoreCredentials {
         return switch (store) {
             case MYSQL -> has(env, "spring.datasource.username")
                     && has(env, "spring.datasource.password", p -> !p.equals(DEV_MYSQL_PASSWORD));
+            // the JAAS line quotes both: a quote or backslash would break or rewrite that line
             case KAFKA -> SASL_PROTOCOLS.contains(env.getProperty("spring.kafka.properties.security.protocol", ""))
-                    && has(env, "surge.kafka.username")
-                    // the JAAS line quotes it: a quote or backslash would break or rewrite that line
-                    && has(env, "surge.kafka.password", p -> p.indexOf('"') < 0 && p.indexOf('\\') < 0);
+                    && has(env, "surge.kafka.username", StoreCredentials::jaasSafe)
+                    && has(env, "surge.kafka.password", StoreCredentials::jaasSafe);
             case RABBIT -> has(env, "spring.rabbitmq.username", u -> !u.equals("guest"))
                     && has(env, "spring.rabbitmq.password", p -> !p.equals("guest"));
             case REDIS -> has(env, "spring.data.redis.password");
@@ -86,8 +100,9 @@ public final class StoreCredentials {
             case EUREKA -> disabled(env, "eureka.client.enabled") || disabled(env, "spring.cloud.discovery.enabled")
                     || eurekaZonesCarryCredentials(env.getProperty("eureka.client.service-url.defaultZone", ""));
             case CONFIG -> disabled(env, "spring.cloud.config.enabled")
-                    || has(env, "spring.cloud.config.username")
-                    && has(env, "spring.cloud.config.password", p -> !p.equals(DEV_CONFIG_PASSWORD));
+                    || has(env, "spring.cloud.config.username", StoreCredentials::urlSafe)
+                    && has(env, "spring.cloud.config.password",
+                            p -> urlSafe(p) && !p.equals(DEV_CONFIG_PASSWORD));
         };
     }
 
@@ -95,12 +110,14 @@ public final class StoreCredentials {
         return switch (store) {
             case MYSQL -> "MySQL: set MYSQL_USER and MYSQL_PASSWORD (not the development default)";
             case KAFKA -> "Kafka: set KAFKA_SECURITY_PROTOCOL (SASL_PLAINTEXT or SASL_SSL), KAFKA_USER and "
-                    + "KAFKA_PASSWORD (no quotes or backslashes)";
+                    + "KAFKA_PASSWORD (neither with quotes or backslashes)";
             case RABBIT -> "RabbitMQ: set RABBIT_USER and RABBIT_PASSWORD (not guest)";
             case REDIS -> "Redis: set REDIS_PASSWORD (and REDIS_USER for an ACL user)";
             case ELASTICSEARCH -> "Elasticsearch: set ELASTICSEARCH_USER and ELASTICSEARCH_PASSWORD";
-            case EUREKA -> "Eureka: set EUREKA_USER and EUREKA_PASSWORD (URL-safe; not the development ones)";
-            case CONFIG -> "Config server: set CONFIG_USER and CONFIG_PASSWORD (not the development ones)";
+            case EUREKA -> "Eureka: set EUREKA_USER and EUREKA_PASSWORD (letters, digits and . _ ~ - only; not the "
+                    + "development ones)";
+            case CONFIG -> "Config server: set CONFIG_USER and CONFIG_PASSWORD (letters, digits and . _ ~ - only; "
+                    + "not the development ones)";
         };
     }
 
@@ -117,12 +134,24 @@ public final class StoreCredentials {
                 return false;
             }
             int colon = userInfo == null ? -1 : userInfo.indexOf(':');
-            if (colon < 1 || colon == userInfo.length() - 1
-                    || userInfo.substring(colon + 1).equals(DEV_EUREKA_PASSWORD)) {
+            if (colon < 0) {
+                return false;
+            }
+            String user = userInfo.substring(0, colon);
+            String password = userInfo.substring(colon + 1);
+            if (!urlSafe(user) || !urlSafe(password) || password.equals(DEV_EUREKA_PASSWORD)) {
                 return false;
             }
         }
         return true;
+    }
+
+    private static boolean urlSafe(String value) {
+        return URL_SAFE.matcher(value).matches();
+    }
+
+    private static boolean jaasSafe(String value) {
+        return value.indexOf('"') < 0 && value.indexOf('\\') < 0;
     }
 
     private static boolean has(Environment env, String property) {

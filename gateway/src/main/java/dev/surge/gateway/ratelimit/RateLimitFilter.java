@@ -89,6 +89,11 @@ public class RateLimitFilter implements GatewayFilter, Ordered {
      */
     public RateLimitFilter(RedisRateLimiter limiter, ProblemWriter problems, String bucket, KeyResolver keyResolver,
             Limit limit, OnLimiterFailure onFailure) {
+        if (!limiter.isIncludeHeaders()) {
+            // the remaining-tokens header is the only sign that Redis failed (limiterFailed): without it, a bucket
+            // meant to fail closed would silently fail open
+            throw new IllegalStateException("RedisRateLimiter must include its headers (includeHeaders=true)");
+        }
         this.limiter = limiter;
         this.problems = problems;
         this.bucket = bucket;

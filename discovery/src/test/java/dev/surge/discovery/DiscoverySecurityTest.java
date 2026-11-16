@@ -40,6 +40,29 @@ class DiscoverySecurityTest {
     }
 
     @Test
+    void prodRefusesAPasswordShorterThan16Characters() {
+        runner.withPropertyValues("surge.env=prod", "surge.discovery.username=eureka",
+                "surge.discovery.password=fifteen-chars-x").run(context -> assertThat(context.getStartupFailure())
+                        .rootCause().hasMessage("EUREKA_PASSWORD must be at least 16 characters when SURGE_ENV=prod"));
+    }
+
+    /** Clients put the pair into their defaultZone URL, so only unreserved URL characters work there. */
+    @Test
+    void onlyUrlSafeCharactersAreAccepted() {
+        for (String[] pair : new String[][] {{"eu@reka", "a-long-enough-password"}, {"eureka", "pass:word-long-enough"},
+                {"eureka", "pass%40word-long-enough"}, {"eureka", "pass word long enough"}}) {
+            for (String env : new String[] {"dev", "prod"}) {
+                runner.withPropertyValues("surge.env=" + env, "surge.discovery.username=" + pair[0],
+                        "surge.discovery.password=" + pair[1]).run(context -> assertThat(context.getStartupFailure())
+                                .as(pair[0] + " / " + pair[1]).rootCause().hasMessage(
+                                        "EUREKA_USER and EUREKA_PASSWORD may contain only letters, digits and . _ ~ -"));
+            }
+        }
+        runner.withPropertyValues("surge.env=prod", "surge.discovery.username=eureka.client_1",
+                "surge.discovery.password=Abc-123_xyz.789~qrs").run(context -> assertThat(context).hasNotFailed());
+    }
+
+    @Test
     void prodWithCredentialsStartsWithThatOneUser() {
         runner.withPropertyValues("surge.env=prod", "surge.discovery.username=eureka",
                 "surge.discovery.password=s3cret-from-a-secret-file").run(context -> {

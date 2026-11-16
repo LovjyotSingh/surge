@@ -78,6 +78,9 @@ class StoreCredentialsTest {
                 Map.entry("surge.kafka.username=", "Kafka: set KAFKA_SECURITY_PROTOCOL"),
                 Map.entry("surge.kafka.password=", "Kafka: set KAFKA_SECURITY_PROTOCOL"),
                 Map.entry("surge.kafka.password=quo\"te", "Kafka: set KAFKA_SECURITY_PROTOCOL"),
+                Map.entry("surge.kafka.password=back\\\\slash", "Kafka: set KAFKA_SECURITY_PROTOCOL"),
+                Map.entry("surge.kafka.username=bo\"oking", "Kafka: set KAFKA_SECURITY_PROTOCOL"),
+                Map.entry("surge.kafka.username=bo\\\\oking", "Kafka: set KAFKA_SECURITY_PROTOCOL"),
                 Map.entry("spring.rabbitmq.username=guest", "RabbitMQ: set RABBIT_USER and RABBIT_PASSWORD"),
                 Map.entry("spring.rabbitmq.password=guest", "RabbitMQ: set RABBIT_USER and RABBIT_PASSWORD"),
                 Map.entry("spring.rabbitmq.password=", "RabbitMQ: set RABBIT_USER and RABBIT_PASSWORD"),
@@ -88,9 +91,16 @@ class StoreCredentialsTest {
                         + "8761/eureka", "Eureka: set EUREKA_USER and EUREKA_PASSWORD"),
                 Map.entry("eureka.client.service-url.defaultZone=http://eureka:@discovery:8761/eureka",
                         "Eureka: set EUREKA_USER and EUREKA_PASSWORD"),
+                // URL-safe only: letters, digits and . _ ~ - (no percent-encoding, no @ : / in the userinfo)
+                Map.entry("eureka.client.service-url.defaultZone=http://eureka:pa%40ss@discovery:8761/eureka",
+                        "Eureka: set EUREKA_USER and EUREKA_PASSWORD"),
+                Map.entry("eureka.client.service-url.defaultZone=http://eu+reka:eureka-pass@discovery:8761/eureka",
+                        "Eureka: set EUREKA_USER and EUREKA_PASSWORD"),
                 Map.entry("spring.cloud.config.password=", "Config server: set CONFIG_USER and CONFIG_PASSWORD"),
                 Map.entry("spring.cloud.config.password=dev-only-config-password",
-                        "Config server: set CONFIG_USER and CONFIG_PASSWORD"));
+                        "Config server: set CONFIG_USER and CONFIG_PASSWORD"),
+                Map.entry("spring.cloud.config.password=has space", "Config server: set CONFIG_USER and CONFIG_PASSWORD"),
+                Map.entry("spring.cloud.config.username=con@fig", "Config server: set CONFIG_USER and CONFIG_PASSWORD"));
         cases.forEach((override, message) -> runner.withPropertyValues(props(BOOKING_PROD, override)).run(context -> {
             assertThat(context).as(override).hasFailed();
             assertThat(context.getStartupFailure()).rootCause().as(override)
@@ -123,6 +133,20 @@ class StoreCredentialsTest {
                         .hasMessageContaining("Redis: set REDIS_PASSWORD").message().doesNotContain("MySQL"));
         runner.withPropertyValues(platform).withPropertyValues("spring.application.name=gateway",
                 "spring.data.redis.password=redis-secret").run(context -> assertThat(context).hasNotFailed());
+    }
+
+    /** A service missing from the table would otherwise start in prod with nothing checked. */
+    @Test
+    void prodRefusesAnApplicationTheTableDoesNotList() {
+        runner.withPropertyValues("spring.application.name=mystery-service", "surge.env=prod").run(context -> {
+            assertThat(context).hasFailed();
+            assertThat(context.getStartupFailure()).rootCause().hasMessage("SURGE_ENV=prod: spring.application.name "
+                    + "'mystery-service' is not in StoreCredentials.STORES_BY_SERVICE; list the stores it uses");
+        });
+        runner.withPropertyValues("surge.env=prod").run(context -> assertThat(context.getStartupFailure())
+                .rootCause().hasMessageContaining("spring.application.name '' is not in"));
+        runner.withPropertyValues("spring.application.name=mystery-service")
+                .run(context -> assertThat(context).hasNotFailed());
     }
 
     @Test

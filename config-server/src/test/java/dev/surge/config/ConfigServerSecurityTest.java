@@ -34,6 +34,21 @@ class ConfigServerSecurityTest {
     }
 
     @Test
+    void prodRefusesAPasswordShorterThan16Characters() {
+        runner.withPropertyValues("surge.env=prod", "surge.config-server.username=config",
+                "surge.config-server.password=fifteen-chars-x").run(context -> assertThat(context.getStartupFailure())
+                        .rootCause().hasMessage("CONFIG_PASSWORD must be at least 16 characters when SURGE_ENV=prod"));
+    }
+
+    @Test
+    void onlyUrlSafeCharactersAreAccepted() {
+        runner.withPropertyValues("surge.config-server.username=config",
+                "surge.config-server.password=quote\"d-long-enough").run(context -> assertThat(
+                        context.getStartupFailure()).rootCause().hasMessage(
+                                "CONFIG_USER and CONFIG_PASSWORD may contain only letters, digits and . _ ~ -"));
+    }
+
+    @Test
     void prodWithCredentialsStarts() {
         runner.withPropertyValues("surge.env=prod", "surge.config-server.username=config",
                 "surge.config-server.password=s3cret-from-a-secret-file").run(context -> {

@@ -48,40 +48,35 @@ class EdgeLimitsTest extends GatewayTestBase {
 
     @Test
     void theTwentyFirstSearchInOneSecondFromOneIpIs429WithRetryAfter() throws Exception {
-        EntityExchangeResult<byte[]> denied = assertBurstThenLimited(20, 1,
-                (ip, i) -> client.get().uri("/api/catalog/events/search?q=neon").header("X-Forwarded-For", ip));
+        EntityExchangeResult<byte[]> denied = assertBurstThenLimited(20, 1, (ip, attempt, request) ->
+                client.get().uri("/api/catalog/events/search?q=neon").header("X-Forwarded-For", ip));
         assertThat(denied.getResponseHeaders().getFirst("Retry-After")).isEqualTo("1");
         // a different client still searches
         client.get().uri("/api/catalog/events/search?q=neon").exchange().expectStatus().isOk();
     }
 
     @Test
-    void catalogListAndDetailShareThePerIpBucket() {
-        String ip = freshClientIp();
-        List<HttpStatus> statuses = new ArrayList<>();
-        for (int i = 0; i < 30; i++) {
-            String path = i % 2 == 0 ? "/api/catalog/events" : "/api/catalog/events/1";
-            statuses.add((HttpStatus) client.get().uri(path).header("X-Forwarded-For", ip).exchange()
-                    .expectBody().returnResult().getStatus());
-        }
-        assertThat(statuses.subList(0, 20)).containsOnly(HttpStatus.OK);
-        assertThat(statuses).contains(HttpStatus.TOO_MANY_REQUESTS);
+    void catalogListAndDetailShareThePerIpBucket() throws Exception {
+        assertBurstThenLimited(20, 1, (ip, attempt, request) -> client.get()
+                .uri(request % 2 == 0 ? "/api/catalog/events" : "/api/catalog/events/1")
+                .header("X-Forwarded-For", ip));
     }
 
     @Test
     void bookingEventReadsAre20PerSecondPerIp() throws Exception {
-        assertBurstThenLimited(40, 1,
-                (ip, i) -> client.get().uri("/api/bookings/events/1").header("X-Forwarded-For", ip));
+        assertBurstThenLimited(40, 1, (ip, attempt, request) ->
+                client.get().uri("/api/bookings/events/1").header("X-Forwarded-For", ip));
     }
 
     /**
-     * Opening a seat stream: 1 per second per IP, bursts of 5. The limit is checked once per request, so the events
-     * of an open stream are never throttled (sseRouteStreams in GatewayRoutingTest; and below, 30 events in one go).
+     * Opening a seat stream: 2 per second per IP, bursts of 20 (a CGNAT or office address opens many at sale
+     * start). The limit is checked once per request, so the events of an open stream are never throttled
+     * (sseRouteStreams in GatewayRoutingTest; and below, 30 events in one go).
      */
     @Test
     void openingSeatStreamsIsLimitedPerIpButTheirEventsAreNot() throws Exception {
-        assertBurstThenLimited(5, 1,
-                (ip, i) -> client.get().uri("/api/bookings/events/7/stream").header("X-Forwarded-For", ip));
+        assertBurstThenLimited(20, 1, (ip, attempt, request) ->
+                client.get().uri("/api/bookings/events/7/stream").header("X-Forwarded-For", ip));
 
         StringBuilder many = new StringBuilder();
         for (int i = 0; i < 30; i++) {
@@ -99,7 +94,7 @@ class EdgeLimitsTest extends GatewayTestBase {
 
     @Test
     void ticketReadsAreOnePerSecondPerUserBurstFive() throws Exception {
-        EntityExchangeResult<byte[]> denied = assertBurstThenLimited(5, 1, (ip, attempt) -> client.get()
+        EntityExchangeResult<byte[]> denied = assertBurstThenLimited(5, 1, (ip, attempt, request) -> client.get()
                 .uri("/api/notifications/tickets/5").header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-tix-"
                         + attempt))));
         assertThat(denied.getResponseHeaders().getFirst("Retry-After")).isEqualTo("1");
@@ -110,30 +105,26 @@ class EdgeLimitsTest extends GatewayTestBase {
 
     @Test
     void meIsTwoPerSecondPerUser() throws Exception {
-        assertBurstThenLimited(4, 1, (ip, attempt) -> client.get().uri("/api/auth/me")
+        assertBurstThenLimited(4, 1, (ip, attempt, request) -> client.get().uri("/api/auth/me")
                 .header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-me-" + attempt))));
         client.get().uri("/api/auth/me").header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-me-other")))
                 .exchange().expectStatus().isOk();
     }
 
-    /** On top of the per-user bucket: 20 holds a minute per IP, whoever is signed in (one user each here). */
+    /**
+     * On top of the per-user bucket: 20 holds a minute per IP, whoever is signed in (a new user for every request
+     * here, so the per-user bucket never trips). The IP bucket's headers are the response's (it runs second).
+     */
     @Test
     void holdsAreAlso20PerMinutePerIp() throws Exception {
-        String ip = freshClientIp();
-        List<EntityExchangeResult<byte[]>> results = new ArrayList<>();
-        for (int i = 0; i < 21; i++) {
-            results.add(client.post().uri("/api/bookings/holds").header("X-Forwarded-For", ip)
-                    .header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-hip-" + i))).bodyValue("{}").exchange()
-                    .expectBody().returnResult());
-        }
-        // 3 tokens a request, one token a second: at most a couple refill while this runs, never a whole request
-        assertThat(results.subList(0, 20)).allSatisfy(r -> assertThat(r.getStatus()).isEqualTo(HttpStatus.OK));
-        EntityExchangeResult<byte[]> denied = results.get(20);
-        assertThat(denied.getStatus()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        EntityExchangeResult<byte[]> denied = assertBurstThenLimited(20, 3, (ip, attempt, request) -> client.post()
+                .uri("/api/bookings/holds").header("X-Forwarded-For", ip)
+                .header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-hip-" + attempt + "-" + request)))
+                .bodyValue("{}"));
+        // 3 s: one request's 3 tokens at 1 token a second, so it was the per-IP bucket (per user would say 1)
         assertThat(denied.getResponseHeaders().getFirst("Retry-After")).isEqualTo("3");
-        assertThat(new String(denied.getResponseBodyContent())).contains(PROBLEM + "rate-limited");
-        // the 21st user's own bucket is untouched: from another address the same user holds
-        client.post().uri("/api/bookings/holds").header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-hip-20")))
+        // another address still holds
+        client.post().uri("/api/bookings/holds").header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-hip-other")))
                 .bodyValue("{}").exchange().expectStatus().isOk();
     }
 
@@ -141,15 +132,11 @@ class EdgeLimitsTest extends GatewayTestBase {
 
     @Test
     void ipv6ClientsShareOneBucketPerSlash64() throws Exception {
-        List<HttpStatus> statuses = new ArrayList<>();
-        for (int i = 0; i < 16; i++) {
-            // a different address of the same /64 every time
-            statuses.add((HttpStatus) client.post().uri("/api/auth/login")
-                    .header("X-Forwarded-For", "2001:db8:5:6:" + Integer.toHexString(i + 1) + "::1").bodyValue("{}")
-                    .exchange().expectBody().returnResult().getStatus());
-        }
-        assertThat(statuses.subList(0, 10)).containsOnly(HttpStatus.OK);
-        assertThat(statuses).contains(HttpStatus.TOO_MANY_REQUESTS);
+        // every request a different address of the attempt's own /64
+        assertBurstThenLimited(10, 1, (ip, attempt, request) -> client.post().uri("/api/auth/login")
+                .header("X-Forwarded-For", "2001:db8:5:" + Integer.toHexString(0x100 + attempt) + ":"
+                        + Integer.toHexString(request + 1) + "::1")
+                .bodyValue("{}"));
         // the next /64 is another client
         client.post().uri("/api/auth/login").header("X-Forwarded-For", "2001:db8:5:7::1").bodyValue("{}").exchange()
                 .expectStatus().isOk();
@@ -201,7 +188,7 @@ class EdgeLimitsTest extends GatewayTestBase {
             String ip = freshClientIp();
             List<EntityExchangeResult<byte[]>> results = new ArrayList<>();
             for (int i = 0; i <= burst; i++) {
-                results.add(request.build(ip, attempt).exchange().expectBody().returnResult());
+                results.add(request.build(ip, attempt, i).exchange().expectBody().returnResult());
             }
             if (refilledDuring(results, burst, tokensPerRequest)) {
                 TimeUnit.MILLISECONDS.sleep(50);
@@ -235,6 +222,7 @@ class EdgeLimitsTest extends GatewayTestBase {
 
     @FunctionalInterface
     private interface Attempt {
-        WebTestClient.RequestHeadersSpec<?> build(String clientIp, int attempt);
+        /** One request of the burst: {@code request} counts from 0 within the {@code attempt}. */
+        WebTestClient.RequestHeadersSpec<?> build(String clientIp, int attempt, int request);
     }
 }

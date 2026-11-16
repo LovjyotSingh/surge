@@ -79,13 +79,20 @@ public class EventScheduledHandler {
      * postpone it, reopen it) is forged or a bug: it goes to the DLT (non-retryable) and the transaction rolls back,
      * the processed-message claim included, so the event keeps all its details. The log names ids only, never the
      * payload. The column holds microseconds, so the comparison does too.
+     *
+     * <p>The SOLD count is a locking read ({@link SeatRepository#countSoldLocking}), so it cannot miss a checkout
+     * committing at the same moment: an uncommitted sale makes it wait and is then counted, and a sale that starts
+     * later waits until this transaction has committed (the move then happened before that sale). Between the sale
+     * opening and the first committed order only HELD seats exist (holds live in Redis), so this guard cannot stop a
+     * forged move in that window; the real control against forged messages is the Kafka ACLs (Task 16: only catalog
+     * may write {@code catalog.v1}).
      */
     private void refuseSaleMoveAfterSales(EventRef event, EventScheduled message) {
         Instant stored = event.getSaleOpensAt().truncatedTo(ChronoUnit.MICROS);
         if (stored.equals(message.saleOpensAt().truncatedTo(ChronoUnit.MICROS))) {
             return;
         }
-        if (seats.countByEventIdAndStatus(event.getId(), SeatStatus.SOLD) > 0) {
+        if (seats.countSoldLocking(event.getId()) > 0) {
             log.warn("EventScheduled {} would move the sale of event {}, which has sold seats; sent to the DLT",
                     message.messageId(), event.getId());
             throw new SaleMoveRefusedException(event.getId());

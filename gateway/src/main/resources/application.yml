@@ -1,5 +1,8 @@
 server:
   port: 8085
+  # Never let Forwarded / X-Forwarded-* rewrite the request's remote address, host or scheme (Boot's "native" would
+  # trust them from anyone): the client address is ratelimit.ClientAddress's job, with surge.security.trusted-proxies.
+  forward-headers-strategy: none
 
 spring:
   application:

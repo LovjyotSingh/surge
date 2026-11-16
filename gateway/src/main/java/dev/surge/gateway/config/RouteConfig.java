@@ -50,7 +50,8 @@ class RouteConfig {
      * auth-me      /api/auth/me              per user  2/s, burst 4
      * catalog      GET /api/catalog/**       per IP   10/s, burst 20   (list, search, detail)
      * events       GET booking events        per IP   20/s, burst 40
-     * stream-open  GET .../events/{id}/stream per IP   1/s, burst 5    (opening a stream, not its events)
+     * stream-open  GET .../events/{id}/stream per IP   2/s, burst 20   (opening a stream, not its events; CGNAT and
+     *                                                                   office networks share an IP at sale start)
      * holds        /api/bookings/holds/**    per user  2/s, burst 10
      * holds-ip     /api/bookings/holds/**    per IP   20/min, burst 20 (load-test identities: per subject)
      * orders       /api/bookings/orders/**   per user  2/s, burst 10
@@ -78,7 +79,7 @@ class RouteConfig {
                 Limit.perSecond(10, 20));
         RateLimitFilter eventsLimit = new RateLimitFilter(limiter, problems, "events", perIp, Limit.perSecond(20, 40));
         RateLimitFilter streamLimit = new RateLimitFilter(limiter, problems, "stream-open", perIp,
-                Limit.perSecond(1, 5));
+                Limit.perSecond(2, 20));
         RateLimitFilter holdsLimit = new RateLimitFilter(limiter, problems, "holds", perUser, Limit.perSecond(2, 10));
         RateLimitFilter holdsIpLimit = new RateLimitFilter(limiter, problems, "holds-ip",
                 KeyResolvers.clientIpExceptLoadtest(clients), Limit.perMinute(20));
