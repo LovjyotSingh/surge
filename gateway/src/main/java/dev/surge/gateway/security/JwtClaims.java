@@ -26,6 +26,13 @@ final class JwtClaims {
         return sub != null && USER_ID.matcher(sub).matches();
     }
 
+    /** auth issues UUIDs; anything else (or nothing) cannot be revoked by logout, so the token is refused. */
+    static final Pattern TOKEN_ID = Pattern.compile("^[A-Za-z0-9_-]{8,64}$");
+
+    static boolean validTokenId(String jti) {
+        return jti != null && TOKEN_ID.matcher(jti).matches();
+    }
+
     /** Synthetic load-test identity: a {@code lt-} subject or any {@code lt} claim, whatever its value or type. */
     static boolean isLoadtest(Jwt jwt) {
         String sub = jwt.getSubject();

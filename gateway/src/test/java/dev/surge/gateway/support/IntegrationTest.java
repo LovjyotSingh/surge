@@ -22,6 +22,6 @@ import org.springframework.context.annotation.Import;
         "spring.cloud.config.enabled=false",
         "spring.cloud.gateway.server.webflux.httpclient.response-timeout=1500ms"})
 @AutoConfigureWebTestClient
-@Import(TestcontainersConfig.class)
+@Import({TestcontainersConfig.class, TestClocks.class})
 public @interface IntegrationTest {
 }

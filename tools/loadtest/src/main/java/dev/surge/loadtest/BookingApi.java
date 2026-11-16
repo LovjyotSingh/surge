@@ -21,7 +21,7 @@ import tools.jackson.databind.ObjectMapper;
  * Thin HTTP wrapper over the gateway. Not Spring-aware.
  *
  * <p>Buyers authenticate with their own bearer token. Admin calls (reset, integrity, report) use the admin token
- * from {@link #login}; if it is rejected with 401 (it lives 60 minutes) the admin signs in again once and the call is
+ * from {@link #login}; if it is rejected with 401 (it lives 30 minutes) the admin signs in again once and the call is
  * retried. No request ever carries an {@code X-User-Id} header: the gateway sets identity from the token. Tokens and
  * the password are never put into exception messages.
  */

@@ -148,7 +148,7 @@ class AuthFlowTest {
     }
 
     private static void seed(UserRepository users, org.springframework.security.crypto.password.PasswordEncoder encoder, java.time.Clock clock, String password) {
-        new dev.surge.auth.user.AdminSeeder(users, encoder, clock, "admin@surge.local", password, "dev").run(null);
+        new dev.surge.auth.user.AdminSeeder(users, encoder, clock, "admin@surge.local", password, "dev").seed();
     }
 
     /** Rotation end to end on the shared context: the seeder re-hashes, the new password logs in, the old one is 401. */
@@ -237,11 +237,13 @@ class AuthFlowTest {
         assertThat(jwt.<List<String>>getClaim("roles")).containsExactly("USER");
         assertThat(jwt.getHeaders().get("kid")).isEqualTo(key.getKeyID());
         assertThat(jwt.getHeaders().get("alg")).isEqualTo("RS256");
-        assertThat(Duration.between(jwt.getIssuedAt(), jwt.getExpiresAt())).isEqualTo(Duration.ofMinutes(60));
+        assertThat(jwt.getAudience()).containsExactly("surge-api");
+        assertThat(jwt.getId()).isNotBlank();
+        assertThat(Duration.between(jwt.getIssuedAt(), jwt.getExpiresAt())).isEqualTo(Duration.ofMinutes(30));
         assertThat(jwt.getIssuedAt().getNano()).isZero();
         String expiresAt = JsonPath.read(res.getResponse().getContentAsString(), "$.expiresAt");
         assertThat(Instant.parse(expiresAt)).isEqualTo(jwt.getExpiresAt());
-        assertThat(jwt.getExpiresAt()).isAfter(Instant.now().plus(Duration.ofMinutes(59)));
+        assertThat(jwt.getExpiresAt()).isAfter(Instant.now().plus(Duration.ofMinutes(29)));
     }
 
     @Test

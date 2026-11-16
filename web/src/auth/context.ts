@@ -8,7 +8,8 @@ export interface Auth {
   isAdmin: boolean
   login: (email: string, password: string) => Promise<void>
   signup: (email: string, password: string, displayName: string) => Promise<void>
-  logout: () => void
+  /** Revokes the token at the gateway, then clears the session (always, even when that call fails). */
+  logout: () => Promise<void>
 }
 
 export const AuthContext = createContext<Auth | null>(null)

@@ -118,6 +118,17 @@ export const api = {
   signup: (email: string, password: string, displayName: string) =>
     call<TokenResponse>(`${AUTH}/signup`, { method: 'POST', body: { email, password, displayName } }),
   me: () => call<UserView>(`${AUTH}/me`, { auth: true }),
+  /**
+   * Revokes `token` at the gateway (204). The caller clears the session whatever happens, so this does not use the
+   * `auth` option: a 401 here (already expired or revoked) must not bounce the user to the login page.
+   */
+  logout: async (token: string): Promise<void> => {
+    const res = await fetch(`${AUTH}/logout`, {
+      method: 'POST',
+      headers: { Accept: 'application/json', Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) throw await toApiError(res)
+  },
 
   catalogEvents: (page = 0, size = 100) => call<CatalogPage>(`${CATALOG}/events${query({ page, size })}`),
   catalogEvent: (id: number) => call<CatalogEvent>(`${CATALOG}/events/${id}`),

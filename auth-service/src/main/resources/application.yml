@@ -42,6 +42,11 @@ surge:
     # Empty means "not configured": dev falls back to the local default, prod refuses to start (StartupGuards).
     admin-password: ${SURGE_ADMIN_PASSWORD:}
     admin-email: ${SURGE_ADMIN_EMAIL:admin@surge.local}
+    jwt:
+      # RSA signing key (PEM or JWK; docker/gen-jwt-key.sh). Unset: generated per start in dev, refused in prod.
+      key-file: ${SURGE_JWT_KEY_FILE:}
+      # Optional: an extra public key the JWKS serves next to the current one, for rotation (see jwt/JwtKeys).
+      previous-key-file: ${SURGE_JWT_PREVIOUS_KEY_FILE:}
     test-tokens:
       # Mints JWTs for synthetic load-test users. Off unless a loadtest overlay enables it; never with SURGE_ENV=prod.
       enabled: ${SURGE_AUTH_TEST_TOKENS:false}

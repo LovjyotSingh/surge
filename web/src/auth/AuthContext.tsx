@@ -21,6 +21,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSession({ token: res.token, expiresAt: res.expiresAt, user: res.user })
   }, [])
 
+  // Revoke the token at the gateway, then forget it. The session is cleared even when the call fails (offline,
+  // already expired): logging out must always work on this device.
+  const logout = useCallback(async () => {
+    const token = getSession()?.token
+    try {
+      if (token) await api.logout(token)
+    } catch {
+      // nothing more to do: the token still expires on its own
+    } finally {
+      clearSession()
+    }
+  }, [])
+
   // Log out when the token expires while the tab is open, not on the next failed request.
   const expiresAt = session?.expiresAt
   useEffect(() => {
@@ -37,9 +50,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isAdmin: hasRole(session, 'ADMIN'),
       login,
       signup,
-      logout: clearSession,
+      logout,
     }),
-    [session, login, signup],
+    [session, login, signup, logout],
   )
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

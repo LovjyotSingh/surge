@@ -9,9 +9,8 @@ import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.ApplicationArguments;
-import org.springframework.boot.ApplicationRunner;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
@@ -24,9 +23,13 @@ import org.springframework.stereotype.Component;
  * <p>The configured email is the only admin. Any other ADMIN row (for example the dev account left behind after
  * SURGE_ADMIN_EMAIL changed) fails startup in prod and is demoted with a scrambled password in dev. An existing
  * non-admin account at the configured email is never touched: startup fails instead.
+ *
+ * <p>It runs as a {@link SmartInitializingSingleton}: once every singleton (Flyway and JPA included) exists, but before
+ * the web server starts. A refusal therefore aborts startup before any port is open, so a leftover admin can never sign
+ * in during a failing prod start (an {@code ApplicationRunner} would run only after the server was already serving).
  */
 @Component
-public class AdminSeeder implements ApplicationRunner {
+public class AdminSeeder implements SmartInitializingSingleton {
     private static final Logger log = LoggerFactory.getLogger(AdminSeeder.class);
     private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -54,7 +57,12 @@ public class AdminSeeder implements ApplicationRunner {
     }
 
     @Override
-    public void run(ApplicationArguments args) {
+    public void afterSingletonsInstantiated() {
+        seed();
+    }
+
+    /** Creates, re-hashes or refuses as described above. */
+    public void seed() {
         Optional<User> existing = users.findByEmail(adminEmail);
         if (existing.isPresent()) {
             User admin = existing.get();

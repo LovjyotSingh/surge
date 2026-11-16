@@ -48,10 +48,59 @@ describe('App header', () => {
     expect(screen.queryByRole('link', { name: 'Ops' })).not.toBeInTheDocument()
     expect(screen.getByText('Asha')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Log out' }))
-    expect(getSession()).toBeNull()
+    await waitFor(() => expect(getSession()).toBeNull())
+    expect(screen.getByRole('link', { name: 'Log in' })).toBeInTheDocument()
+  })
+})
+
+describe('logout', () => {
+  function logoutCalls() {
+    return fetchMock.mock.calls.filter(([url]) => String(url) === '/api/auth/logout')
+  }
+
+  it('revokes the token at the gateway, then clears the session', async () => {
+    signIn(['USER'], 3_600_000, 'tok-live')
+    fetchMock.mockImplementation((url: string) =>
+      Promise.resolve(
+        url === '/api/auth/logout'
+          ? new Response(null, { status: 204 })
+          : new Response(JSON.stringify(emptyPage), { status: 200 }),
+      ),
+    )
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(screen.getByRole('button', { name: 'Log out' }))
+    await waitFor(() => expect(getSession()).toBeNull())
+    expect(logoutCalls()).toHaveLength(1)
+    const init = logoutCalls()[0][1] as RequestInit
+    expect(init.method).toBe('POST')
+    expect(new Headers(init.headers).get('Authorization')).toBe('Bearer tok-live')
     expect(screen.getByRole('link', { name: 'Log in' })).toBeInTheDocument()
   })
 
+  it('still logs out on this device when the call fails', async () => {
+    for (const failure of [
+      () => Promise.reject(new TypeError('Failed to fetch')),
+      () => Promise.resolve(new Response(JSON.stringify({ title: 'x', status: 503 }), { status: 503 })),
+      () => Promise.resolve(new Response(JSON.stringify({ title: 'x', status: 401 }), { status: 401 })),
+    ]) {
+      signIn(['USER'])
+      window.history.pushState({}, '', '/')
+      fetchMock.mockImplementation((url: string) =>
+        url === '/api/auth/logout' ? failure() : Promise.resolve(new Response(JSON.stringify(emptyPage))),
+      )
+      const user = userEvent.setup()
+      const { unmount } = render(<App />)
+      await user.click(screen.getByRole('button', { name: 'Log out' }))
+      await waitFor(() => expect(getSession()).toBeNull())
+      // a failed (even 401) logout never bounces the user to the login page
+      expect(window.location.pathname).toBe('/')
+      unmount()
+    }
+  })
+})
+
+describe('App header for admins', () => {
   it('shows Ops for an ADMIN', () => {
     signIn(['ADMIN'])
     render(<App />)

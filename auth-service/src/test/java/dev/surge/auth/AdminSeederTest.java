@@ -36,10 +36,26 @@ class AdminSeederTest {
         return new User(email, encoder.encode(password), "Surge Admin", Role.ADMIN, Instant.now());
     }
 
+    /**
+     * The seeder must finish before the web server accepts a request (S1 review): an ApplicationRunner runs only after
+     * the server has started, leaving a window in which a leftover admin could still sign in during a failing prod
+     * start. SmartInitializingSingleton runs while the context refreshes, before the server's lifecycle starts, and a
+     * failure there aborts startup before any port is open.
+     */
+    @Test
+    void seedsWhileTheContextIsBuiltNotAfterTheServerStarted() {
+        assertThat(org.springframework.beans.factory.SmartInitializingSingleton.class).isAssignableFrom(AdminSeeder.class);
+        assertThat(org.springframework.boot.ApplicationRunner.class.isAssignableFrom(AdminSeeder.class)).isFalse();
+        assertThat(org.springframework.boot.CommandLineRunner.class.isAssignableFrom(AdminSeeder.class)).isFalse();
+        when(users.findByEmail(EMAIL)).thenReturn(Optional.empty());
+        seeder("first-password", "dev").afterSingletonsInstantiated();
+        verify(users).save(any(User.class));
+    }
+
     @Test
     void createsTheAdminWithTheConfiguredEmailAndPassword() {
         when(users.findByEmail(EMAIL)).thenReturn(Optional.empty());
-        seeder("first-password", "dev").run(null);
+        seeder("first-password", "dev").seed();
         ArgumentCaptor<User> saved = ArgumentCaptor.forClass(User.class);
         verify(users).save(saved.capture());
         assertThat(saved.getValue().getEmail()).isEqualTo(EMAIL);
@@ -51,7 +67,7 @@ class AdminSeederTest {
     void changedPasswordIsRehashedSoOnlyTheNewOneWorks() {
         User existing = admin(EMAIL, "old-password");
         when(users.findByEmail(EMAIL)).thenReturn(Optional.of(existing));
-        seeder("new-password", "dev").run(null);
+        seeder("new-password", "dev").seed();
         verify(users).save(existing);
         assertThat(encoder.matches("new-password", existing.getPasswordHash())).isTrue();
         assertThat(encoder.matches("old-password", existing.getPasswordHash())).isFalse();
@@ -60,7 +76,7 @@ class AdminSeederTest {
     @Test
     void unchangedPasswordIsLeftAlone() {
         when(users.findByEmail(EMAIL)).thenReturn(Optional.of(admin(EMAIL, "same-password")));
-        seeder("same-password", "dev").run(null);
+        seeder("same-password", "dev").seed();
         verify(users, never()).save(any());
     }
 
@@ -70,7 +86,7 @@ class AdminSeederTest {
         String hash = customer.getPasswordHash();
         when(users.findByEmail(EMAIL)).thenReturn(Optional.of(customer));
         for (String env : new String[] {"dev", "prod"}) {
-            assertThatThrownBy(() -> seeder("new-password", env).run(null)).isInstanceOf(IllegalStateException.class)
+            assertThatThrownBy(() -> seeder("new-password", env).seed()).isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("not an administrator");
         }
         assertThat(customer.getPasswordHash()).isEqualTo(hash);
@@ -83,7 +99,7 @@ class AdminSeederTest {
         when(users.findByEmail(EMAIL)).thenReturn(Optional.of(admin(EMAIL, "pw-pw-pw-pw-pw-pw")));
         when(users.findByRoleAndEmailNot(Role.ADMIN, EMAIL))
                 .thenReturn(List.of(admin("admin@surge.local", "surge-admin"), admin("old@example.test", "x")));
-        assertThatThrownBy(() -> seeder("pw-pw-pw-pw-pw-pw", "prod").run(null))
+        assertThatThrownBy(() -> seeder("pw-pw-pw-pw-pw-pw", "prod").seed())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageStartingWith("2 administrator account(s)")
                 .hasMessageNotContaining("surge.local").hasMessageNotContaining("example.test");
@@ -95,7 +111,7 @@ class AdminSeederTest {
         String oldHash = old.getPasswordHash();
         when(users.findByEmail(EMAIL)).thenReturn(Optional.of(admin(EMAIL, "new-password")));
         when(users.findByRoleAndEmailNot(Role.ADMIN, EMAIL)).thenReturn(List.of(old));
-        seeder("new-password", "dev").run(null);
+        seeder("new-password", "dev").seed();
         verify(users).save(old);
         assertThat(old.getRole()).isEqualTo(Role.USER);
         assertThat(old.getPasswordHash()).isNotEqualTo(oldHash);

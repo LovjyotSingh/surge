@@ -246,7 +246,9 @@ class GatewaySecurityTest extends GatewayTestBase {
 
     @Test
     void unreachableOrHangingJwksFailsClosedWithin3Seconds() throws Exception {
-        // an unknown kid forces a fetch of the key set; the mock answers after 5 s, the decoder gives up after 2 s
+        // an unknown kid forces a fetch of the key set (once the 30 s cooldown has passed); the mock answers after 5 s,
+        // the fetch gives up after 2 s
+        jwksClock.advance(java.time.Duration.ofSeconds(31));
         var original = JWKS.currentHandler();
         JWKS.respondWith(request -> new mockwebserver3.MockResponse.Builder().code(200)
                 .headersDelay(5, java.util.concurrent.TimeUnit.SECONDS).body("{\"keys\":[]}").build());
