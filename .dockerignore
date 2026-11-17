@@ -1,7 +1,26 @@
+# Build context for docker/service.Dockerfile and tools/loadtest/Dockerfile (the repo root).
+# Only sources and poms are needed; keep build output, the web app, docs and every secret out of the context.
 **/target
 **/node_modules
-web/dist
-.git
-.superpowers
+web
+docs
 reports
+audit
+notification-service/audit
+config-repo
+.git
+.github
+.idea
+.claude
+.superpowers
+*.md
+*.iml
 .env
+.env.*
+docker/secrets
+docker/mysql-init
+docker/kafka
+docker/redis
+docker/rabbitmq
+docker/elasticsearch
+compose*.yaml
