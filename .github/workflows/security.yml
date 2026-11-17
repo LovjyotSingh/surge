@@ -105,8 +105,8 @@ jobs:
         with:
           persist-credentials: false
 
-      # Filesystem mode today. Dependency vulnerabilities are left to OSV above, and Task 16 adds
-      # image vulnerability scans, so the vuln scanner is not run here.
+      # Filesystem mode. Dependency vulnerabilities are left to OSV above, and the built images are
+      # scanned for vulnerabilities by the `images` job in ci.yml, so the vuln scanner is not run here.
       - name: Trivy secrets (gating)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -128,9 +128,5 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: '0'
 
-      # TODO(Task 16): once the images are built in CI, scan each one here (scan-type: image,
-      # image-ref: <name>:<tag>, severity HIGH,CRITICAL, exit-code 1, ignore-unfixed: true).
-      # Targets: booking-service, web (nginx), tools/loadtest, plus every service image added under
-      # docker/ (gateway, auth, catalog, notification, payment, config-server, discovery).
-      # Build them in the `images` job of ci.yml (or here, with needs:) and scan from the local
-      # daemon so the scan covers exactly what is deployed.
+      # Image vulnerability scans live in ci.yml (`images` job): each image is built there and scanned
+      # from the local daemon (HIGH/CRITICAL, ignore-unfixed, gating).

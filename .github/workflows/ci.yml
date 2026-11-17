@@ -62,18 +62,86 @@ jobs:
       - name: Build
         run: npm run build
 
+  # Every image Compose runs, built from the same Dockerfiles, then scanned by Trivy from the local daemon, so the
+  # scan covers exactly what is deployed (SEC-17, SEC-28). Fails on a HIGH or CRITICAL vulnerability that has a fix.
   images:
-    name: Docker images
+    name: Image ${{ matrix.image }} (build, Trivy)
     needs: [backend, web]
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: config-server, dockerfile: docker/service.Dockerfile, context: ., module: config-server, port: '8888' }
+          - { image: discovery, dockerfile: docker/service.Dockerfile, context: ., module: discovery, port: '8761' }
+          - { image: auth-service, dockerfile: docker/service.Dockerfile, context: ., module: auth-service, port: '8082' }
+          - { image: booking-service, dockerfile: docker/service.Dockerfile, context: ., module: booking-service, port: '8081' }
+          - { image: catalog-service, dockerfile: docker/service.Dockerfile, context: ., module: catalog-service, port: '8083' }
+          - { image: payment-service, dockerfile: docker/service.Dockerfile, context: ., module: payment-service, port: '8084' }
+          - { image: notification-service, dockerfile: docker/service.Dockerfile, context: ., module: notification-service, port: '8086' }
+          - { image: gateway, dockerfile: docker/service.Dockerfile, context: ., module: gateway, port: '8085' }
+          - { image: web, dockerfile: web/Dockerfile, context: web }
+          - { image: loadtest, dockerfile: tools/loadtest/Dockerfile, context: . }
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
 
-      - name: Build all images (core + loadtest profiles)
-        run: docker compose --profile core --profile loadtest build
+      - name: Build
+        env:
+          IMAGE: ${{ matrix.image }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
+          CONTEXT: ${{ matrix.context }}
+          MODULE: ${{ matrix.module }}
+          PORT: ${{ matrix.port }}
+        run: |
+          args=()
+          if [ -n "$MODULE" ]; then
+            args+=(--build-arg "MODULE=$MODULE" --build-arg "PORT=$PORT")
+          fi
+          DOCKER_BUILDKIT=1 docker build -f "$DOCKERFILE" "${args[@]}" -t "surge/$IMAGE:ci" "$CONTEXT"
+
+      - name: Trivy image scan (HIGH, CRITICAL with a fix)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: surge/${{ matrix.image }}:ci
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+
+  # The Compose files with every overlay are valid, and the platform publishes exactly one port: nginx's.
+  compose:
+    name: Compose config (only nginx publishes a port)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Validate and check published ports
+        shell: bash
+        run: |
+          # Placeholder values and empty secret files: enough for `config`, never for a real start.
+          sed -E 's/^([A-Z_0-9]+)=$/\1=ci-placeholder-0123456789/' .env.example > .env
+          mkdir -p docker/secrets
+          for f in jwt.jwk gateway.jwk booking.jwk notification.jwk internal-jwks.json redis-users.acl \
+                   rabbitmq-definitions.json; do
+            : > "docker/secrets/$f"
+          done
+          docker compose -f compose.yaml -f compose.dev.yaml -f compose.loadtest.yaml \
+            --profile core --profile platform --profile loadtest config -q
+          published=$(docker compose --profile core --profile platform config --format json \
+            | jq -r '.services | to_entries[] | select(.value.ports != null) | .key as $s
+                     | .value.ports[] | "\($s) \(.host_ip // "0.0.0.0"):\(.published)->\(.target)"')
+          echo "$published"
+          if [ "$published" != "web 127.0.0.1:8080->8080" ]; then
+            echo "::error::compose.yaml must publish only web on 127.0.0.1:8080"
+            exit 1
+          fi
 
   config-repo-secrets:
     name: config-repo holds no secrets
