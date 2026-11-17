@@ -1,0 +1,123 @@
+# Local development overlay: fake mail and S3, plus debug ports bound to 127.0.0.1 only.
+#
+#   docker compose -f compose.yaml -f compose.dev.yaml --profile core --profile platform up -d --build
+#
+#   Mailpit UI (every email, verification codes and tickets)   http://localhost:8025
+#   Eureka dashboard (EUREKA_USER / EUREKA_PASSWORD from .env)  http://localhost:8761
+#   RabbitMQ UI (surge-admin / RABBIT_ADMIN_PASSWORD)          http://localhost:15672
+#   Elasticsearch (elastic / ELASTIC_PASSWORD)                  http://localhost:9200
+#   gateway 8085, booking 8081, MySQL 3307, Redis 6379, S3Mock 9090
+#
+# Never use this file on a server: Mailpit shows every email and S3Mock accepts any credentials (SEC-16). The
+# services still run with SURGE_ENV=prod and the generated credentials.
+#
+# A published port needs a network that is not internal, so the services with a debug port also join "devhost".
+# That network gives them outbound internet access: one more reason to keep this overlay local.
+
+services:
+  mailpit:
+    image: axllent/mailpit:v1.34.0@sha256:23a2ef85bc50853ab3093645d1d64679afd8887e89da5e48a88940c172591a4e
+    profiles: [platform]
+    restart: unless-stopped
+    user: "65534:65534"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    pids_limit: 128
+    mem_limit: 256m
+    environment:
+      MP_MAX_MESSAGES: "2000"
+    ports:
+      - "127.0.0.1:8025:8025"
+    networks: [egress]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  s3mock:
+    image: adobe/s3mock:5.2.3@sha256:ab01a6946750f451ca215a47e91030695b260e4003b8a5a6201d25029b8fca92
+    profiles: [platform]
+    restart: unless-stopped
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    pids_limit: 256
+    mem_limit: 640m
+    environment:
+      COM_ADOBE_TESTING_S3MOCK_STORE_ROOT: /tmp/s3mock
+      COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS: surge-tickets
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks: [egress]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+  auth-service:
+    environment:
+      MAIL_HOST: mailpit
+      MAIL_PORT: "1025"
+    depends_on:
+      mailpit: { condition: service_healthy }
+
+  notification-service:
+    environment:
+      MAIL_HOST: mailpit
+      MAIL_PORT: "1025"
+      S3_ENDPOINT: http://s3mock:9090
+    depends_on:
+      mailpit: { condition: service_healthy }
+      s3mock: { condition: service_healthy }
+
+  booking-service:
+    ports: ["127.0.0.1:8081:8081"]
+    networks:
+      devhost: {}
+
+  gateway:
+    # Straight to the gateway, bypassing nginx: its peer is then Docker's NAT address, which is not a trusted
+    # proxy, so X-Forwarded-For is ignored.
+    ports: ["127.0.0.1:8085:8085"]
+
+  discovery:
+    ports: ["127.0.0.1:8761:8761"]
+    networks:
+      devhost: {}
+
+  mysql:
+    ports: ["127.0.0.1:3307:3306"]
+    networks:
+      devhost: {}
+
+  redis:
+    ports: ["127.0.0.1:6379:6379"]
+    networks:
+      devhost: {}
+
+  rabbitmq:
+    ports: ["127.0.0.1:15672:15672"]
+    networks:
+      devhost: {}
+
+  elasticsearch:
+    ports: ["127.0.0.1:9200:9200"]
+    networks:
+      devhost: {}
+
+networks:
+  devhost: {}
