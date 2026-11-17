@@ -122,10 +122,11 @@ export const api = {
    * Revokes `token` at the gateway (204). The caller clears the session whatever happens, so this does not use the
    * `auth` option: a 401 here (already expired or revoked) must not bounce the user to the login page.
    */
-  logout: async (token: string): Promise<void> => {
+  logout: async (token: string, signal?: AbortSignal): Promise<void> => {
     const res = await fetch(`${AUTH}/logout`, {
       method: 'POST',
       headers: { Accept: 'application/json', Authorization: `Bearer ${token}` },
+      signal,
     })
     if (!res.ok) throw await toApiError(res)
   },

@@ -8,6 +8,8 @@
 #
 # Rotation (see auth-service/.../jwt/JwtKeys.java): generate a second key, publish it first through
 # SURGE_JWT_PREVIOUS_KEY_FILE, then swap the two files.
+# A COMPROMISED key: replace it (no previous key), restart auth, then RESTART EVERY GATEWAY. The gateway caches
+# auth's key set and keeps the last good set when auth is unreachable, so only a restart drops the stolen key at once.
 #
 # usage: docker/gen-jwt-key.sh [--force] <output-file>
 #   --force   replace an existing key (every token signed with the old key stops working unless it is kept as the

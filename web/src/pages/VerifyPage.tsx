@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router'
 import { ApiError, api } from '../api/client'
@@ -7,6 +7,9 @@ import { loginPath, safeNext, verifyPath } from '../auth/redirect'
 import { GENERIC_ERROR } from '../format'
 
 type Notice = { kind: 'error' | 'info'; text: string }
+
+/** The server allows one new code per 60 s (and 5 an hour, 10 a day: those come back as a 429's Retry-After). */
+const RESEND_GAP_SECONDS = 60
 
 function slugOf(err: ApiError): string {
   return err.problem.type.split('/').pop() ?? ''
@@ -63,6 +66,22 @@ export default function VerifyPage() {
   const [code, setCode] = useState('')
   const [notice, setNotice] = useState<Notice | null>(null)
   const [busy, setBusy] = useState(false)
+  // "Send a new code" is available again at this time (ms): 60 s after a send, or what a 429's Retry-After says.
+  const [resendAt, setResendAt] = useState(0)
+  const [now, setNow] = useState(() => Date.now())
+  const coolingDown = resendAt > now
+  useEffect(() => {
+    if (!coolingDown) return
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [coolingDown])
+  const secondsLeft = Math.ceil((resendAt - now) / 1000)
+
+  const waitBeforeResend = (seconds: number) => {
+    const t = Date.now()
+    setNow(t)
+    setResendAt(t + seconds * 1000)
+  }
 
   if (!user) {
     return <Navigate to={loginPath(verifyPath(next))} replace />
@@ -100,14 +119,18 @@ export default function VerifyPage() {
   }
 
   const resend = async () => {
-    if (busy) return
+    if (busy || coolingDown) return
     setBusy(true)
     setNotice(null)
     try {
       await api.resendVerification()
       setCode('')
+      waitBeforeResend(RESEND_GAP_SECONDS)
       setNotice({ kind: 'info', text: `We sent a new code to ${user.email}. It expires in 15 minutes.` })
     } catch (err) {
+      if (err instanceof ApiError && err.status === 429) {
+        waitBeforeResend(err.retryAfterSeconds ?? RESEND_GAP_SECONDS)
+      }
       setNotice({ kind: 'error', text: resendErrorText(err) })
     } finally {
       setBusy(false)
@@ -147,8 +170,8 @@ export default function VerifyPage() {
         <button type="submit" className="primary" disabled={busy}>
           Verify
         </button>
-        <button type="button" disabled={busy} onClick={() => void resend()}>
-          Send a new code
+        <button type="button" disabled={busy || coolingDown} onClick={() => void resend()}>
+          {coolingDown ? `Resend in ${secondsLeft}s` : 'Send a new code'}
         </button>
       </form>
       <p className="muted">

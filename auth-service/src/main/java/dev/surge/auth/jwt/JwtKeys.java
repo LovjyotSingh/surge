@@ -51,6 +51,12 @@ import org.springframework.core.io.ResourceLoader;
  * the new key becomes current, the old one previous, restart; (3) after 30 minutes (the token lifetime) the old key
  * can be dropped. Skipping step 1 also works, but tokens signed with the new key may get 401 for up to 30 s until the
  * gateway refetches the key set.
+ *
+ * <p><b>A compromised key</b> is different: generate a new key, start auth with it and <em>no</em> previous key, then
+ * <b>restart every gateway</b>. The gateway's key cache ({@code JwksCache}) keeps accepting the cached set until it
+ * refreshes (up to five minutes), and it deliberately keeps the last good set whenever auth cannot be reached, so
+ * without a restart tokens forged with the stolen key could keep working. Logging users out does not help here: forged
+ * tokens carry fresh {@code jti}s.
  */
 public final class JwtKeys {
 

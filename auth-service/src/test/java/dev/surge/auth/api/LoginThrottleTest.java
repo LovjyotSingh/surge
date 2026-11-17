@@ -88,6 +88,13 @@ class LoginThrottleTest {
     }
 
     @Test
+    void accountsAreKeyedOnAFixedSizeHashNotTheEmail() {
+        assertThat(LoginThrottle.key("ada@example.com")).hasSize(44).doesNotContain("ada")
+                .isEqualTo(LoginThrottle.key("ada@example.com")).isNotEqualTo(LoginThrottle.key("ada@example.co"));
+        assertThat(LoginThrottle.key("x".repeat(240) + "@example.com")).hasSize(44);
+    }
+
+    @Test
     void parallelGuessesCannotSlipPastTheCount() throws Exception {
         AtomicInteger allowed = new AtomicInteger();
         CountDownLatch start = new CountDownLatch(1);

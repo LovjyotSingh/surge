@@ -16,6 +16,7 @@ import com.jayway.jsonpath.JsonPath;
 import dev.surge.auth.support.Identity;
 import dev.surge.auth.support.IntegrationTest;
 import dev.surge.auth.support.MailpitContainer;
+import dev.surge.auth.verify.EmailVerificationRepository;
 import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
@@ -271,7 +272,22 @@ class AccountProtectionTest {
                 .andExpect(header().exists("Retry-After"));
         assertThat(Integer.parseInt(mvc.perform(post("/api/auth/verify/resend").with(Identity.user(id)))
                 .andReturn().getResponse().getHeader("Retry-After"))).isBetween(1, 60);
+        // the limits belong to the account: signing in again (a new session, a new token) resets nothing
+        assertThat(login(email, "correct-horse-battery").getResponse().getStatus()).isEqualTo(200);
+        mvc.perform(post("/api/auth/verify/resend").with(Identity.user(id))).andExpect(status().isTooManyRequests());
         assertThat(mailpit.messagesTo(email)).hasSize(1);
+    }
+
+    /** A signup whose code could not be stored still succeeds; "send a new code" then creates one. */
+    @Test
+    void resendRecoversAnAccountWithoutAStoredCode(@Autowired EmailVerificationRepository codes) throws Exception {
+        String email = email("recover");
+        String id = signedUp(email);
+        codes.deleteById(Long.parseLong(id.substring(2)));
+        mvc.perform(post("/api/auth/verify/resend").with(Identity.user(id))).andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.sent").value(true));
+        String code = codeFor(email, 2);
+        assertThat(submitCode(Identity.user(id), code).getResponse().getStatus()).isEqualTo(200);
     }
 
     @Test

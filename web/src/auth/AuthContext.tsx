@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react'
 import type { ReactNode } from 'react'
 import { api } from '../api/client'
+import { revokeInBackground } from './revoke'
 import { clearSession, getSession, hasRole, setSession, subscribeSession } from './session'
 import { AuthContext } from './context'
 import type { Auth } from './context'
@@ -21,23 +22,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSession({ token: res.token, expiresAt: res.expiresAt, user: res.user })
   }, [])
 
-  // A verified email comes with a new token (ev: true); the old one stays unverified, so it is replaced.
+  // A verified email comes with a new token (ev: true). The old one is swapped out and revoked in the background, so
+  // only one live token remains; a failed revoke changes nothing (it still expires on its own).
   const verifyEmail = useCallback(async (code: string) => {
+    const old = getSession()?.token
     const res = await api.verifyEmail(code)
     setSession({ token: res.token, expiresAt: res.expiresAt, user: res.user })
+    if (old && old !== res.token) void revokeInBackground(old)
   }, [])
 
-  // Revoke the token at the gateway, then forget it. The session is cleared even when the call fails (offline,
-  // already expired): logging out must always work on this device.
+  // Forget the token first (logging out must always work on this device, at once), then revoke it at the gateway in
+  // the background with a short timeout.
   const logout = useCallback(async () => {
     const token = getSession()?.token
-    try {
-      if (token) await api.logout(token)
-    } catch {
-      // nothing more to do: the token still expires on its own
-    } finally {
-      clearSession()
-    }
+    clearSession()
+    if (token) await revokeInBackground(token)
   }, [])
 
   // Log out when the token expires while the tab is open, not on the next failed request.

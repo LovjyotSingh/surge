@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -47,6 +47,8 @@ async function enter(user: ReturnType<typeof userEvent.setup>, code: string) {
 
 beforeEach(() => {
   fetchMock.mockReset()
+  // anything a test does not answer itself (the background revoke of the old token): 204
+  fetchMock.mockImplementation(() => Promise.resolve(new Response(null, { status: 204 })))
   vi.stubGlobal('fetch', fetchMock)
 })
 afterEach(() => {
@@ -89,6 +91,35 @@ describe('VerifyPage', () => {
     expect(new Headers(init.headers).get('Authorization')).toBe('Bearer tok-unverified')
     expect(getSession()?.token).toBe('tok-verified')
     expect(getSession()?.user.emailVerified).toBe(true)
+
+    // the old, unverified token is revoked in the background
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([u]) => u === '/api/auth/logout')).toBe(true),
+    )
+    const [, revoke] = fetchMock.mock.calls.find(([u]) => u === '/api/auth/logout') as [string, RequestInit]
+    expect(revoke.method).toBe('POST')
+    expect(new Headers(revoke.headers).get('Authorization')).toBe('Bearer tok-unverified')
+  })
+
+  it('keeps the verified session when revoking the old token fails', async () => {
+    signInUnverified()
+    fetchMock.mockImplementation((url: string) =>
+      url === '/api/auth/verify'
+        ? Promise.resolve(
+            json(200, {
+              token: 'tok-verified',
+              expiresAt: new Date(Date.now() + 1_800_000).toISOString(),
+              user: { ...unverified, emailVerified: true },
+            }),
+          )
+        : Promise.reject(new TypeError('Failed to fetch')),
+    )
+    const user = userEvent.setup()
+    renderAt('/verify?next=/events/3')
+    await enter(user, '123456')
+    expect(await screen.findByTestId('where')).toHaveTextContent('/events/3')
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(getSession()?.token).toBe('tok-verified')
   })
 
   it('keeps only digits and checks for six of them before calling the API', async () => {
@@ -119,21 +150,57 @@ describe('VerifyPage', () => {
     expect(getSession()?.token).toBe('tok-unverified')
   })
 
-  it('sends a new code, and shows the wait when resending too soon', async () => {
-    signInUnverified()
-    const user = userEvent.setup()
-    renderAt('/verify')
-    fetchMock.mockResolvedValueOnce(json(202, { sent: true }))
-    await user.click(screen.getByRole('button', { name: 'Send a new code' }))
-    expect(await screen.findByRole('status')).toHaveTextContent('We sent a new code to asha@example.com')
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/api/auth/verify/resend')
-    expect(init.method).toBe('POST')
-    expect(new Headers(init.headers).get('Authorization')).toBe('Bearer tok-unverified')
+  describe('Send a new code', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+    })
+    afterEach(() => {
+      vi.useRealTimers()
+    })
 
-    fetchMock.mockResolvedValueOnce(problem(429, 'resend-throttled', {}, { 'Retry-After': '42' }))
-    await user.click(screen.getByRole('button', { name: 'Send a new code' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('You can ask for a new code in 42s.')
+    it('sends a code, then waits 60 s with a countdown before allowing another', async () => {
+      signInUnverified()
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      renderAt('/verify')
+      fetchMock.mockResolvedValueOnce(json(202, { sent: true }))
+      await user.click(screen.getByRole('button', { name: 'Send a new code' }))
+      expect(await screen.findByRole('status')).toHaveTextContent('We sent a new code to asha@example.com')
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+      expect(url).toBe('/api/auth/verify/resend')
+      expect(init.method).toBe('POST')
+      expect(new Headers(init.headers).get('Authorization')).toBe('Bearer tok-unverified')
+
+      // disabled right after sending, counting down
+      const button = screen.getByRole('button', { name: /^Resend in \d+s$/ })
+      expect(button).toBeDisabled()
+      expect(button).toHaveTextContent('Resend in 60s')
+      act(() => {
+        vi.advanceTimersByTime(18_000)
+      })
+      expect(button).toHaveTextContent('Resend in 42s')
+      expect(button).toBeDisabled()
+
+      // available again once the cooldown is over
+      act(() => {
+        vi.advanceTimersByTime(42_000)
+      })
+      expect(screen.getByRole('button', { name: 'Send a new code' })).toBeEnabled()
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('waits for the Retry-After of a 429', async () => {
+      signInUnverified()
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      renderAt('/verify')
+      fetchMock.mockResolvedValueOnce(problem(429, 'resend-throttled', {}, { 'Retry-After': '42' }))
+      await user.click(screen.getByRole('button', { name: 'Send a new code' }))
+      expect(await screen.findByRole('alert')).toHaveTextContent('You can ask for a new code in 42s.')
+      expect(screen.getByRole('button', { name: 'Resend in 42s' })).toBeDisabled()
+      act(() => {
+        vi.advanceTimersByTime(42_000)
+      })
+      expect(screen.getByRole('button', { name: 'Send a new code' })).toBeEnabled()
+    })
   })
 
   it('sends a logged-out visitor to login and back', async () => {

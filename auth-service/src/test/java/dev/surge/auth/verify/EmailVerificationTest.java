@@ -61,6 +61,35 @@ class EmailVerificationTest {
         assertThat(v.resendWait(T0.plus(Duration.ofHours(1)).plusSeconds(60))).isEmpty();
     }
 
+    /** About 10 a day, not 5 per rolling hour (120 a day) to whatever address the account was registered with. */
+    @Test
+    void atMostTenEmailsPer24HoursIncludingTheSignupOne() {
+        EmailVerification v = EmailVerification.first(1, "hash", T0);
+        Instant t = T0;
+        int sent = 1;
+        // send as fast as the hour and minute limits allow
+        while (sent < EmailVerification.MAX_SENDS_PER_DAY) {
+            t = t.plus(v.resendWait(t.plusSeconds(60)).orElse(Duration.ZERO)).plusSeconds(60);
+            assertThat(v.resendWait(t)).as("email %d at %s", sent + 1, t).isEmpty();
+            v.reissue("hash-" + sent, t);
+            sent++;
+        }
+        assertThat(t).isBefore(T0.plus(Duration.ofHours(3)));
+
+        // the hour limit has long reset, but the day is used up: wait for the day window that began with the signup
+        Instant later = T0.plus(Duration.ofHours(5));
+        assertThat(v.resendWait(later)).contains(Duration.between(later, T0.plus(Duration.ofHours(24))));
+        Instant lastMinute = T0.plus(Duration.ofHours(24)).minusSeconds(1);
+        assertThat(v.resendWait(lastMinute)).contains(Duration.ofSeconds(1));
+        assertThatThrownBy(() -> v.reissue("too-many", later)).isInstanceOf(IllegalStateException.class);
+
+        // a new day window opens 24 h after the first email
+        Instant nextDay = T0.plus(Duration.ofHours(24));
+        assertThat(v.resendWait(nextDay)).isEmpty();
+        v.reissue("next-day", nextDay);
+        assertThat(v.codeHash()).isEqualTo("next-day");
+    }
+
     @Test
     void codesAreSixDigits() {
         for (int i = 0; i < 200; i++) {

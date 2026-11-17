@@ -12,6 +12,7 @@ import dev.surge.auth.user.UserRepository;
 import dev.surge.auth.verify.EmailVerificationService;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import org.slf4j.Logger;
@@ -42,6 +43,8 @@ public class AuthService {
     private final String dummyHash;
 
     private final String adminEmail;
+    /** Until when the current admin lock has been reported; guarded by {@code this}. */
+    private Instant adminLockWarnedUntil;
 
     AuthService(UserRepository users, PasswordEncoder encoder, TokenService tokens, Clock clock, LoginThrottle throttle,
                 PasswordPolicy passwords, EmailVerificationService verification,
@@ -83,7 +86,7 @@ public class AuthService {
         Optional<Duration> locked = throttle.tryAcquire(email);
         if (locked.isPresent()) {
             if (admin) {
-                log.warn("Sign-in for the admin account is throttled for another {} s", locked.get().toSeconds());
+                warnAdminLockedOnce(locked.get());
             }
             throw AccountProblem.loginThrottled(locked.get());
         }
@@ -97,5 +100,21 @@ public class AuthService {
         }
         throttle.succeeded(email);
         return tokens.issue(UserViews.of(found.get()));
+    }
+
+    /**
+     * One WARN per lock of the admin account, not one per refused attempt: a botnet hammering a locked admin must not
+     * flood the log. The next lock (after the next failure) warns again.
+     */
+    private void warnAdminLockedOnce(Duration wait) {
+        Instant now = clock.instant();
+        Instant lockEnds = now.plus(wait);
+        synchronized (this) {
+            if (adminLockWarnedUntil != null && now.isBefore(adminLockWarnedUntil)) {
+                return;
+            }
+            adminLockWarnedUntil = lockEnds;
+        }
+        log.warn("Sign-in for the admin account is locked for {} s after repeated failures", wait.toSeconds());
     }
 }

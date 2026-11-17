@@ -14,9 +14,12 @@ import java.util.Optional;
  * <ul>
  *   <li>a code is valid {@value #CODE_LIFETIME_MINUTES} minutes and works once (the row is deleted on success);</li>
  *   <li>after {@value #MAX_ATTEMPTS} wrong codes it is locked: even the right code fails until a new one is sent;</li>
- *   <li>a new code may be sent at most once per 60 s and {@value #MAX_SENDS_PER_WINDOW} times per hour (the signup
- *       email counts); a new code replaces the old one and resets the wrong-code count.</li>
+ *   <li>a new code may be sent at most once per 60 s, {@value #MAX_SENDS_PER_WINDOW} times per hour and
+ *       {@value #MAX_SENDS_PER_DAY} times per 24 hours (the signup email counts), so an account registered with
+ *       someone else's address can send that address at most 10 emails a day. A new code replaces the old one and
+ *       resets the wrong-code count.</li>
  * </ul>
+ * The counters belong to the account, not to a session: signing in again changes none of them.
  */
 @Entity
 @Table(name = "email_verifications")
@@ -28,6 +31,8 @@ public class EmailVerification {
     public static final Duration RESEND_GAP = Duration.ofSeconds(60);
     public static final Duration RESEND_WINDOW = Duration.ofHours(1);
     public static final int MAX_SENDS_PER_WINDOW = 5;
+    public static final Duration DAY_WINDOW = Duration.ofHours(24);
+    public static final int MAX_SENDS_PER_DAY = 10;
 
     @Id
     @Column(name = "user_id")
@@ -44,29 +49,39 @@ public class EmailVerification {
     private Instant windowStartedAt;
     @Column(name = "sends_in_window", nullable = false)
     private int sendsInWindow;
+    @Column(name = "day_started_at", nullable = false)
+    private Instant dayStartedAt;
+    @Column(name = "sends_in_day", nullable = false)
+    private int sendsInDay;
 
     protected EmailVerification() {
     }
 
-    /** The first code of an account: also the first send of its resend window. */
+    /** The first code of an account: also the first send of its hour and day windows. */
     public static EmailVerification first(long userId, String codeHash, Instant now) {
         EmailVerification v = new EmailVerification();
         v.userId = userId;
         v.windowStartedAt = now;
         v.sendsInWindow = 0;
+        v.dayStartedAt = now;
+        v.sendsInDay = 0;
         v.issue(codeHash, now);
         return v;
     }
 
-    /** Empty when a new code may be sent at {@code now}; otherwise how long to wait. */
+    /** Empty when a new code may be sent at {@code now}; otherwise how long to wait (the longest applicable limit). */
     public Optional<Duration> resendWait(Instant now) {
-        Instant gapEnds = lastSentAt.plus(RESEND_GAP);
-        if (now.isBefore(gapEnds)) {
-            return Optional.of(Duration.between(now, gapEnds));
+        Instant dayEnds = dayStartedAt.plus(DAY_WINDOW);
+        if (now.isBefore(dayEnds) && sendsInDay >= MAX_SENDS_PER_DAY) {
+            return Optional.of(Duration.between(now, dayEnds));
         }
         Instant windowEnds = windowStartedAt.plus(RESEND_WINDOW);
         if (now.isBefore(windowEnds) && sendsInWindow >= MAX_SENDS_PER_WINDOW) {
             return Optional.of(Duration.between(now, windowEnds));
+        }
+        Instant gapEnds = lastSentAt.plus(RESEND_GAP);
+        if (now.isBefore(gapEnds)) {
+            return Optional.of(Duration.between(now, gapEnds));
         }
         return Optional.empty();
     }
@@ -80,6 +95,10 @@ public class EmailVerification {
             windowStartedAt = now;
             sendsInWindow = 0;
         }
+        if (!now.isBefore(dayStartedAt.plus(DAY_WINDOW))) {
+            dayStartedAt = now;
+            sendsInDay = 0;
+        }
         issue(newCodeHash, now);
     }
 
@@ -89,6 +108,7 @@ public class EmailVerification {
         failedAttempts = 0;
         lastSentAt = now;
         sendsInWindow++;
+        sendsInDay++;
     }
 
     public boolean locked() {

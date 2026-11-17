@@ -2,7 +2,11 @@ package dev.surge.auth.api;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
+import java.util.Base64;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
@@ -24,7 +28,8 @@ import org.springframework.stereotype.Component;
  *   <li>An account untouched for an hour is forgotten.</li>
  * </ul>
  *
- * <p>State lives in this process (Caffeine, at most {@value #MAX_ACCOUNTS} accounts) because auth runs as a single
+ * <p>State lives in this process (Caffeine, at most {@value #MAX_ACCOUNTS} accounts, keyed on a SHA-256 of the
+ * email so an entry has a fixed size and no address is kept) because auth runs as a single
  * instance. When auth scales out, this must move to Redis (one counter and lock per email, e.g. a hash with a TTL)
  * so every instance sees the same count.
  */
@@ -64,7 +69,7 @@ public class LoginThrottle {
     public Optional<Duration> tryAcquire(String email) {
         Instant now = clock.instant();
         Duration[] wait = new Duration[1];
-        accounts.asMap().compute(email, (key, state) -> {
+        accounts.asMap().compute(key(email), (key, state) -> {
             State current = state == null ? new State(0, null) : state;
             if (current.lockedUntil() != null && now.isBefore(current.lockedUntil())) {
                 wait[0] = Duration.between(now, current.lockedUntil());
@@ -78,7 +83,20 @@ public class LoginThrottle {
 
     /** The account signed in: its count and lock are cleared. */
     public void succeeded(String email) {
-        accounts.invalidate(email);
+        accounts.invalidate(key(email));
+    }
+
+    /**
+     * The cache key: SHA-256 of the normalised email, Base64 (44 characters). Every entry costs the same whatever was
+     * typed, and the heap never holds the addresses that were tried.
+     */
+    static String key(String email) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(email.getBytes(StandardCharsets.UTF_8));
+            return Base64.getEncoder().encodeToString(digest);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is not available", e);
+        }
     }
 
     /** 30 s for the 5th attempt, doubling with each later one, at most 15 minutes. */

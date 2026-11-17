@@ -11,6 +11,8 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.mail.MailException;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -26,6 +28,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 public class EmailVerificationService {
 
+    private static final Logger log = LoggerFactory.getLogger(EmailVerificationService.class);
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final UserRepository users;
@@ -45,10 +48,19 @@ public class EmailVerificationService {
         this.clock = clock;
     }
 
-    /** A fresh account's first code: stored, then emailed. A mail failure is logged and never fails the signup. */
+    /**
+     * A fresh account's first code: stored, then emailed. The account is already committed, so neither step may fail
+     * the signup: a failure is logged (never the code or address) and "send a new code" recovers, creating the code
+     * row if it is missing. If the code could not be stored, nothing is emailed (it could never be checked).
+     */
     public void start(User user) {
         String code = newCode();
-        codes.saveAndFlush(EmailVerification.first(user.getId(), encoder.encode(code), clock.instant()));
+        try {
+            codes.saveAndFlush(EmailVerification.first(user.getId(), encoder.encode(code), clock.instant()));
+        } catch (RuntimeException e) {
+            log.warn("Could not store a verification code at signup: {}", e.getClass().getSimpleName());
+            return;
+        }
         mailer.trySend(user.getEmail(), user.getDisplayName(), code);
     }
 
