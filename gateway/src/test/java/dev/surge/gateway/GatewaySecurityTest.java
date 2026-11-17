@@ -194,10 +194,10 @@ class GatewaySecurityTest extends GatewayTestBase {
     }
 
     @Test
-    void loginAndSignupAreRateLimitedPerClientIp() throws Exception {
+    void loginIsRateLimitedPerClientIp() throws Exception {
         List<EntityExchangeResult<byte[]>> mine = new ArrayList<>();
         for (int i = 0; i < 16; i++) {
-            mine.add(client.post().uri(i % 2 == 0 ? "/api/auth/login" : "/api/auth/signup")
+            mine.add(client.post().uri("/api/auth/login")
                     .header("X-Forwarded-For", "10.0.0.1, 203.0.113.7").bodyValue("{}").exchange()
                     .expectBody().returnResult());
         }
@@ -212,7 +212,9 @@ class GatewaySecurityTest extends GatewayTestBase {
         // a different client IP has its own bucket; only the LAST forwarded hop counts
         client.post().uri("/api/auth/login").header("X-Forwarded-For", "203.0.113.7, 203.0.113.99").bodyValue("{}")
                 .exchange().expectStatus().isOk();
-        // the login limit does not touch other auth routes
+        // the login limit does not touch other auth routes: signup has its own bucket (EdgeLimitsTest), the JWKS none
+        client.post().uri("/api/auth/signup").header("X-Forwarded-For", "203.0.113.7").bodyValue("{}").exchange()
+                .expectStatus().isOk();
         client.get().uri("/api/auth/.well-known/jwks.json").header("X-Forwarded-For", "203.0.113.7").exchange()
                 .expectStatus().isOk();
     }

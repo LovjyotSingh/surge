@@ -24,8 +24,9 @@ import reactor.core.publisher.Mono;
  *
  * <p>When Redis fails, the stock {@link RedisRateLimiter} lets the request through and reports {@code -1} tokens
  * left. What happens then is the bucket's {@link OnLimiterFailure}: {@code ALLOW} (fail open, the stock behaviour, for
- * reads, holds and orders, which keep working without Redis) or {@code REFUSE} (fail closed, 503
- * {@code service-unavailable}, for login and signup, so a Redis outage cannot lift the password-guessing limit).
+ * reads, holds, orders and tickets) or {@code REFUSE} (fail closed, 503 {@code service-unavailable}, for login, signup
+ * and email verification, so a Redis outage cannot lift the limits on password guessing, code guessing or sending
+ * email). Signed-in requests need Redis anyway: the token denylist fails closed without it.
  */
 public class RateLimitFilter implements GatewayFilter, Ordered {
 

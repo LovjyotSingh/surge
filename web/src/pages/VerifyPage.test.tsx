@@ -171,9 +171,9 @@ describe('VerifyPage', () => {
       expect(new Headers(init.headers).get('Authorization')).toBe('Bearer tok-unverified')
 
       // disabled right after sending, counting down
-      const button = screen.getByRole('button', { name: /^Resend in \d+s$/ })
+      const button = screen.getByRole('button', { name: /^Resend in / })
       expect(button).toBeDisabled()
-      expect(button).toHaveTextContent('Resend in 60s')
+      expect(button).toHaveTextContent('Resend in 1m')
       act(() => {
         vi.advanceTimersByTime(18_000)
       })
@@ -200,6 +200,28 @@ describe('VerifyPage', () => {
         vi.advanceTimersByTime(42_000)
       })
       expect(screen.getByRole('button', { name: 'Send a new code' })).toBeEnabled()
+    })
+
+    it('shows a long wait (the daily cap) in hours and minutes, then minutes and seconds', async () => {
+      signInUnverified()
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      renderAt('/verify')
+      fetchMock.mockResolvedValueOnce(problem(429, 'resend-throttled', {}, { 'Retry-After': '86399' }))
+      await user.click(screen.getByRole('button', { name: 'Send a new code' }))
+      expect(await screen.findByRole('alert')).toHaveTextContent('You can ask for a new code in 23h 59m.')
+      const button = screen.getByRole('button', { name: 'Resend in 23h 59m' })
+      expect(button).toBeDisabled()
+      // skip most of the day by moving the clock rather than firing ~86,000 one-second ticks; one tick then redraws
+      act(() => {
+        vi.setSystemTime(Date.now() + (86_399 - 251) * 1000)
+        vi.advanceTimersByTime(1000)
+      })
+      expect(button).toHaveTextContent('Resend in 4m 10s')
+      act(() => {
+        vi.advanceTimersByTime(208_000)
+      })
+      expect(button).toHaveTextContent('Resend in 42s')
+      expect(button).toBeDisabled()
     })
   })
 

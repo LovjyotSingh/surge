@@ -243,8 +243,9 @@ class GatewayRoutingTest extends GatewayTestBase {
     void authRoutes() throws Exception {
         // public
         client.post().uri("/api/auth/signup").header("X-Forwarded-For", "10.0.0.50").bodyValue("{}").exchange()
-                .expectStatus().isOk();
-        client.get().uri("/api/auth/.well-known/jwks.json").exchange().expectStatus().isOk();
+                .expectStatus().isOk().expectHeader().exists("X-RateLimit-Remaining");
+        client.get().uri("/api/auth/.well-known/jwks.json").exchange().expectStatus().isOk()
+                .expectHeader().doesNotExist("X-RateLimit-Remaining");
         assertThat(AUTH.next().getTarget()).isEqualTo("/api/auth/signup");
         assertThat(AUTH.next().getTarget()).isEqualTo("/api/auth/.well-known/jwks.json");
 
@@ -262,14 +263,17 @@ class GatewayRoutingTest extends GatewayTestBase {
         assertThat(AUTH.next().getTarget()).isEqualTo("/api/auth/admin/test-tokens");
     }
 
-    /** S5: the verification endpoints need a signed-in user and reach auth through the auth-public route. */
+    /**
+     * S5: the verification endpoints need a signed-in user and reach auth through their own metered routes (the
+     * rate-limit headers show they are not the unmetered auth-public catch-all).
+     */
     @Test
     void emailVerificationNeedsAUserAndReachesAuth() throws Exception {
         for (String path : java.util.List.of("/api/auth/verify", "/api/auth/verify/resend")) {
             client.post().uri(path).bodyValue("{}").exchange().expectStatus().isUnauthorized();
             assertThat(AUTH.sawNothing()).isTrue();
             client.post().uri(path).header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-ver"))).bodyValue("{}")
-                    .exchange().expectStatus().isOk();
+                    .exchange().expectStatus().isOk().expectHeader().exists("X-RateLimit-Remaining");
             RecordedRequest seen = AUTH.next();
             assertThat(seen.getTarget()).isEqualTo(path);
             assertThat(identityFor(seen, "auth-service").subject()).isEqualTo("u-ver");

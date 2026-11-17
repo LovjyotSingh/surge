@@ -63,7 +63,7 @@ class SecurityConfig {
 
     /** The {@code aud} every user token must carry; auth-service's {@code TokenService.AUDIENCE}. */
     static final String AUDIENCE = "surge-api";
-    /** Email verification, routed to auth by the {@code auth-public} route ({@code /api/auth/**}). */
+    /** Email verification; RouteConfig gives both paths their own rate-limited routes to auth. */
     static final String VERIFY = "/api/auth/verify";
 
     @Bean

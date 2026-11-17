@@ -4,7 +4,7 @@ import { Link, Navigate, useNavigate, useSearchParams } from 'react-router'
 import { ApiError, api } from '../api/client'
 import { useAuth } from '../auth/context'
 import { loginPath, safeNext, verifyPath } from '../auth/redirect'
-import { GENERIC_ERROR } from '../format'
+import { GENERIC_ERROR, formatWait } from '../format'
 
 type Notice = { kind: 'error' | 'info'; text: string }
 
@@ -28,7 +28,7 @@ function verifyErrorText(err: unknown): string {
     if (slug === 'verification-code-expired') return 'That code has expired or was already used. Send a new code.'
     if (slug === 'already-verified') return 'Your email is already verified. Log out and back in to continue.'
     if (err.status === 400) return 'Enter the 6-digit code from the email.'
-    if (err.status === 429) return `Too many attempts — try again in ${err.retryAfterSeconds ?? 60}s.`
+    if (err.status === 429) return `Too many attempts — try again in ${formatWait(err.retryAfterSeconds ?? 60)}.`
   }
   return GENERIC_ERROR
 }
@@ -38,7 +38,7 @@ function resendErrorText(err: unknown): string {
     if (err.status === 429) {
       return err.retryAfterSeconds === undefined
         ? 'You asked for a new code very recently — wait a little and try again.'
-        : `You can ask for a new code in ${err.retryAfterSeconds}s.`
+        : `You can ask for a new code in ${formatWait(err.retryAfterSeconds)}.`
     }
     if (slugOf(err) === 'already-verified') return 'Your email is already verified. Log out and back in to continue.'
     if (slugOf(err) === 'mail-unavailable') return "We couldn't send the email right now. Try again in a minute."
@@ -171,7 +171,7 @@ export default function VerifyPage() {
           Verify
         </button>
         <button type="button" disabled={busy || coolingDown} onClick={() => void resend()}>
-          {coolingDown ? `Resend in ${secondsLeft}s` : 'Send a new code'}
+          {coolingDown ? `Resend in ${formatWait(secondsLeft)}` : 'Send a new code'}
         </button>
       </form>
       <p className="muted">

@@ -46,7 +46,12 @@ class RouteConfig {
      * Buckets (Redis token buckets, one per name; per IP means per {@link ClientAddress}):
      *
      * <pre>
-     * auth-entry   POST login/signup         per IP    5/s, burst 10   fails CLOSED (503) without Redis
+     * auth-login   /api/auth/login           per IP    5/s, burst 10   fails CLOSED (503) without Redis
+     * auth-signup  /api/auth/signup          per IP    3/min, burst 3  fails CLOSED (each signup sends an email)
+     * verify       /api/auth/verify          per user 10/min, burst 10 fails CLOSED (entering the emailed code)
+     * verify-ip    /api/auth/verify          per IP   30/min, burst 30 fails CLOSED
+     * resend       /api/auth/verify/resend   per user  3/min, burst 3  fails CLOSED (sends an email)
+     * resend-ip    /api/auth/verify/resend   per IP    5/min, burst 5  fails CLOSED
      * auth-me      /api/auth/me              per user  2/s, burst 4
      * catalog      GET /api/catalog/**       per IP   10/s, burst 20   (list, search, detail)
      * events       GET booking events        per IP   20/s, burst 40
@@ -58,8 +63,18 @@ class RouteConfig {
      * tickets      GET notification tickets  per user  1/s, burst 5
      * </pre>
      *
-     * Every bucket but auth-entry fails open when Redis is down (the stock limiter's behaviour): reads, holds and
-     * orders keep working, unmetered, through a Redis outage.
+     * The login, signup and email-verification buckets match their path whatever the method, so nothing on those
+     * paths reaches auth unmetered through {@code auth-public} (auth answers anything but POST with 405; the gateway
+     * denies anything but POST on the verify paths). Where a route has a per-user and a per-IP bucket, the per-user
+     * one runs first and the response carries the per-IP bucket's {@code X-RateLimit-*} headers.
+     *
+     * <p>The buckets marked CLOSED answer 503 when the limiter cannot reach Redis, so an outage cannot lift a limit
+     * on password guessing, code guessing or email sending. The others fail open (the stock limiter's behaviour),
+     * but only anonymous reads really keep working through an outage: every request with a bearer token also needs
+     * Redis for the token denylist ({@code TokenDenylist}), which fails closed with 503.
+     *
+     * <p>{@code POST /api/auth/logout} is not a route here: {@code LogoutConfig}'s RouterFunction answers it in the
+     * gateway, and WebFlux's RouterFunctionMapping (order -1) matches before any of these routes (order 1).
      */
     @Bean
     RouteLocator routes(RouteLocatorBuilder builder, RedisRateLimiter limiter, ProblemWriter problems,
@@ -72,8 +87,18 @@ class RouteConfig {
 
         KeyResolver perUser = KeyResolvers.user();
         KeyResolver perIp = KeyResolvers.clientIp(clients);
-        RateLimitFilter authLimit = new RateLimitFilter(limiter, problems, "auth-entry", perIp,
+        RateLimitFilter loginLimit = new RateLimitFilter(limiter, problems, "auth-login", perIp,
                 Limit.perSecond(5, 10), OnLimiterFailure.REFUSE);
+        RateLimitFilter signupLimit = new RateLimitFilter(limiter, problems, "auth-signup", perIp,
+                Limit.perMinute(3), OnLimiterFailure.REFUSE);
+        RateLimitFilter verifyLimit = new RateLimitFilter(limiter, problems, "verify", perUser,
+                Limit.perMinute(10), OnLimiterFailure.REFUSE);
+        RateLimitFilter verifyIpLimit = new RateLimitFilter(limiter, problems, "verify-ip", perIp,
+                Limit.perMinute(30), OnLimiterFailure.REFUSE);
+        RateLimitFilter resendLimit = new RateLimitFilter(limiter, problems, "resend", perUser,
+                Limit.perMinute(3), OnLimiterFailure.REFUSE);
+        RateLimitFilter resendIpLimit = new RateLimitFilter(limiter, problems, "resend-ip", perIp,
+                Limit.perMinute(5), OnLimiterFailure.REFUSE);
         RateLimitFilter meLimit = new RateLimitFilter(limiter, problems, "auth-me", perUser, Limit.perSecond(2, 4));
         RateLimitFilter catalogLimit = new RateLimitFilter(limiter, problems, "catalog", perIp,
                 Limit.perSecond(10, 20));
@@ -106,10 +131,19 @@ class RouteConfig {
                 .route("auth-me", r -> r.path("/api/auth/me")
                         .filters(f -> f.filter(meLimit))
                         .metadata(AUDIENCE, RouteAudiences.AUTH).uri(auth))
-                .route("auth-entry", r -> r.method(HttpMethod.POST).and()
-                        .path("/api/auth/login", "/api/auth/signup")
-                        .filters(f -> f.filter(authLimit))
+                .route("auth-login", r -> r.path("/api/auth/login")
+                        .filters(f -> f.filter(loginLimit))
                         .metadata(AUDIENCE, RouteAudiences.AUTH).uri(auth))
+                .route("auth-signup", r -> r.path("/api/auth/signup")
+                        .filters(f -> f.filter(signupLimit))
+                        .metadata(AUDIENCE, RouteAudiences.AUTH).uri(auth))
+                .route("auth-verify", r -> r.path("/api/auth/verify")
+                        .filters(f -> f.filter(verifyLimit).filter(verifyIpLimit))
+                        .metadata(AUDIENCE, RouteAudiences.AUTH).uri(auth))
+                .route("auth-verify-resend", r -> r.path("/api/auth/verify/resend")
+                        .filters(f -> f.filter(resendLimit).filter(resendIpLimit))
+                        .metadata(AUDIENCE, RouteAudiences.AUTH).uri(auth))
+                // everything else under /api/auth (the JWKS); SecurityConfig decides what may get here at all
                 .route("auth-public", r -> r.path("/api/auth/**")
                         .metadata(AUDIENCE, RouteAudiences.AUTH).uri(auth))
                 // --- catalog (public reads) ---
