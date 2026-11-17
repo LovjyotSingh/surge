@@ -23,7 +23,8 @@ import java.util.UUID;
  * Mints internal identity tokens with this issuer's private P-256 key (ES256, {@code typ} {@value InternalTokens#TYPE},
  * {@code kid} = issuer, 60 s lifetime). It refuses to mint anything a verifier would reject:
  * <ul>
- *   <li>the gateway signs a user id or nothing (anonymous) plus that user's roles;</li>
+ *   <li>the gateway signs a user id or nothing (anonymous) plus that user's roles, and for a user optionally
+ *       {@code ev} (email verified);</li>
  *   <li>a service ({@code svc:*}) signs only itself: {@code sub} = its issuer name, no roles. A service can never
  *       speak for a user.</li>
  * </ul>
@@ -81,6 +82,18 @@ public final class InternalTokenSigner {
      * @param requestId the current request id; left out when null or not a well-formed id
      */
     public String sign(String audience, String subject, Collection<String> roles, String requestId) {
+        return sign(audience, subject, roles, requestId, null);
+    }
+
+    /**
+     * As {@link #sign(String, String, Collection, String)}, stating whether the user's email is verified
+     * ({@code ev}). Only the gateway, and only for a signed-in user, may state it; null leaves the claim out.
+     */
+    public String sign(String audience, String subject, Collection<String> roles, String requestId,
+                       Boolean emailVerified) {
+        if (emailVerified != null && (!InternalTokens.GATEWAY.equals(issuer) || subject == null)) {
+            throw new IllegalArgumentException("Only the gateway states a signed-in user's email verification");
+        }
         if (audience == null || !InternalTokens.AUDIENCE.matcher(audience).matches()) {
             throw new IllegalArgumentException("Not a service name: " + audience);
         }
@@ -116,6 +129,9 @@ public final class InternalTokenSigner {
         if (requestId != null && InternalTokens.REQUEST_ID_VALUE.matcher(requestId).matches()) {
             claims.claim(InternalTokens.REQUEST_ID, requestId);
         }
+        if (emailVerified != null) {
+            claims.claim(InternalTokens.EMAIL_VERIFIED, emailVerified);
+        }
         SignedJWT jwt = new SignedJWT(header, claims.build());
         try {
             jwt.sign(signer);
@@ -135,6 +151,7 @@ public final class InternalTokenSigner {
         if (!issuer.equals(identity.issuer())) {
             throw new IllegalArgumentException("This signer is '" + issuer + "', not '" + identity.issuer() + "'");
         }
-        return sign(identity.audience(), identity.subject(), identity.roles(), identity.requestId());
+        return sign(identity.audience(), identity.subject(), identity.roles(), identity.requestId(),
+                identity.emailVerified());
     }
 }

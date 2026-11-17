@@ -25,6 +25,11 @@ public final class RedisKeys {
         return "userhold:" + eventId + ":" + userId;
     }
 
+    /** The user's active holds in every event (zset holdId → expiry millis), for the per-user cap (S5). */
+    public static String userHolds(String userId) {
+        return "userholds:" + userId;
+    }
+
     public static String seatChannel(long eventId) {
         return "seats:" + eventId;
     }

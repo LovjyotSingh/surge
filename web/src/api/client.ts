@@ -118,6 +118,23 @@ export const api = {
   signup: (email: string, password: string, displayName: string) =>
     call<TokenResponse>(`${AUTH}/signup`, { method: 'POST', body: { email, password, displayName } }),
   me: () => call<UserView>(`${AUTH}/me`, { auth: true }),
+  /**
+   * Revokes `token` at the gateway (204). The caller clears the session whatever happens, so this does not use the
+   * `auth` option: a 401 here (already expired or revoked) must not bounce the user to the login page.
+   */
+  logout: async (token: string, signal?: AbortSignal): Promise<void> => {
+    const res = await fetch(`${AUTH}/logout`, {
+      method: 'POST',
+      headers: { Accept: 'application/json', Authorization: `Bearer ${token}` },
+      signal,
+    })
+    if (!res.ok) throw await toApiError(res)
+  },
+  /** The emailed 6-digit code; answers a fresh token whose user (and `ev` claim) is verified. */
+  verifyEmail: (code: string) =>
+    call<TokenResponse>(`${AUTH}/verify`, { method: 'POST', body: { code }, auth: true }),
+  /** Emails a new code (202); 429 with Retry-After when asked again too soon. */
+  resendVerification: () => call<{ sent: boolean }>(`${AUTH}/verify/resend`, { method: 'POST', auth: true }),
 
   catalogEvents: (page = 0, size = 100) => call<CatalogPage>(`${CATALOG}/events${query({ page, size })}`),
   catalogEvent: (id: number) => call<CatalogEvent>(`${CATALOG}/events/${id}`),

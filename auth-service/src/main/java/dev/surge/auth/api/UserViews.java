@@ -11,7 +11,7 @@ public final class UserViews {
     }
 
     public static UserView of(User u) {
-        return new UserView(u.publicId(), u.getEmail(), u.getDisplayName(), roles(u.getRole()));
+        return new UserView(u.publicId(), u.getEmail(), u.getDisplayName(), roles(u.getRole()), u.isEmailVerified());
     }
 
     /** ADMIN accounts are also USERs, so USER-only checks never lock an admin out. */
@@ -19,7 +19,8 @@ public final class UserViews {
         return role == Role.ADMIN ? List.of("USER", "ADMIN") : List.of("USER");
     }
 
+    /** A load-test identity: never emailed, so treated as verified (its tokens carry {@code ev: true}). */
     public static UserView synthetic(String id) {
-        return new UserView(id, id + LOADTEST_DOMAIN, id, List.of("USER"));
+        return new UserView(id, id + LOADTEST_DOMAIN, id, List.of("USER"), true);
     }
 }

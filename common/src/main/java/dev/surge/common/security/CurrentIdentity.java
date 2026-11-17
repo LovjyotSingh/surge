@@ -30,6 +30,20 @@ public final class CurrentIdentity {
     }
 
     /**
+     * The signed-in user's id when the gateway stated their email as verified (S5): 401 {@code missing-user} as in
+     * {@link #requireUser()}, and 403 {@code email-unverified} for a user whose email is not (or not stated as)
+     * verified.
+     */
+    public static String requireVerifiedUser() {
+        InternalIdentity identity = get().filter(InternalIdentity::isUser)
+                .orElseThrow(InternalIdentityException::missingUser);
+        if (!identity.isEmailVerified()) {
+            throw InternalIdentityException.emailUnverified();
+        }
+        return identity.subject();
+    }
+
+    /**
      * The identity of a call made by service {@code issuer} itself ({@code svc:notification}: issuer and subject both
      * that name), for internal endpoints. 401 {@code unauthorized} without an identity; 403 {@code forbidden} for any
      * other caller, gateway users and admins included.

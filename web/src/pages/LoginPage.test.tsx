@@ -79,6 +79,23 @@ describe('LoginPage', () => {
     expect(new Headers(init.headers).get('Authorization')).toBe('Bearer jwt-123')
   })
 
+  it('nudges a user whose email is not verified to the verify page', async () => {
+    const user = userEvent.setup()
+    fetchMock.mockResolvedValueOnce(json(200, { ...tokenResponse, user: { ...tokenResponse.user, emailVerified: false } }))
+    renderAt('/login?next=/events/3')
+    await fillAndSubmit(user, 'Log in')
+    expect(await screen.findByTestId('where')).toHaveTextContent('/verify?next=/events/3')
+  })
+
+  it('goes straight to next when the email is verified', async () => {
+    const user = userEvent.setup()
+    fetchMock.mockResolvedValueOnce(json(200, { ...tokenResponse, user: { ...tokenResponse.user, emailVerified: true } }))
+    renderAt('/login?next=/events/3')
+    await fillAndSubmit(user, 'Log in')
+    expect(await screen.findByTestId('where')).toHaveTextContent('/events/3')
+    expect(screen.getByTestId('where')).not.toHaveTextContent('verify')
+  })
+
   it('defaults to the home page when next is missing or not a local path', async () => {
     for (const next of ['', '?next=https://evil.example', '?next=//evil.example', '?next=javascript:alert(1)', '?next=/%09/evil.example', '?next=%5C%5Cevil']) {
       const user = userEvent.setup()
@@ -159,19 +176,39 @@ describe('LoginPage', () => {
 })
 
 describe('SignupPage', () => {
-  it('signs up, logs in and goes to next', async () => {
+  it('signs up, logs in and goes to verify the email, then next', async () => {
     const user = userEvent.setup()
-    fetchMock.mockResolvedValueOnce(json(201, tokenResponse))
+    fetchMock.mockResolvedValueOnce(json(201, { ...tokenResponse, user: { ...tokenResponse.user, emailVerified: false } }))
     renderAt('/signup?next=/search')
     await user.type(screen.getByLabelText('Name'), 'Asha')
     await fillAndSubmit(user, 'Create account')
-    expect(await screen.findByTestId('where')).toHaveTextContent('/search')
+    expect(await screen.findByTestId('where')).toHaveTextContent('/verify?next=/search')
     expect(getSession()?.token).toBe('jwt-123')
     expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({
       email: 'asha@example.com',
       password: 'hunter2hunter2',
       displayName: 'Asha',
     })
+  })
+
+  it('explains why a password was refused, without repeating it', async () => {
+    const user = userEvent.setup()
+    fetchMock.mockResolvedValueOnce(
+      json(400, {
+        type: 'https://surge.dev/problems/validation-failed',
+        title: 'Validation failed',
+        status: 400,
+        errors: { password: 'is one of the most common passwords; choose one that is harder to guess' },
+      }),
+    )
+    renderAt('/signup')
+    await user.type(screen.getByLabelText('Name'), 'Asha')
+    await fillAndSubmit(user, 'Create account', 'password1')
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('This password is one of the most common passwords')
+    expect(alert).not.toHaveTextContent('password1')
+    expect(screen.getByLabelText('Password')).toHaveAttribute('aria-invalid', 'true')
+    expect(getSession()).toBeNull()
   })
 
   it('says the email is already registered on 409', async () => {

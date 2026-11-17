@@ -10,6 +10,8 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
+import java.util.UUID;
 import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
 import org.springframework.security.oauth2.jwt.JwsHeader;
 import org.springframework.security.oauth2.jwt.JwtClaimsSet;
@@ -18,13 +20,20 @@ import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 import org.springframework.stereotype.Service;
 
+/**
+ * Issues the user JWTs the gateway verifies (RS256, {@code kid} of the current key). Every token is for audience
+ * {@value #AUDIENCE} only and has its own {@code jti}, which logout puts on the gateway's denylist (SEC-18).
+ */
 @Service
 public class TokenService {
     public static final String ISSUER = "surge-auth";
-    public static final Duration LIFETIME = Duration.ofMinutes(60);
+    /** The gateway accepts a user token only when its {@code aud} contains this. */
+    public static final String AUDIENCE = "surge-api";
+    public static final Duration LIFETIME = Duration.ofMinutes(30);
     /** Load-test tokens are short-lived and flagged so the gateway can refuse them in production. */
     public static final Duration LOADTEST_LIFETIME = Duration.ofMinutes(15);
     public static final String LOADTEST_CLAIM = "lt";
+    public static final String EMAIL_VERIFIED_CLAIM = "ev";
 
     private final JwtEncoder encoder;
     private final Clock clock;
@@ -48,11 +57,15 @@ public class TokenService {
         Instant expiresAt = now.plus(lifetime);
         JwtClaimsSet.Builder builder = JwtClaimsSet.builder()
                 .issuer(ISSUER)
+                .audience(List.of(AUDIENCE))
+                .id(UUID.randomUUID().toString())
                 .subject(user.id())
                 .issuedAt(now)
                 .expiresAt(expiresAt)
                 .claim("email", user.email())
-                .claim("roles", user.roles());
+                .claim("roles", user.roles())
+                // S5: email verified; booking refuses holds without it (the gateway copies it into X-Surge-Identity)
+                .claim(EMAIL_VERIFIED_CLAIM, user.emailVerified());
         if (loadTest) {
             builder.claim(LOADTEST_CLAIM, true);
         }

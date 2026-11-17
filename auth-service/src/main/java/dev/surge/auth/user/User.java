@@ -28,6 +28,9 @@ public class User {
     private Role role;
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
+    /** Set once the user enters the emailed 6-digit code (S5); the admin is verified by the seeder. */
+    @Column(name = "email_verified", nullable = false)
+    private boolean emailVerified;
 
     protected User() {
     }
@@ -71,6 +74,14 @@ public class User {
 
     public Instant getCreatedAt() {
         return createdAt;
+    }
+
+    public boolean isEmailVerified() {
+        return emailVerified;
+    }
+
+    public void setEmailVerified(boolean emailVerified) {
+        this.emailVerified = emailVerified;
     }
 
     public String publicId() {

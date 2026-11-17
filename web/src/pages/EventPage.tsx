@@ -1,24 +1,37 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router'
+import { Link, useNavigate, useParams } from 'react-router'
 import { ApiError, api } from '../api/client'
 import type { CatalogEvent, EventDetail, HoldResponse, OrderResponse, SeatStateChange } from '../api/types'
 import { useAuth } from '../auth/context'
-import { loginPath } from '../auth/redirect'
+import { loginPath, verifyPath } from '../auth/redirect'
 import Countdown from '../components/Countdown'
 import SeatMap from '../components/SeatMap'
 import TicketLink from '../components/TicketLink'
 import { GENERIC_ERROR, formatInr, formatSaleTime } from '../format'
 import useSeatStream from '../hooks/useSeatStream'
 
-type Notice = { kind: 'error' | 'info'; text: string }
+type Notice = { kind: 'error' | 'info'; text: string; link?: { to: string; label: string } }
 
 function slugOf(err: ApiError): string {
   return err.problem.type.split('/').pop() ?? ''
 }
 
-function describe(err: unknown): Notice {
+function describe(err: unknown, eventId?: number): Notice {
   if (err instanceof ApiError) {
     const slug = slugOf(err)
+    if (slug === 'email-unverified') {
+      return {
+        kind: 'error',
+        text: 'Verify your email before holding seats: enter the 6-digit code we emailed you.',
+        link: { to: verifyPath(eventId === undefined ? '/' : `/events/${eventId}`), label: 'Verify your email' },
+      }
+    }
+    if (slug === 'too-many-holds') {
+      return {
+        kind: 'error',
+        text: 'You are already holding seats for other events. Buy them or let a hold expire, then try again.',
+      }
+    }
     if (err.status === 402) {
       return { kind: 'error', text: 'Payment failed — your seats are still held. Try again.' }
     }
@@ -152,7 +165,7 @@ function EventView({ eventId }: { eventId: number }) {
       setHold(res)
       setSelected(new Set(res.seatIds))
     } catch (err) {
-      setNotice(describe(err))
+      setNotice(describe(err, eventId))
       if (err instanceof ApiError) {
         const slug = slugOf(err)
         if (slug === 'seat-taken') setSelected(new Set())
@@ -232,6 +245,12 @@ function EventView({ eventId }: { eventId: number }) {
         {notice && (
           <p role={notice.kind === 'error' ? 'alert' : 'status'} className={`notice ${notice.kind}`}>
             {notice.text}
+            {notice.link && (
+              <>
+                {' '}
+                <Link to={notice.link.to}>{notice.link.label}</Link>
+              </>
+            )}
           </p>
         )}
 

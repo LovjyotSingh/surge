@@ -113,6 +113,27 @@ afterEach(() => {
 })
 
 describe('EventPage', () => {
+  it('sends an unverified user to verify their email when the hold is refused', async () => {
+    const user = userEvent.setup()
+    mocked.hold.mockRejectedValueOnce(new ApiError(problem('email-unverified', 403)))
+    renderPage()
+    await pickSeatAndHold(user)
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Verify your email before holding seats')
+    const link = screen.getByRole('link', { name: 'Verify your email' })
+    expect(link).toHaveAttribute('href', '/verify?next=/events/1')
+    await user.click(link)
+    expect(await screen.findByTestId('where')).toHaveTextContent('/verify?next=/events/1')
+  })
+
+  it('explains the per-user hold cap', async () => {
+    const user = userEvent.setup()
+    mocked.hold.mockRejectedValueOnce(new ApiError(problem('too-many-holds', 409)))
+    renderPage()
+    await pickSeatAndHold(user)
+    expect(await screen.findByRole('alert')).toHaveTextContent('already holding seats for other events')
+  })
+
   it('books seats end to end', async () => {
     const user = userEvent.setup()
     mocked.hold.mockResolvedValue(hold)

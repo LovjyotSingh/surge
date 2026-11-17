@@ -23,7 +23,7 @@ class InternalUserControllerIdentityTest {
 
     @Test
     void notificationGetsTheUser() {
-        UserView view = new UserView("u-1", "u-1@example.com", "Ada", List.of("USER"));
+        UserView view = new UserView("u-1", "u-1@example.com", "Ada", List.of("USER"), true);
         when(lookup.find("u-1")).thenReturn(view);
         IdentityTokens.runAs(IdentityTokens.service("svc:notification", AUDIENCE), AUDIENCE,
                 () -> assertThat(controller.get("u-1")).isSameAs(view));

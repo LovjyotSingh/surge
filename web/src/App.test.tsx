@@ -48,10 +48,90 @@ describe('App header', () => {
     expect(screen.queryByRole('link', { name: 'Ops' })).not.toBeInTheDocument()
     expect(screen.getByText('Asha')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Log out' }))
-    expect(getSession()).toBeNull()
+    await waitFor(() => expect(getSession()).toBeNull())
     expect(screen.getByRole('link', { name: 'Log in' })).toBeInTheDocument()
   })
+})
 
+describe('logout', () => {
+  function logoutCalls() {
+    return fetchMock.mock.calls.filter(([url]) => String(url) === '/api/auth/logout')
+  }
+
+  it('clears the session first, then revokes the token at the gateway in the background', async () => {
+    signIn(['USER'], 3_600_000, 'tok-live')
+    let sessionWhenRevoked: unknown = 'not called'
+    let finishRevoke: (r: Response) => void = () => {}
+    fetchMock.mockImplementation((url: string) => {
+      if (url !== '/api/auth/logout') return Promise.resolve(new Response(JSON.stringify(emptyPage), { status: 200 }))
+      sessionWhenRevoked = getSession()
+      // the revoke is still in flight while the user is already logged out
+      return new Promise<Response>((resolve) => {
+        finishRevoke = resolve
+      })
+    })
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(screen.getByRole('button', { name: 'Log out' }))
+    expect(getSession()).toBeNull()
+    expect(screen.getByRole('link', { name: 'Log in' })).toBeInTheDocument()
+    await waitFor(() => expect(logoutCalls()).toHaveLength(1))
+    expect(sessionWhenRevoked).toBeNull()
+    const init = logoutCalls()[0][1] as RequestInit
+    expect(init.method).toBe('POST')
+    expect(new Headers(init.headers).get('Authorization')).toBe('Bearer tok-live')
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+    finishRevoke(new Response(null, { status: 204 }))
+  })
+
+  it('gives up on a hanging revoke after about 3 seconds', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      signIn(['USER'], 3_600_000, 'tok-slow')
+      let signal: AbortSignal | undefined
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (url !== '/api/auth/logout') return Promise.resolve(new Response(JSON.stringify(emptyPage)))
+        signal = init?.signal ?? undefined
+        return new Promise<Response>(() => {})
+      })
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      render(<App />)
+      await user.click(screen.getByRole('button', { name: 'Log out' }))
+      expect(getSession()).toBeNull()
+      await waitFor(() => expect(signal).toBeDefined())
+      expect(signal?.aborted).toBe(false)
+      vi.advanceTimersByTime(3_000)
+      expect(signal?.aborted).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('still logs out on this device when the call fails', async () => {
+    for (const failure of [
+      () => Promise.reject(new TypeError('Failed to fetch')),
+      () => Promise.resolve(new Response(JSON.stringify({ title: 'x', status: 503 }), { status: 503 })),
+      () => Promise.resolve(new Response(JSON.stringify({ title: 'x', status: 401 }), { status: 401 })),
+    ]) {
+      signIn(['USER'])
+      window.history.pushState({}, '', '/')
+      fetchMock.mockImplementation((url: string) =>
+        url === '/api/auth/logout' ? failure() : Promise.resolve(new Response(JSON.stringify(emptyPage))),
+      )
+      const user = userEvent.setup()
+      const { unmount } = render(<App />)
+      await user.click(screen.getByRole('button', { name: 'Log out' }))
+      expect(getSession()).toBeNull()
+      await waitFor(() => expect(logoutCalls().length).toBeGreaterThan(0))
+      // a failed (even 401) revoke never bounces the user to the login page
+      expect(window.location.pathname).toBe('/')
+      fetchMock.mockClear()
+      unmount()
+    }
+  })
+})
+
+describe('App header for admins', () => {
   it('shows Ops for an ADMIN', () => {
     signIn(['ADMIN'])
     render(<App />)

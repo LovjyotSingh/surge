@@ -3,6 +3,11 @@ export function loginPath(next: string): string {
   return `/login?next=${encodeURIComponent(next).replace(/%2F/g, '/')}`
 }
 
+/** `/verify`, coming back to `next` afterwards (home needs no parameter). */
+export function verifyPath(next: string): string {
+  return next === '/' ? '/verify' : `/verify?next=${encodeURIComponent(next).replace(/%2F/g, '/')}`
+}
+
 /**
  * Only same-origin paths are honoured after login; anything else goes home. The raw value is rejected outright if it
  * holds a control character or a backslash (the URL parser silently drops tabs and newlines and treats `\` as `/`, so

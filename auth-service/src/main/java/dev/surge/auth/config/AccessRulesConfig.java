@@ -15,6 +15,7 @@ import org.springframework.http.HttpMethod;
  * GET /api/auth/.well-known/jwks.json      open: public key material the gateway fetches directly, without a token
  * /api/auth/admin, /api/auth/admin/**      gateway, ADMIN
  * /api/auth/me, /api/auth/me/**            gateway, signed-in user
+ * POST /api/auth/verify, /verify/resend    gateway, signed-in user (email verification code, S5)
  * POST /api/auth/login, /api/auth/signup   gateway, anonymous included
  * GET /internal/users/*                    svc:notification only (the ticket email lookup)
  * </pre>
@@ -30,6 +31,8 @@ class AccessRulesConfig {
                 .requestMatchers(HttpMethod.GET, "/api/auth/.well-known/jwks.json").permitAll()
                 .requestMatchers("/api/auth/admin", "/api/auth/admin/**").access(InternalAccess.gatewayAdmin())
                 .requestMatchers("/api/auth/me", "/api/auth/me/**").access(InternalAccess.gatewayUser())
+                .requestMatchers(HttpMethod.POST, "/api/auth/verify", "/api/auth/verify/resend")
+                .access(InternalAccess.gatewayUser())
                 .requestMatchers(HttpMethod.POST, "/api/auth/login", "/api/auth/signup")
                 .access(InternalAccess.fromGateway())
                 .requestMatchers(HttpMethod.GET, "/internal/users/*")

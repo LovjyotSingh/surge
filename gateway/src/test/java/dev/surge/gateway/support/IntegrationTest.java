@@ -21,7 +21,11 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
  * <p>The test client connects over loopback, which is the trusted proxy here (as nginx is in compose), so each test
  * picks its client address with {@code X-Forwarded-For} ({@link GatewayTestBase#clientIp}). The rate limiter's
  * {@link ReactiveStringRedisTemplate} is a Mockito spy delegating to the real one, so a test can make Redis fail;
- * Mockito resets it after each test.
+ * Mockito resets it after each test. The token denylist reads the same template, but only through {@code hasKey} and
+ * {@code opsForValue()}, so stubbing the limiter's script ({@code execute}) leaves logout and revocation working.
+ *
+ * <p>{@link TestClocks} adds the JWKS cache's {@code jwksClock} ({@link MutableClock}); nothing else in the gateway
+ * takes a {@code Clock}.
  */
 @Target(ElementType.TYPE)
 @Retention(RetentionPolicy.RUNTIME)
@@ -31,6 +35,6 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
         "surge.security.trusted-proxies=127[.]0[.]0[.]1|0:0:0:0:0:0:0:1"})
 @AutoConfigureWebTestClient
 @MockitoSpyBean(types = ReactiveStringRedisTemplate.class)
-@Import(TestcontainersConfig.class)
+@Import({TestcontainersConfig.class, TestClocks.class})
 public @interface IntegrationTest {
 }

@@ -27,10 +27,14 @@ public class HoldController {
         this.holdLimit = props.holds();
     }
 
-    /** {@code @CurrentUser} is declared before the body so a missing user (401) wins over body validation (400). */
+    /**
+     * {@code @CurrentUser} is declared before the body so a missing user (401) and an unverified email (403
+     * {@code email-unverified}, S5) win over body validation (400).
+     */
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public HoldResponse hold(@CurrentUser String userId, @Valid @RequestBody HoldRequest request) {
+    public HoldResponse hold(@CurrentUser(verifiedEmail = true) String userId,
+                             @Valid @RequestBody HoldRequest request) {
         // Consume before the service call: rejected holds still cost a token.
         RateDecision d = rateLimiter.tryConsume(RedisKeys.holdRate(userId), holdLimit.capacity(),
                 holdLimit.refillPerSecond());

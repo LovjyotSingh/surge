@@ -288,6 +288,36 @@ class InternalTokenVerifierTest {
                 .isEqualTo("u-1");
     }
 
+    /** S5: the gateway's {@code ev} reaches the identity; absent means "not stated", which is never "verified". */
+    @Test
+    void emailVerifiedIsReadFromGatewayUserTokens() {
+        assertThat(verifier.verify(gatewaySigner.sign(AUDIENCE, "u-1", List.of("USER"), null, true))
+                .isEmailVerified()).isTrue();
+        InternalIdentity unverified = verifier.verify(gatewaySigner.sign(AUDIENCE, "u-1", List.of("USER"), null,
+                false));
+        assertThat(unverified.isEmailVerified()).isFalse();
+        assertThat(unverified.emailVerified()).isFalse();
+        InternalIdentity unstated = verifier.verify(gatewaySigner.sign(AUDIENCE, "u-1", List.of("USER"), null));
+        assertThat(unstated.emailVerified()).isNull();
+        assertThat(unstated.isEmailVerified()).isFalse();
+        assertThat(verifier.verify(gatewaySigner.sign(AUDIENCE, null, List.of(), null)).isEmailVerified()).isFalse();
+    }
+
+    @Test
+    void rejectsAnEmailVerifiedClaimAnywhereElse() {
+        // not a boolean
+        for (Object bad : new Object[] {"true", 1, List.of(true)}) {
+            assertRejected(es256(GATEWAY, "gateway", claims("gateway", AUDIENCE, NOW, NOW.plusSeconds(60))
+                    .claim("ev", bad).build()), Reason.EMAIL_VERIFIED);
+        }
+        // an anonymous gateway token states no email
+        assertRejected(es256(GATEWAY, "gateway", claims("gateway", AUDIENCE, NOW, NOW.plusSeconds(60)).subject(null)
+                .claim("roles", List.of()).claim("ev", true).build()), Reason.EMAIL_VERIFIED);
+        // a service token can never vouch for an email: rejected as impersonation (it already speaks for no user)
+        assertThatThrownBy(() -> verifier.verify(es256(BOOKING, "svc:booking", bookingClaims().claim("ev", true)
+                .build()))).isInstanceOf(InvalidInternalTokenException.class);
+    }
+
     @Test
     void rejectsAGatewayTokenThatNamesAService() {
         assertRejected(es256(GATEWAY, "gateway", claims("gateway", AUDIENCE, NOW, NOW.plusSeconds(60))

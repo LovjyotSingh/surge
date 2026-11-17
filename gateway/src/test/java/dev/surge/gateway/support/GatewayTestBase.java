@@ -41,6 +41,7 @@ import org.springframework.test.web.reactive.server.WebTestClient;
 public abstract class GatewayTestBase {
 
     public static final String ISSUER = "surge-auth";
+    public static final String AUDIENCE = "surge-api";
     protected static final String KID = "test-key-1";
 
     protected static final RSAKey KEY = generate(KID);
@@ -90,6 +91,10 @@ public abstract class GatewayTestBase {
 
     /** This test's own client address, so per-IP buckets never carry over from another test. */
     protected String clientIp;
+
+    /** The JWKS cache's clock: advance it past {@code JwksCache.COOLDOWN} to allow the next key-set fetch. */
+    @Autowired
+    protected MutableClock jwksClock;
 
     @LocalServerPort
     protected int port;
@@ -141,11 +146,16 @@ public abstract class GatewayTestBase {
         return sign(sub, email, java.util.Map.of(), roles, issuer, expires, signWith);
     }
 
+    /**
+     * Like auth's tokens: {@code aud ["surge-api"]} and a fresh {@code jti} unless {@code extra} says otherwise; an
+     * {@code extra} entry with a null value removes that claim.
+     */
     private static String sign(String sub, String email, java.util.Map<String, Object> extra, Object roles,
             String issuer, Instant expires,
             RSAKey signWith) {
         JWTClaimsSet.Builder claims = new JWTClaimsSet.Builder().subject(sub).issuer(issuer)
-                .issueTime(Date.from(Instant.now().minus(10, ChronoUnit.MINUTES))).claim("email", email);
+                .issueTime(Date.from(Instant.now().minus(10, ChronoUnit.MINUTES))).claim("email", email)
+                .audience(List.of(AUDIENCE)).jwtID(java.util.UUID.randomUUID().toString());
         extra.forEach(claims::claim);
         if (roles != null) {
             claims.claim("roles", roles);

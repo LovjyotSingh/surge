@@ -33,9 +33,11 @@ public final class InternalIdentityAuthenticationConverter implements Converter<
     @Override
     public AbstractAuthenticationToken convert(Jwt jwt) {
         List<String> roles = jwt.getClaimAsStringList(InternalTokens.ROLES);
+        // ev arrives as a Boolean (InternalTokenVerifier refuses any other type, and refuses it on non-user tokens)
+        Boolean emailVerified = jwt.getClaim(InternalTokens.EMAIL_VERIFIED) instanceof Boolean ev ? ev : null;
         InternalIdentity identity = new InternalIdentity(jwt.getClaimAsString("iss"), jwt.getSubject(),
                 roles == null ? null : new LinkedHashSet<>(roles), jwt.getClaimAsString(InternalTokens.REQUEST_ID),
-                audience);
+                audience, emailVerified);
         List<GrantedAuthority> authorities = new ArrayList<>();
         if (identity.fromGateway()) {
             identity.roles().forEach(role -> authorities.add(new SimpleGrantedAuthority("ROLE_" + role)));

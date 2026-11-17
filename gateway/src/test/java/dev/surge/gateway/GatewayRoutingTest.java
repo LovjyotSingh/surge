@@ -262,6 +262,26 @@ class GatewayRoutingTest extends GatewayTestBase {
         assertThat(AUTH.next().getTarget()).isEqualTo("/api/auth/admin/test-tokens");
     }
 
+    /** S5: the verification endpoints need a signed-in user and reach auth through the auth-public route. */
+    @Test
+    void emailVerificationNeedsAUserAndReachesAuth() throws Exception {
+        for (String path : java.util.List.of("/api/auth/verify", "/api/auth/verify/resend")) {
+            client.post().uri(path).bodyValue("{}").exchange().expectStatus().isUnauthorized();
+            assertThat(AUTH.sawNothing()).isTrue();
+            client.post().uri(path).header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-ver"))).bodyValue("{}")
+                    .exchange().expectStatus().isOk();
+            RecordedRequest seen = AUTH.next();
+            assertThat(seen.getTarget()).isEqualTo(path);
+            assertThat(identityFor(seen, "auth-service").subject()).isEqualTo("u-ver");
+        }
+        // only POST, and nothing below them
+        client.get().uri("/api/auth/verify").header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-ver"))).exchange()
+                .expectStatus().isForbidden();
+        client.post().uri("/api/auth/verify/other").header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-ver")))
+                .exchange().expectStatus().isForbidden();
+        assertThat(AUTH.sawNothing()).isTrue();
+    }
+
     @Test
     void slowNonStreamEventsReadTimesOutWith504() throws Exception {
         // headers after 2 s; the route timeout in tests is 1.5 s (the stream route is exempt, other event reads are not)

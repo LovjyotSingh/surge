@@ -43,7 +43,9 @@ import java.util.Set;
  *       most 60 s old, and {@code nbf}, if present, has been reached (5 s skew);</li>
  *   <li>a gateway token's {@code sub} is absent (anonymous) or a user id; a service token's {@code sub} is its own
  *       issuer and it has no roles, so a service can never act as a user or claim a role;</li>
- *   <li>{@code roles} and {@code rid} are well formed (exact upper-case role tokens).</li>
+ *   <li>{@code roles} and {@code rid} are well formed (exact upper-case role tokens);</li>
+ *   <li>{@code ev}, if present, is a boolean on a gateway token with a user {@code sub}: only the gateway states
+ *       whether a signed-in user's email is verified.</li>
  * </ul>
  * Several keys may share a {@code kid}, which is how a key is rotated: publish the new key next to the old one, then
  * switch the signer. Time is the system UTC clock, never an application {@code Clock} bean.
@@ -192,7 +194,16 @@ public final class InternalTokenVerifier {
             }
             requestId = rid;
         }
-        return new Verified(jwt, claims, new InternalIdentity(kid, subject, roles, requestId, audience));
+        Boolean emailVerified = null;
+        if (claims.getClaim(InternalTokens.EMAIL_VERIFIED) != null) {
+            if (!(claims.getClaim(InternalTokens.EMAIL_VERIFIED) instanceof Boolean ev)
+                    || !InternalTokens.GATEWAY.equals(kid) || subject == null) {
+                throw invalid(Reason.EMAIL_VERIFIED);
+            }
+            emailVerified = ev;
+        }
+        return new Verified(jwt, claims, new InternalIdentity(kid, subject, roles, requestId, audience,
+                emailVerified));
     }
 
     private boolean verifiesWithAnyKeyOf(SignedJWT jwt, String kid) {
