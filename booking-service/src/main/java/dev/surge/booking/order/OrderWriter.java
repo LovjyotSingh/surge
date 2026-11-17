@@ -12,6 +12,8 @@ import dev.surge.common.messaging.OrderConfirmed;
 import dev.surge.common.messaging.TicketRequested;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -51,7 +53,11 @@ public class OrderWriter {
 
     private Order doConfirm(ActiveHold hold, Map<Long, BigDecimal> prices, String idempotencyKey,
                             Instant now) {
-        List<Seat> found = seats.findAllById(hold.seatIds());
+        // Ascending seat id, like the UPDATEs (hibernate.order_updates in application.yml): every transaction that
+        // locks several seats takes them in the same order as the sale-move guard's locking read, so a checkout and
+        // a sale move can wait for each other but never deadlock.
+        List<Seat> found = new ArrayList<>(seats.findAllById(hold.seatIds()));
+        found.sort(Comparator.comparing(Seat::getId));
         if (found.size() != hold.seatIds().size()) {
             throw new SeatConflictException();
         }

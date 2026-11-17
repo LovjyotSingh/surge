@@ -33,6 +33,9 @@ spring:
       hibernate:
         jdbc:
           time_zone: UTC
+        # UPDATEs flush in primary-key order, so a checkout locks its seats in ascending id order like the sale-move
+        # guard's locking read (EventScheduledHandler): the two can wait for each other but never deadlock.
+        order_updates: true
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
     properties:

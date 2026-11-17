@@ -37,6 +37,19 @@ class PaymentModeWiringTest {
                 .run(ctx -> assertThat(ctx.getStartupFailure()).rootCause().hasMessageContaining("wrong service"));
     }
 
+    /** In prod the payment client must name payment-service exactly: a stub host or an address fails startup. */
+    @Test
+    void inProdTheBaseUrlMustBePaymentService() {
+        runner.withPropertyValues("surge.env=prod", "surge.payment.mode=http",
+                        "surge.payment.base-url=http://payment-service:8084")
+                .run(ctx -> assertThat(ctx.getBean(PaymentGateway.class)).isInstanceOf(HttpPaymentGateway.class));
+        for (String other : new String[] {"http://localhost:8084", "http://10.0.0.5:8084", "http://payments"}) {
+            runner.withPropertyValues("surge.env=prod", "surge.payment.mode=http", "surge.payment.base-url=" + other)
+                    .run(ctx -> assertThat(ctx.getStartupFailure()).as(other).rootCause()
+                            .hasMessageContaining("must name payment-service"));
+        }
+    }
+
     @Test
     void fakeIsTheDefaultAndExplicitFakeAgrees() {
         runner.run(ctx -> assertThat(ctx.getBean(PaymentGateway.class)).isInstanceOf(FakePaymentGateway.class));

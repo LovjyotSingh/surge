@@ -27,12 +27,18 @@ public final class InternalAudiences {
      * startup and never from a request. When the base URL's host names a service ({@code http://catalog-service},
      * resolved by the load balancer), that name IS the audience, and it must be the service the client is for: a
      * client wired to the wrong service fails startup instead of sending tokens the target refuses (or another service
-     * accepts). Any other host (a direct address, a test stub) keeps the client's own target service.
+     * accepts). In {@code dev} any other host (a direct address, a test stub) keeps the client's own target service; in
+     * {@code prod} the host must BE the target's name, exactly ({@code http://catalog-service} or
+     * {@code http://catalog-service:8083}), so a mistyped or redirected base URL fails startup instead of sending
+     * catalog-service's tokens somewhere else.
      */
-    public static String forClient(String service, String baseUrl) {
+    public static String forClient(String service, String baseUrl, SurgeEnv env) {
         if (!KNOWN.contains(service)) {
             throw new IllegalArgumentException("Unknown service '" + service + "', expected one of "
                     + KNOWN.stream().sorted().toList());
+        }
+        if (env == null) {
+            throw new IllegalArgumentException("The environment (SurgeEnv) is required");
         }
         String host;
         try {
@@ -44,6 +50,10 @@ public final class InternalAudiences {
                 Locale.ROOT))) {
             throw new IllegalStateException("The " + service + " client's base URL names " + host
                     + ": its identity tokens would be addressed to the wrong service");
+        }
+        if (env == SurgeEnv.PROD && !service.equals(host)) {
+            throw new IllegalStateException("SURGE_ENV=prod: the " + service + " client's base URL must name "
+                    + service + " as its host, exactly (http://" + service + "[:port])");
         }
         return service;
     }

@@ -118,7 +118,8 @@ class HttpPaymentGatewayTest {
     @Test
     void everyAttemptIsSignedAsBookingForPayment() throws Exception {
         HttpPaymentGateway signed = new HttpPaymentGateway(PaymentClientConfig.restClient(RestClient.builder(),
-                server.url("/").toString(), IdentityTokens.signer("svc:booking")), breaker, retries.retry("signed"));
+                server.url("/").toString(), IdentityTokens.signer("svc:booking"), SurgeEnv.DEV), breaker,
+                retries.retry("signed"));
         server.enqueue(json(503, "{}"));
         enqueue(1, 200, APPROVED);
         MDC.put(RequestIdFilter.MDC_KEY, "req-pay-1");

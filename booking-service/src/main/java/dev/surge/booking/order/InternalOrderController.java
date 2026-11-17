@@ -26,13 +26,29 @@ public class InternalOrderController {
         this.reader = reader;
     }
 
-    /** {@code userId} is optional for binding only, so the caller check runs before any parameter is judged. */
+    /**
+     * Both parameters bind as plain strings (nothing can fail to bind), so the caller check runs before any parameter
+     * is judged: only {@code svc:notification} ever hears that one is malformed.
+     */
     @GetMapping("/{orderId}")
-    public OrderResponse get(@PathVariable long orderId, @RequestParam(required = false) String userId) {
+    public OrderResponse get(@PathVariable String orderId, @RequestParam(required = false) String userId) {
         CurrentIdentity.requireService(InternalTokens.SVC_NOTIFICATION);
+        long id = parseOrderId(orderId);
         if (!InternalTokens.isUserId(userId)) {
             throw new InvalidParameterException("userId must be a user id");
         }
-        return reader.getForUser(userId, orderId);
+        return reader.getForUser(userId, id);
+    }
+
+    private static long parseOrderId(String raw) {
+        try {
+            long id = Long.parseLong(raw);
+            if (id > 0) {
+                return id;
+            }
+        } catch (NumberFormatException ignored) {
+            // falls through to the same message
+        }
+        throw new InvalidParameterException("orderId must be a positive whole number");
     }
 }

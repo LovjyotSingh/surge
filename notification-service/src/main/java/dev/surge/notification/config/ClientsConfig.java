@@ -3,6 +3,7 @@ package dev.surge.notification.config;
 import dev.surge.common.security.InternalAudiences;
 import dev.surge.common.security.InternalTokenSigner;
 import dev.surge.common.security.InternalTokenSigningInterceptor;
+import dev.surge.common.security.SurgeEnv;
 import dev.surge.notification.booking.BookingClient;
 import dev.surge.notification.catalog.CatalogClient;
 import dev.surge.notification.user.UserDirectory;
@@ -15,6 +16,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Scope;
+import org.springframework.core.env.Environment;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
@@ -47,35 +49,42 @@ public class ClientsConfig {
 
     @Bean
     CatalogClient catalogClient(@LoadBalanced RestClient.Builder loadBalanced, InternalTokenSigner signer,
-                                @Value("${surge.clients.catalog-base-url:http://catalog-service}") String baseUrl) {
-        return new CatalogClient(restClient(loadBalanced, baseUrl, READ_TIMEOUT, signer, InternalAudiences.CATALOG));
+                                @Value("${surge.clients.catalog-base-url:http://catalog-service}") String baseUrl,
+                                Environment environment) {
+        return new CatalogClient(restClient(loadBalanced, baseUrl, READ_TIMEOUT, signer, InternalAudiences.CATALOG,
+                SurgeEnv.from(environment)));
     }
 
     @Bean
     BookingClient bookingClient(@LoadBalanced RestClient.Builder loadBalanced, InternalTokenSigner signer,
-                                @Value("${surge.clients.booking-base-url:http://booking-service}") String baseUrl) {
-        return new BookingClient(restClient(loadBalanced, baseUrl, READ_TIMEOUT, signer, InternalAudiences.BOOKING));
+                                @Value("${surge.clients.booking-base-url:http://booking-service}") String baseUrl,
+                                Environment environment) {
+        return new BookingClient(restClient(loadBalanced, baseUrl, READ_TIMEOUT, signer, InternalAudiences.BOOKING,
+                SurgeEnv.from(environment)));
     }
 
     @Bean
     UserDirectory userDirectory(@LoadBalanced RestClient.Builder loadBalanced, InternalTokenSigner signer,
-                                @Value("${surge.clients.auth-base-url:http://auth-service}") String baseUrl) {
-        return new UserDirectory(restClient(loadBalanced, baseUrl, READ_TIMEOUT, signer, InternalAudiences.AUTH));
+                                @Value("${surge.clients.auth-base-url:http://auth-service}") String baseUrl,
+                                Environment environment) {
+        return new UserDirectory(restClient(loadBalanced, baseUrl, READ_TIMEOUT, signer, InternalAudiences.AUTH,
+                SurgeEnv.from(environment)));
     }
 
     /**
      * Clones the builder (the shared one is never mutated) and applies the base URL, the timeouts, and notification's
      * signing interceptor: every HTTP attempt carries a fresh {@code svc:notification} token addressed to
      * {@code service}. The audience is decided here, once, from the client's target and its configured base URL
-     * ({@link InternalAudiences#forClient}: a base URL naming another service fails startup); no request can change it.
+     * ({@link InternalAudiences#forClient}: a base URL naming another service fails startup, and in prod the host must
+     * be the target's own name); no request can change it.
      */
     public static RestClient restClient(RestClient.Builder builder, String baseUrl, Duration readTimeout,
-                                        InternalTokenSigner signer, String service) {
+                                        InternalTokenSigner signer, String service, SurgeEnv env) {
         HttpClient http = HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT)
                 .version(HttpClient.Version.HTTP_1_1).build();
         JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(http);
         factory.setReadTimeout(readTimeout);
-        String audience = InternalAudiences.forClient(service, baseUrl);
+        String audience = InternalAudiences.forClient(service, baseUrl, env);
         return builder.clone().baseUrl(baseUrl).requestFactory(factory)
                 .requestInterceptor(new InternalTokenSigningInterceptor(signer, audience)).build();
     }
