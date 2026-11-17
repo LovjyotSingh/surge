@@ -2,6 +2,7 @@ package dev.surge.catalog.importer;
 
 import dev.surge.catalog.error.InvalidImportException;
 import dev.surge.catalog.error.UploadTooLargeException;
+import dev.surge.common.security.AdminAudit;
 import java.io.IOException;
 import java.io.InputStream;
 import org.springframework.http.MediaType;
@@ -15,7 +16,7 @@ import org.springframework.web.multipart.MultipartFile;
  * Admin-only CSV import. The gateway already rejects non-admins on {@code /api/*}{@code /admin/**}; catalog's identity
  * chain and then AdminAccess repeat the check on the verified identity token as defence in depth. Paths stay
  * case-sensitive (Spring MVC's and the chain's default), matching the gateway, so {@code /api/catalog/ADMIN/...} is
- * simply a 404.
+ * simply a 404. A successful import writes one {@code ADMIN_ACTION} audit line with its counts ({@link AdminAudit}).
  */
 @RestController
 @RequestMapping("/api/catalog/admin/events")
@@ -36,8 +37,13 @@ public class ImportController {
         if (file.isEmpty()) {
             throw new InvalidImportException("The file is empty");
         }
+        ImportResult result;
         try (InputStream in = file.getInputStream()) {
-            return importer.importCsv(in);
+            result = importer.importCsv(in);
         }
+        // counts only: the file itself is a payload and never logged
+        AdminAudit.log("catalog.import", "events,imported:" + result.imported() + ",rejected:"
+                + result.errors().size());
+        return result;
     }
 }

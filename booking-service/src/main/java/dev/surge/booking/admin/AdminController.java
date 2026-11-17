@@ -7,6 +7,7 @@ import dev.surge.booking.error.ReportNotFoundException;
 import dev.surge.booking.error.ReportTooLargeException;
 import dev.surge.booking.event.EventRefRepository;
 import dev.surge.booking.hold.RedisKeys;
+import dev.surge.common.security.AdminAudit;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -25,7 +26,11 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-/** Operator endpoints used by the load tester and the web Ops page. */
+/**
+ * Operator endpoints used by the load tester and the web Ops page. {@code AdminAccess} refuses non-admins before
+ * argument binding; each action here writes one {@code ADMIN_ACTION} audit line once it has succeeded
+ * ({@link AdminAudit}).
+ */
 @RestController
 @RequestMapping("/api/bookings/admin")
 public class AdminController {
@@ -59,7 +64,9 @@ public class AdminController {
                 + "WHERE o.event_id = ?", eventId);
         int distinct = count("SELECT COUNT(DISTINCT oi.seat_id) FROM order_item oi JOIN orders o ON o.id = oi.order_id "
                 + "WHERE o.event_id = ?", eventId);
-        return IntegrityReport.of(eventId, total, sold, items, distinct);
+        IntegrityReport report = IntegrityReport.of(eventId, total, sold, items, distinct);
+        AdminAudit.log("booking.integrity", "event:" + eventId);
+        return report;
     }
 
     @PostMapping("/events/{eventId}/reset")
@@ -69,6 +76,7 @@ public class AdminController {
             throw new InvalidParameterException("opensInSeconds must be between 0 and " + MAX_OPENS_IN_SECONDS);
         }
         resetService.reset(eventId, opensInSeconds);
+        AdminAudit.log("booking.reset", "event:" + eventId);
     }
 
     @PutMapping("/loadtest-reports/latest")
@@ -87,6 +95,8 @@ public class AdminController {
             throw new MalformedReportException();
         }
         redis.opsForValue().set(RedisKeys.LOADTEST_LATEST, json.writeValueAsString(parsed));
+        // the report itself is a payload: never logged
+        AdminAudit.log("booking.report.put", "loadtest-report:latest");
     }
 
     @GetMapping("/loadtest-reports/latest")

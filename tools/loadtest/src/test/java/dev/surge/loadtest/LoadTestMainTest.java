@@ -92,7 +92,26 @@ class LoadTestMainTest {
             }
             assertThat(prefixes).hasSize(2);
             assertThat(second).doesNotContainAnyElementsOf(first);
+            assertThat(both).allSatisfy(k -> assertThat(k).matches(SERVER_KEY_RULE));
         }
+    }
+
+    /** booking-service's Idempotency-Key rule (OrderController, SEC-25): anything else is 400 validation-failed. */
+    private static final String SERVER_KEY_RULE = "^[A-Za-z0-9_-]{8,64}$";
+
+    /**
+     * The longest key the tester can send: a UUID run id, "-", and the longest minted user id (a 19-character batch
+     * prefix, "-", and an index below MINT_BATCH, at most 4 digits). It must still pass booking's rule.
+     */
+    @Test
+    void theLongestIdempotencyKeyPassesTheServersRule() {
+        String longestUser = "lt-" + "f".repeat(8) + "b" + "9".repeat(7) + "-" + (BookingApi.MINT_BATCH - 1);
+        assertThat(longestUser).hasSize(24);
+        String key = LoadTestMain.idempotencyKey(java.util.UUID.randomUUID().toString(), longestUser);
+        assertThat(key).hasSize(61).matches(SERVER_KEY_RULE);
+        // and the shortest: a one-digit index on the plain prefix
+        assertThat(LoadTestMain.idempotencyKey(java.util.UUID.randomUUID().toString(), "lt-0a1b2c3d-0"))
+                .matches(SERVER_KEY_RULE);
     }
 
     @Test

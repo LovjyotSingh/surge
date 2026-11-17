@@ -4,6 +4,7 @@ import dev.surge.auth.api.UserView;
 import dev.surge.auth.api.UserViews;
 import dev.surge.auth.error.InvalidBodyException;
 import dev.surge.auth.jwt.TokenService;
+import dev.surge.common.security.AdminAudit;
 import dev.surge.common.security.CurrentIdentity;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validator;
@@ -26,7 +27,8 @@ import tools.jackson.databind.json.JsonMapper;
  * method repeats it through {@link CurrentIdentity} as a second layer. The body is taken as raw text and
  * parsed/validated by hand AFTER that check: with {@code @Valid @RequestBody} Spring would reject a bad body with 400
  * before the method (and so the role check) ever ran, telling a non-admin about the request format. This keeps the
- * authorization decision first.
+ * authorization decision first. A mint writes one {@code ADMIN_ACTION} audit line with the prefix and the count
+ * ({@link AdminAudit}); a refusal by this check writes one {@code ADMIN_ACTION_REFUSED} line.
  */
 @RestController
 @RequestMapping("/api/auth/admin")
@@ -50,13 +52,15 @@ public class TestTokenController {
 
     @PostMapping("/test-tokens")
     MintedTokens mint(@RequestBody(required = false) String rawBody) {
-        CurrentIdentity.requireAdmin();
+        AdminAudit.requireAdmin("auth.test-tokens.mint");
         TestTokenRequest req = parse(rawBody);
         List<MintedToken> out = new ArrayList<>(req.count());
         for (int n = 0; n < req.count(); n++) {
             UserView user = UserViews.synthetic(req.prefix() + "-" + n);
             out.add(new MintedToken(user.id(), tokens.issueLoadTest(user).token()));
         }
+        // the validated prefix and the count only: never a token
+        AdminAudit.log("auth.test-tokens.mint", "prefix:" + req.prefix() + ",count:" + req.count());
         return new MintedTokens(out);
     }
 

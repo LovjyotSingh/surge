@@ -99,6 +99,11 @@ surge:
     # LOCAL-ONLY placeholder credentials: S3Mock accepts anything. Real AWS needs S3_ACCESS_KEY / S3_SECRET_KEY.
     access-key: ${S3_ACCESS_KEY:surge-local}
     secret-key: ${S3_SECRET_KEY:surge-local}
+  ticket:
+    # SEC-20: the HMAC-SHA256 key that signs ticket QR codes (ticket/TicketQr): base64 of at least 32 random bytes
+    # (openssl rand -base64 32). Blank = the committed DEV key (dev/tests, with a warning); prod refuses blank and the
+    # dev key. Never logged.
+    qr-key: ${SURGE_TICKET_QR_KEY:}
   notification:
     # Daily orders-YYYY-MM-DD.jsonl files (IST dates). In compose this must be a mounted volume to survive restarts.
     audit-dir: ${AUDIT_DIR:./audit}

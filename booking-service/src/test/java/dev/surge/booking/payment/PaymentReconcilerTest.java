@@ -71,11 +71,11 @@ class PaymentReconcilerTest {
                         .contentType(MediaType.APPLICATION_JSON).content("{\"eventId\":1,\"seatIds\":[1]}"))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
         String holdId = JsonPath.read(holdBody, "$.holdId");
-        mvc.perform(post("/api/bookings/orders").with(Identity.user("u1")).header("Idempotency-Key", "paid")
+        mvc.perform(post("/api/bookings/orders").with(Identity.user("u1")).header("Idempotency-Key", "key-paid")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"holdId\":\"" + holdId + "\"}"))
                 .andExpect(status().isCreated());
         Mockito.clearInvocations(gateway);
-        inDoubt("u1", "paid", true);
+        inDoubt("u1", "key-paid", true);
 
         assertThat(reconciler.reconcile()).isEqualTo(1);
 

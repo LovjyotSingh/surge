@@ -1,6 +1,7 @@
 package dev.surge.catalog;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -10,7 +11,10 @@ import dev.surge.catalog.support.IntegrationTest;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockMultipartFile;
@@ -19,6 +23,7 @@ import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 @IntegrationTest
+@ExtendWith(OutputCaptureExtension.class)
 class CsvEventImporterTest {
 
     private static final String IMPORT = "/api/catalog/admin/events/import";
@@ -178,5 +183,28 @@ class CsvEventImporterTest {
         upload("﻿" + HEADER + row.replace("Bom Show", "Bom Show Plain"), Identity.admin())
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.imported").value(1));
+    }
+
+    /** SEC-19: one ADMIN_ACTION line per import and per stats read, with the verified admin; never the CSV. */
+    @Test
+    void adminActionsWriteOneAuditLineEach(CapturedOutput output) throws Exception {
+        String csv = HEADER
+                + "Audit Show,Artist A,concert,1,2027-02-01T13:30:00Z,2026-11-01T00:00:00Z,A:10:GOLD,csv-body-secret\n"
+                + "Bad Tier,Artist B,concert,2,2027-02-02T15:00:00Z,2026-11-01T00:00:00Z,A:10:DIAMOND,Bad tier\n";
+        mvc.perform(multipart(IMPORT).file(new MockMultipartFile("file", "events.csv", "text/csv",
+                        csv.getBytes(StandardCharsets.UTF_8))).with(Identity.admin()).header("X-Request-Id", "rid-imp"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.imported").value(1));
+        mvc.perform(get("/api/catalog/admin/stats/daily").param("eventId", "3").with(Identity.admin())
+                .header("X-Request-Id", "rid-stats")).andExpect(status().isOk());
+        // a failed read is no action: no line
+        mvc.perform(get("/api/catalog/admin/stats/daily").param("eventId", "999999").with(Identity.admin()))
+                .andExpect(status().isNotFound());
+
+        assertThat(output.getAll().lines().filter(l -> l.contains("ADMIN_ACTION"))
+                .map(l -> l.substring(l.indexOf("ADMIN_ACTION"))).toList()).containsExactly(
+                "ADMIN_ACTION actor=u-admin action=catalog.import target=events,imported:1,rejected:1 "
+                        + "requestId=rid-imp",
+                "ADMIN_ACTION actor=u-admin action=catalog.stats.daily target=event:3 requestId=rid-stats");
+        assertThat(output.getAll()).doesNotContain("csv-body-secret");
     }
 }

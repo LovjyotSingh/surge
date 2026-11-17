@@ -38,8 +38,14 @@ public class TicketPdfRenderer {
 
     private static final DateTimeFormatter WHEN =
             DateTimeFormatter.ofPattern("EEE d MMM yyyy, HH:mm z", Locale.ENGLISH);
-    private static final int QR_PIXELS = 360;
+    static final int QR_PIXELS = 360;
     private static final float QR_POINTS = 110f;
+
+    private final TicketQr qr;
+
+    public TicketPdfRenderer(TicketQr qr) {
+        this.qr = qr;
+    }
 
     public byte[] render(TicketData t) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -160,8 +166,9 @@ public class TicketPdfRenderer {
         return from == to ? prefix + from : prefix + from + "–" + row + to;
     }
 
-    static String qrPayload(TicketData t) {
-        return "surge:ticket:" + t.orderId() + ":" + t.userId();
+    /** The signed QR text ({@link TicketQr}): {@code orderId.userId.<HMAC over order, user and event>}. */
+    String qrPayload(TicketData t) {
+        return qr.payload(t.orderId(), t.userId(), t.eventId());
     }
 
     public static String money(BigDecimal inr) {

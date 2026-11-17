@@ -39,6 +39,12 @@
  * endpoints they may use ({@code InternalAccess.service}); internal controllers check again with
  * {@code CurrentIdentity.requireService}.
  *
+ * <h2>Admin audit trail</h2>
+ * Every admin handler writes one {@code ADMIN_ACTION actor=... action=... target=... requestId=...} line on success
+ * through {@link dev.surge.common.security.AdminAudit}, which takes the actor from {@link CurrentIdentity} and the
+ * request id from the MDC; its {@code requireAdmin(action)} also writes one {@code ADMIN_ACTION_REFUSED} line when the
+ * in-service check refuses.
+ *
  * <h2>Actuator</h2>
  * Only {@code /actuator/health} and {@code /actuator/health/**} are open (container health checks; status only).
  * Every other actuator endpoint, {@code /actuator/info} and {@code /actuator/prometheus} included, is denied to every

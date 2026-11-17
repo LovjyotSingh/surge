@@ -88,7 +88,7 @@ class BookingSecurityTest {
     void anAnonymousGatewayTokenIsNoUser() throws Exception {
         mvc.perform(hold().with(Identity.anonymous())).andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.type").value(PROBLEM + "missing-user"));
-        mvc.perform(post("/api/bookings/orders").with(Identity.anonymous()).header("Idempotency-Key", "k-sec")
+        mvc.perform(post("/api/bookings/orders").with(Identity.anonymous()).header("Idempotency-Key", "key-sec0")
                         .contentType(MediaType.APPLICATION_JSON).content("{}"))
                 .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.type").value(PROBLEM + "missing-user"));
         mvc.perform(get("/api/bookings/orders/1").with(Identity.anonymous())).andExpect(status().isUnauthorized());
