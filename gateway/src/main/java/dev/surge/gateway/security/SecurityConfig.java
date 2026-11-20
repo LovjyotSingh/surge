@@ -49,7 +49,7 @@ import reactor.netty.http.client.HttpClient;
  * /api/auth/logout (other methods)            deny
  * POST /api/auth/verify, /verify/resend       USER    (email verification code, S5)
  * /api/auth/verify/** (anything else)         deny
- * /api/auth/**                                public  (signup, login, JWKS)
+ * /api/auth/**                                public  (only signup, login and GET of the JWKS are routed)
  * GET /api/catalog/**                         public
  * GET /api/bookings/events/**                 public  (includes the SSE stream)
  * /api/bookings/holds/**, /orders/**          USER

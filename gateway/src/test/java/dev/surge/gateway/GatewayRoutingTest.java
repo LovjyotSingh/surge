@@ -264,6 +264,26 @@ class GatewayRoutingTest extends GatewayTestBase {
     }
 
     /**
+     * S10: the unmetered catch-all to auth carries the JWKS (GET) and nothing else. Any other path under /api/auth
+     * that no metered route names, and any other method on the JWKS, is not routed at all: 404, auth sees nothing.
+     */
+    @Test
+    void onlyTheJwksReachesAuthThroughTheCatchAll() throws Exception {
+        for (String path : List.of("/api/auth/whatever", "/api/auth/internal/users/u-1",
+                "/api/auth/.well-known/openid-configuration", "/api/auth/me/extra")) {
+            client.get().uri(path).header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-catch"))).exchange()
+                    .expectStatus().isNotFound()
+                    .expectBody().jsonPath("$.type").isEqualTo(PROBLEM + "not-found");
+        }
+        client.post().uri("/api/auth/.well-known/jwks.json").bodyValue("{}").exchange().expectStatus().isNotFound();
+        client.post().uri("/api/auth/anything").bodyValue("{}").exchange().expectStatus().isNotFound();
+        assertThat(AUTH.sawNothing()).isTrue();
+
+        client.get().uri("/api/auth/.well-known/jwks.json").exchange().expectStatus().isOk();
+        assertThat(AUTH.next().getTarget()).isEqualTo("/api/auth/.well-known/jwks.json");
+    }
+
+    /**
      * S5: the verification endpoints need a signed-in user and reach auth through their own metered routes (the
      * rate-limit headers show they are not the unmetered auth-public catch-all).
      */
