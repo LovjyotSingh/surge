@@ -56,11 +56,14 @@ share.coordinator.state.topic.min.isr=1
 group.initial.rebalance.delay.ms=0
 PROPS
 
-# Console logging only (the root file system is read-only); GC logs go to the /tmp tmpfs.
+# Console logging only (the root file system is read-only).
 export LOG_DIR=/tmp/kafka-logs
 export KAFKA_LOG4J_OPTS="-Dlog4j2.configurationFile=/etc/kafka/docker/tools-log4j2.yaml"
 /opt/kafka/bin/kafka-storage.sh format --cluster-id "$KAFKA_CLUSTER_ID" --config "$props" --ignore-formatted
 
 export KAFKA_LOG4J_OPTS="-Dlog4j2.configurationFile=/etc/kafka/docker/log4j2.yaml"
 export KAFKA_JVM_PERFORMANCE_OPTS="${KAFKA_JVM_PERFORMANCE_OPTS:-} -XX:SharedArchiveFile=/opt/kafka/kafka.jsa"
+# No GC log: kafka-server-start.sh's default EXTRA_ARGS ("-name kafkaServer -loggc") makes kafka-run-class.sh write
+# rotating GC logs (up to 10 x 100 MB) into LOG_DIR, i.e. onto the 64 MB /tmp tmpfs.
+export EXTRA_ARGS="-name kafkaServer"
 exec /opt/kafka/bin/kafka-server-start.sh "$props"
