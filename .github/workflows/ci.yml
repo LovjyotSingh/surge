@@ -62,8 +62,11 @@ jobs:
       - name: Build
         run: npm run build
 
-  # Every image Compose runs, built from the same Dockerfiles, then scanned by Trivy from the local daemon, so the
-  # scan covers exactly what is deployed (SEC-17, SEC-28). Fails on a HIGH or CRITICAL vulnerability that has a fix.
+  # Every image Compose builds from this repository's Dockerfiles, built the same way and scanned by Trivy from the
+  # local daemon, so the scan covers exactly what is deployed (SEC-17, SEC-28). Fails on a HIGH or CRITICAL
+  # vulnerability that has a fix. The third-party images Compose runs as published (MySQL, Redis, Kafka, RabbitMQ,
+  # Elasticsearch, Mailpit, S3Mock) are not scanned here: they are pinned by digest and Dependabot (docker-compose)
+  # proposes their updates.
   images:
     name: Image ${{ matrix.image }} (build, Trivy)
     needs: [backend, web]
