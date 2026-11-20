@@ -559,7 +559,8 @@ services:
   #       run --rm smoke
   # `run` names the service; leave the smoke profile out of `up` (it would start a run). It ends with event 1 reset.
   # It gets only what it needs: the admin login (to set payment chaos, read the audit log and reset the event),
-  # reachable only through nginx on the edge network; no store, broker or service network.
+  # It sits on the edge network (nginx and the gateway are reachable from it; it talks to nginx only); no store,
+  # broker or service network.
   smoke:
     <<: *one-shot
     image: surge/smoke:local

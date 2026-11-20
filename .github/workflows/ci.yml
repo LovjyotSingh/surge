@@ -83,6 +83,7 @@ jobs:
           - { image: gateway, dockerfile: docker/service.Dockerfile, context: ., module: gateway, port: '8085' }
           - { image: web, dockerfile: web/Dockerfile, context: web }
           - { image: loadtest, dockerfile: tools/loadtest/Dockerfile, context: . }
+          - { image: smoke, dockerfile: tools/smoke/Dockerfile, context: . }
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -133,7 +134,7 @@ jobs:
             : > "docker/secrets/$f"
           done
           docker compose -f compose.yaml -f compose.dev.yaml -f compose.loadtest.yaml \
-            --profile core --profile platform --profile loadtest config -q
+            --profile core --profile platform --profile loadtest --profile smoke config -q
           published=$(docker compose --profile core --profile platform config --format json \
             | jq -r '.services | to_entries[] | select(.value.ports != null) | .key as $s
                      | .value.ports[] | "\($s) \(.host_ip // "0.0.0.0"):\(.published)->\(.target)"')
