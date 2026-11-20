@@ -50,7 +50,8 @@ class ChecksTest {
             return Reply.of(201, "{\"token\":\"t-unverified\",\"user\":{\"id\":\"u-9\"}}");
         });
         stub.on("GET /api/v1/search", Reply.of(200, "{\"messages\":[{\"ID\":\"m1\",\"Subject\":\"Verify\"}]}"));
-        stub.on("GET /api/v1/message/m1", Reply.of(200, "{\"Text\":\"Your Surge code is 123456. Thanks\","
+        stub.on("GET /api/v1/message/m1", Reply.of(200, "{\"Text\":\"Hi Smoke ab654321,\\r\\n\\r\\nYour Surge verification code is:\\r\\n\\r\\n    123456\\r\\n\\r\\n"
+            + "It expires in 999999 minutes.\\r\\n\","
             + "\"Attachments\":[]}"));
         stub.on("POST /api/auth/verify", Reply.of(200, "{\"token\":\"t-verified\"}"));
         stub.on("POST /api/auth/login", Reply.of(200, "{\"token\":\"t-login\"}"));

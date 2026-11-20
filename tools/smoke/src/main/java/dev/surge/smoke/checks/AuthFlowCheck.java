@@ -16,7 +16,7 @@ import tools.jackson.databind.JsonNode;
 /** Sign up a fresh user, verify the email with the code Mailpit received, log in, read /api/auth/me. */
 public final class AuthFlowCheck implements Check {
 
-    private static final Pattern CODE = Pattern.compile("(?<![0-9])([0-9]{6})(?![0-9])");
+    private static final Pattern CODE = Pattern.compile("(?m)^\\s+([0-9]{6})\\s*$");
 
     private final Duration mailWait;
     private final Duration interval;
@@ -42,7 +42,7 @@ public final class AuthFlowCheck implements Check {
         String password = "Smoke-" + UUID.randomUUID().toString().substring(0, 12);
 
         Api.Resp signup = expect(ctx.api().post("/api/auth/signup", null, Api.JSON.writeValueAsString(
-            Map.of("email", email, "password", password, "displayName", "Smoke " + suffix))), 201, "signup");
+            Map.of("email", email, "password", password, "displayName", "Smoke Tester"))), 201, "signup");
         String userId = signup.json().path("user").path("id").asString("?");
         String signupToken = signup.json().path("token").asString("");
         ctx.email = email;
