@@ -6,8 +6,9 @@ import java.time.Instant;
  * One load-test run. {@code oversold} and {@code consistent} come from the server's integrity check (MySQL);
  * {@code buyersSucceeded} is counted on the client (buyers that got a 201 for their one seat).
  * {@code unauthorized} counts buyers the gateway rejected (401/403); when it is above 0 the run is not valid.
- * {@code errors} counts buyers that ended on anything but a sale or an expected conflict (409 seat taken or sold out,
- * which is {@code conflicts}): a 5xx, a timeout, too many 429s.
+ * {@code errors} counts buyers that ended on anything but a sale or an expected conflict on a HOLD (409 seat taken or
+ * hold exists, which is {@code conflicts}): a 5xx, a timeout, too many 429s, and any 409 on the checkout (the buyer's
+ * own held seats cannot be sold out, so the system lost the hold).
  */
 public record LoadTestReport(Instant startedAt, int users, long eventId, int totalSeats, int sold,
                              int oversold, boolean consistent, int buyersSucceeded, int requests, int conflicts,

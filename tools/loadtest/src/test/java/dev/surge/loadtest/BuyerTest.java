@@ -77,13 +77,27 @@ class BuyerTest {
         assertThat(sleeps).containsExactly(1000L);
     }
 
+    /**
+     * P2-R25 excuses only sold-out conflicts, and a seat the buyer holds cannot be sold out: a 409 on its checkout means
+     * the system lost the hold, so it counts towards the 1 % error gate, whatever its problem type.
+     */
     @Test
-    void checkoutConflictStops() throws Exception {
+    void checkoutConflictIsAnError() throws Exception {
         stub.on(HOLDS, HOLD_OK).on(ORDERS, problem(409, "hold-expired"));
         BuyerOutcome o = run();
         assertThat(o.bought()).isFalse();
-        assertThat(o.conflicts()).isEqualTo(1);
-        assertThat(o.errors()).isZero();
+        assertThat(o.errors()).isEqualTo(1);
+        assertThat(o.conflicts()).isZero();
+        assertThat(stub.received).containsExactly(HOLDS, ORDERS);
+    }
+
+    @Test
+    void checkoutConflictIsAnErrorEvenWhenItSaysSeatTaken() throws Exception {
+        stub.on(HOLDS, HOLD_OK).on(ORDERS, problem(409, "seat-taken"));
+        BuyerOutcome o = run();
+        assertThat(o.bought()).isFalse();
+        assertThat(o.errors()).isEqualTo(1);
+        assertThat(o.conflicts()).isZero();
     }
 
     @Test

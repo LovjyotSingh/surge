@@ -104,9 +104,9 @@ public final class Buyer implements Callable<BuyerOutcome> {
             }
             if (order.statusCode() == 401 || order.statusCode() == 403) {
                 unauthorized++;
-            } else if (order.statusCode() == 409) {
-                conflicts++;
             } else {
+                // Including a 409: P2-R25 excuses only sold-out conflicts, and the seats this buyer holds cannot be
+                // sold out. A checkout conflict means the system lost the hold (expired, taken over), so it is an error.
                 errors++;
             }
         } catch (RuntimeException e) {
