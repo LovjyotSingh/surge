@@ -7,13 +7,15 @@ import java.time.Instant;
  * {@code buyersSucceeded} is counted on the client (buyers that got a 201 for their one seat).
  * {@code unauthorized} counts buyers the gateway rejected (401/403); when it is above 0 the run is not valid.
  * {@code errors} counts buyers that ended on anything but a sale or an expected conflict on a HOLD (409 seat taken or
- * hold exists, which is {@code conflicts}): a 5xx, a timeout, too many 429s, and any 409 on the checkout (the buyer's
- * own held seats cannot be sold out, so the system lost the hold).
+ * hold exists, which is {@code conflicts}): a 5xx, a timeout, too many 429s, a 503 service-busy the buyer gave up on,
+ * and any 409 on the checkout (the buyer's own held seats cannot be sold out, so the system lost the hold).
+ * {@code busyRetries} counts the 503 service-busy answers (a full gateway bulkhead) that buyers waited on and retried,
+ * like {@code rateLimited} for 429s; a retried busy answer is not an error (P2-R26).
  */
 public record LoadTestReport(Instant startedAt, int users, long eventId, int totalSeats, int sold,
                              int oversold, boolean consistent, int buyersSucceeded, int requests, int conflicts,
-                             int rateLimited, int errors, long durationMs, LatencyStats hold, LatencyStats checkout,
-                             int unauthorized) {
+                             int rateLimited, int busyRetries, int errors, long durationMs, LatencyStats hold,
+                             LatencyStats checkout, int unauthorized) {
 
     /** More buyers than this share of all buyers ending in an error fails the run. */
     public static final int MAX_ERROR_PERCENT = 1;

@@ -66,6 +66,7 @@ public final class ReportWriter {
             | Requests | %d |
             | Conflicts | %d |
             | Rate limited | %d |
+            | Busy retries (503 service-busy, retried) | %d |
             | Errors | %d |
 
             | Latency (ms) | p50 | p95 | p99 | max |
@@ -80,7 +81,8 @@ public final class ReportWriter {
                 r.buyersSucceeded(), r.sold(), mark(r.buyersSucceeded() == r.sold()),
                 r.sold(), mark(!r.nothingSold()),
                 LoadTestReport.MAX_ERROR_PERCENT, r.errors(), r.users(), mark(!r.tooManyErrors()),
-                r.totalSeats(), r.sold(), r.buyersSucceeded(), r.requests(), r.conflicts(), r.rateLimited(), r.errors(),
+                r.totalSeats(), r.sold(), r.buyersSucceeded(), r.requests(), r.conflicts(), r.rateLimited(),
+                r.busyRetries(), r.errors(),
                 r.hold().p50(), r.hold().p95(), r.hold().p99(), r.hold().max(),
                 r.checkout().p50(), r.checkout().p95(), r.checkout().p99(), r.checkout().max());
     }

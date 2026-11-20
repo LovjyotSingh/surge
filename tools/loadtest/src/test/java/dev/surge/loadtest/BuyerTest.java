@@ -125,6 +125,96 @@ class BuyerTest {
         assertThat(o.errors()).isEqualTo(1);
     }
 
+    // ---- P2-R26: 503 service-busy (the gateway's full bulkhead) is retried, any other 503 is an error ----------
+
+    private static final Reply BUSY = busy("1");
+
+    private static Reply busy(String retryAfter) {
+        return new Reply(503, "{\"type\":\"https://surge.dev/problems/service-busy\",\"status\":503}",
+            Map.of("Retry-After", retryAfter));
+    }
+
+    /** Like {@link #run()} with a clock that stands still at 0 and the run's deadline {@code deadlineMs} later. */
+    private BuyerOutcome runWithDeadlineIn(long deadlineMs) throws Exception {
+        return new Buyer("tok-0", "run-1-lt-0", 1, List.of(1L, 2L, 3L, 4L, 5L), api, new CountDownLatch(0), 0.7, 10,
+            new Random(1), sleeps::add, () -> 0L, deadlineMs).call();
+    }
+
+    @Test
+    void busyHoldWaitsRetryAfterPlusJitterThenRetriesTheSameSeat() throws Exception {
+        stub.on(HOLDS, BUSY, HOLD_OK).on(ORDERS, ORDER_OK);
+        BuyerOutcome o = run();
+        assertThat(o.bought()).isTrue();
+        assertThat(o.busyRetries()).isEqualTo(1);
+        assertThat(o.errors()).isZero();
+        assertThat(sleeps).singleElement().satisfies(ms -> assertThat(ms).isBetween(1000L, 2000L));
+        assertThat(stub.received).containsExactly(HOLDS, HOLDS, ORDERS);
+        // booking never saw the refused hold, so the same request goes again
+        assertThat(stub.receivedBodies.get(1)).isEqualTo(stub.receivedBodies.get(0));
+    }
+
+    @Test
+    void busyHonoursALongerRetryAfter() throws Exception {
+        stub.on(HOLDS, busy("3"), HOLD_OK).on(ORDERS, ORDER_OK);
+        BuyerOutcome o = run();
+        assertThat(o.bought()).isTrue();
+        assertThat(sleeps).singleElement().satisfies(ms -> assertThat(ms).isBetween(3000L, 4000L));
+    }
+
+    @Test
+    void busyCheckoutIsRetriedWithTheSameIdempotencyKey() throws Exception {
+        stub.on(HOLDS, HOLD_OK).on(ORDERS, BUSY, BUSY, ORDER_OK);
+        BuyerOutcome o = run();
+        assertThat(o.bought()).isTrue();
+        assertThat(o.busyRetries()).isEqualTo(2);
+        assertThat(o.errors()).isZero();
+        assertThat(o.checkoutLatenciesMs()).hasSize(3);
+        assertThat(stub.received).containsExactly(HOLDS, ORDERS, ORDERS, ORDERS);
+        assertThat(stub.receivedIdempotencyKeys.subList(1, 4)).containsOnly("run-1-lt-0");
+    }
+
+    @Test
+    void aBuyerStillBusyAfterTheRetryCapGivesUpWithAnError() throws Exception {
+        stub.on(HOLDS, BUSY);
+        BuyerOutcome o = run();
+        assertThat(o.bought()).isFalse();
+        assertThat(o.busyRetries()).isEqualTo(Buyer.MAX_BUSY_RETRIES);
+        assertThat(o.errors()).isEqualTo(1);
+        assertThat(sleeps).hasSize(Buyer.MAX_BUSY_RETRIES);
+        assertThat(stub.received).hasSize(Buyer.MAX_BUSY_RETRIES + 1).containsOnly(HOLDS);
+    }
+
+    @Test
+    void aBusyRetryThatWouldEndAfterTheDeadlineIsNotMadeAndIsAnError() throws Exception {
+        stub.on(HOLDS, BUSY, HOLD_OK).on(ORDERS, ORDER_OK);
+        BuyerOutcome o = runWithDeadlineIn(500); // the shortest wait is Retry-After's 1 s
+        assertThat(o.bought()).isFalse();
+        assertThat(o.busyRetries()).isZero();
+        assertThat(o.errors()).isEqualTo(1);
+        assertThat(sleeps).isEmpty();
+        assertThat(stub.received).containsExactly(HOLDS);
+    }
+
+    @Test
+    void aBusyRetryThatEndsBeforeTheDeadlineIsMade() throws Exception {
+        stub.on(HOLDS, BUSY, HOLD_OK).on(ORDERS, ORDER_OK);
+        BuyerOutcome o = runWithDeadlineIn(2000); // Retry-After 1 s plus at most 1 s of jitter
+        assertThat(o.bought()).isTrue();
+        assertThat(o.busyRetries()).isEqualTo(1);
+    }
+
+    @Test
+    void anyOther503IsStillAnErrorAndNotRetried() throws Exception {
+        stub.on(HOLDS, new Reply(503, "{\"type\":\"https://surge.dev/problems/service-unavailable\"}",
+            Map.of("Retry-After", "5")), HOLD_OK);
+        BuyerOutcome o = run();
+        assertThat(o.bought()).isFalse();
+        assertThat(o.errors()).isEqualTo(1);
+        assertThat(o.busyRetries()).isZero();
+        assertThat(sleeps).isEmpty();
+        assertThat(stub.received).containsExactly(HOLDS);
+    }
+
     @Test
     void sendsOnlyItsOwnBearerAndNeverXUserId() throws Exception {
         stub.on(HOLDS, HOLD_OK).on(ORDERS, ORDER_OK);

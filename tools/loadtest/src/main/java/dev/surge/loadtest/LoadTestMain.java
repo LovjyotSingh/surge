@@ -75,7 +75,9 @@ public final class LoadTestMain {
             api.login(cfg.adminEmail(), cfg.adminPassword());
             // One synthetic user per buyer. Minted BEFORE the reset so that a deployment without test tokens, or an
             // account that is not an admin, stops the run before anything destructive happens. Load-test tokens live
-            // 15 minutes (claim lt: true), so the run, counted from this mint, must finish within that lifetime.
+            // 15 minutes (claim lt: true), so the run, counted from this mint, must finish within that lifetime: no
+            // buyer starts a busy retry that would end after Buyer.RUN_DEADLINE from here.
+            long deadlineMillis = Buyer.MONOTONIC_MILLIS.getAsLong() + Buyer.RUN_DEADLINE.toMillis();
             List<BookingApi.TestToken> buyers = api.mintTokens("lt-" + runId.substring(0, 8), cfg.users());
             if (cfg.reset()) {
                 api.reset(cfg.eventId());
@@ -90,6 +92,7 @@ public final class LoadTestMain {
             int succeeded = 0;
             int conflicts = 0;
             int rateLimited = 0;
+            int busyRetries = 0;
             int errors = 0;
             int unauthorized = 0;
             List<Long> holdLat = new ArrayList<>();
@@ -99,7 +102,7 @@ public final class LoadTestMain {
                     BookingApi.TestToken buyer = buyers.get(n);
                     futures.add(pool.submit(new Buyer(buyer.token(), idempotencyKey(runId, buyer.userId()),
                         cfg.eventId(), seatIds, api, gate, cfg.hotShare(), cfg.maxAttempts(),
-                        RandomGenerator.getDefault())));
+                        RandomGenerator.getDefault(), deadlineMillis)));
                 }
                 gate.countDown();
                 for (Future<BuyerOutcome> f : futures) {
@@ -109,6 +112,7 @@ public final class LoadTestMain {
                     }
                     conflicts += o.conflicts();
                     rateLimited += o.rateLimited();
+                    busyRetries += o.busyRetries();
                     errors += o.errors();
                     unauthorized += o.unauthorized();
                     holdLat.addAll(o.holdLatenciesMs());
@@ -121,7 +125,7 @@ public final class LoadTestMain {
             LoadTestReport report = new LoadTestReport(startedAt, cfg.users(), cfg.eventId(),
                 integrity.get("totalSeats").asInt(), integrity.get("soldSeats").asInt(),
                 integrity.get("oversold").asInt(), integrity.path("consistent").asBoolean(false), succeeded,
-                holdLat.size() + checkoutLat.size(), conflicts, rateLimited, errors,
+                holdLat.size() + checkoutLat.size(), conflicts, rateLimited, busyRetries, errors,
                 durationMs, LatencyStats.of(holdLat), LatencyStats.of(checkoutLat), unauthorized);
 
             // Show the result and save the local files first: a failing publish must not lose a finished run.
