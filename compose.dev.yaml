@@ -11,8 +11,10 @@
 # Never use this file on a server: Mailpit shows every email and S3Mock accepts any credentials (SEC-16). The
 # services still run with SURGE_ENV=prod and the generated credentials.
 #
-# A published port needs a network that is not internal, so the services with a debug port also join "devhost".
-# That network gives them outbound internet access: one more reason to keep this overlay local.
+# A published port needs a network that is not internal, so each service with a debug port also joins a network of
+# its own, devhost-<service>. One per service, because a shared one would connect them all (booking could then reach
+# Elasticsearch directly) and undo the per-store isolation of compose.yaml. These networks give those services
+# outbound internet access: one more reason to keep this overlay local.
 
 services:
   mailpit:
@@ -87,39 +89,46 @@ services:
   booking-service:
     ports: ["127.0.0.1:8081:8081"]
     networks:
-      devhost: {}
+      devhost-booking: {}
 
   gateway:
     # Straight to the gateway, bypassing nginx: its peer is then Docker's NAT address, which is not a trusted
-    # proxy, so X-Forwarded-For is ignored. The edge network is internal, so the port needs devhost too.
+    # proxy, so X-Forwarded-For is ignored. The edge network is internal, so the port needs a devhost network too.
     ports: ["127.0.0.1:8085:8085"]
     networks:
-      devhost: {}
+      devhost-gateway: {}
 
   discovery:
     ports: ["127.0.0.1:8761:8761"]
     networks:
-      devhost: {}
+      devhost-discovery: {}
 
   mysql:
     ports: ["127.0.0.1:3307:3306"]
     networks:
-      devhost: {}
+      devhost-mysql: {}
 
   redis:
     ports: ["127.0.0.1:6379:6379"]
     networks:
-      devhost: {}
+      devhost-redis: {}
 
   rabbitmq:
     ports: ["127.0.0.1:15672:15672"]
     networks:
-      devhost: {}
+      devhost-rabbitmq: {}
 
   elasticsearch:
     ports: ["127.0.0.1:9200:9200"]
     networks:
-      devhost: {}
+      devhost-elasticsearch: {}
 
+# One per service with a debug port (see the note at the top).
 networks:
-  devhost: {}
+  devhost-booking: {}
+  devhost-gateway: {}
+  devhost-discovery: {}
+  devhost-mysql: {}
+  devhost-redis: {}
+  devhost-rabbitmq: {}
+  devhost-elasticsearch: {}
