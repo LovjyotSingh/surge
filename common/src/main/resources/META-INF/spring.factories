@@ -1,3 +1,5 @@
 # SEC-27: springdoc only in SURGE_ENV=dev (dev.surge.common.security.DevOnlyApiDocs).
+# S10: passwords from compose secret files at /run/secrets/env/<VARIABLE> (dev.surge.common.security.SecretFiles).
 org.springframework.boot.EnvironmentPostProcessor=\
-dev.surge.common.security.DevOnlyApiDocs
+dev.surge.common.security.DevOnlyApiDocs,\
+dev.surge.common.security.SecretFiles

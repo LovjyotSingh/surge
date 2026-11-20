@@ -4,6 +4,11 @@ server:
 spring:
   application:
     name: discovery
+  config:
+    # S10: compose mounts EUREKA_PASSWORD as a file, /run/secrets/env/EUREKA_PASSWORD, never as an environment variable
+    # (docker inspect and /proc/1/environ would show it). Each file in this directory becomes the property of its name.
+    # The services read the same directory through common's SecretFiles.
+    import: optional:configtree:${SURGE_SECRETS_DIR:/run/secrets/env}/
 
 surge:
   # dev (default, local) or prod; SURGE_PUBLIC_DEPLOYMENT=true (prod overlay) refuses dev.
