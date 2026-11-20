@@ -30,7 +30,7 @@ class BinaryCollationTest {
     @BeforeEach
     @AfterEach
     void cleanUp() {
-        jdbc.update("DELETE FROM orders WHERE user_id IN (?, ?)", UPPER, LOWER);
+        jdbc.update("DELETE FROM orders WHERE user_id IN (?, ?, ?)", UPPER, LOWER, UPPER + " ");
         jdbc.update("DELETE FROM payment_in_doubt WHERE user_id IN (?, ?)", UPPER, LOWER);
     }
 
@@ -65,6 +65,18 @@ class BinaryCollationTest {
         assertThatThrownBy(() -> insertOrder(UPPER, "key-AAAA")).isInstanceOf(DataIntegrityViolationException.class);
     }
 
+    /** NO PAD: under a PAD SPACE collation (utf8mb4_bin) 'k' and 'k ' are equal, and the second insert collides. */
+    @Test
+    void trailingSpacesMakeADifferentValue() {
+        long plain = insertOrder(UPPER, "key-0001");
+        long padded = insertOrder(UPPER, "key-0001 ");
+
+        assertThat(padded).isNotEqualTo(plain);
+        assertThat(orders.findByUserIdAndIdempotencyKey(UPPER, "key-0001")).map(Order::getId).contains(plain);
+        assertThat(orders.findByUserIdAndIdempotencyKey(UPPER, "key-0001 ")).map(Order::getId).contains(padded);
+        assertThat(orders.findByIdAndUserId(plain, UPPER + " ")).isEmpty();
+    }
+
     @Test
     void inDoubtPaymentsKeepCaseVariantsApart() {
         for (String user : List.of(UPPER, LOWER)) {
@@ -84,7 +96,7 @@ class BinaryCollationTest {
                 + "'payment_in_doubt' AND COLUMN_NAME IN ('user_id', 'idempotency_key', 'reference'))) "
                 + "ORDER BY TABLE_NAME, COLUMN_NAME");
         assertThat(columns).hasSize(5).allSatisfy(c -> {
-            assertThat(c.get("COLLATION_NAME")).as(c.toString()).isEqualTo("utf8mb4_bin");
+            assertThat(c.get("COLLATION_NAME")).as(c.toString()).isEqualTo("utf8mb4_0900_bin");
             assertThat(c.get("IS_NULLABLE")).as(c.toString()).isEqualTo("NO");
         });
         assertThat(columns).extracting(c -> c.get("TABLE_NAME") + "." + c.get("COLUMN_NAME") + ":"

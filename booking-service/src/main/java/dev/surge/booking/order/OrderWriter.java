@@ -53,9 +53,10 @@ public class OrderWriter {
 
     private Order doConfirm(ActiveHold hold, Map<Long, BigDecimal> prices, String idempotencyKey,
                             Instant now) {
-        // Ascending seat id, like the UPDATEs (hibernate.order_updates in application.yml): every transaction that
-        // locks several seats takes them in the same order as the sale-move guard's locking read, so a checkout and
-        // a sale move can wait for each other but never deadlock.
+        // Sorted by id only to fix the order in which the seat UPDATEs are flushed, together with
+        // hibernate.order_updates (application.yml), which sorts them by id at flush anyway. Sorting locks nothing:
+        // this read takes no locks, and each row is locked only when its UPDATE runs (see application.yml for why
+        // the ascending order matters).
         List<Seat> found = new ArrayList<>(seats.findAllById(hold.seatIds()));
         found.sort(Comparator.comparing(Seat::getId));
         if (found.size() != hold.seatIds().size()) {

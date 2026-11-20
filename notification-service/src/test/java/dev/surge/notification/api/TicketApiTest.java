@@ -178,13 +178,14 @@ class TicketApiTest extends TicketTestBase {
     org.springframework.amqp.core.Binding ticketsBinding;
 
     @Test
-    void replayOfAnUnroutableMessageKeepsItInTheDlq() throws Exception {
+    void replayOfAnUnroutableMessageKeepsItInTheDlq(CapturedOutput output) throws Exception {
         deadLetter(JSON.writeValueAsString(stubOrder("u-1", nextOrderId())), "s3 is down");
         org.awaitility.Awaitility.await().untilAsserted(() -> assertThat(queueDepth("tickets.dlq")).isEqualTo(1));
 
         admin.removeBinding(ticketsBinding);
         try {
-            mvc.perform(post("/api/notifications/admin/dlq/replay?limit=5").with(Identity.admin()))
+            mvc.perform(post("/api/notifications/admin/dlq/replay?limit=5").with(Identity.admin())
+                            .header("X-Request-Id", "rid-fail"))
                     .andExpect(status().isServiceUnavailable())
                     .andExpect(jsonPath("$.type").value("https://surge.dev/problems/replay-failed"));
         } finally {
@@ -194,6 +195,12 @@ class TicketApiTest extends TicketTestBase {
         org.awaitility.Awaitility.await().untilAsserted(() -> assertThat(queueDepth("tickets.dlq")).isEqualTo(1));
         assertThat(queueDepth("tickets")).isZero();
         // The binding is restored in the finally block above; the message stays for the next test's purge.
+
+        // SEC-19: a failed replay is still audited, with how many messages it re-sent before failing
+        assertThat(output.getAll().lines().filter(l -> l.contains("ADMIN_ACTION"))
+                .map(l -> l.substring(l.indexOf("ADMIN_ACTION"))).toList()).containsExactly(
+                "ADMIN_ACTION actor=u-admin action=notification.dlq.replay target=queue:tickets.dlq,replayed:0,failed "
+                        + "requestId=rid-fail");
     }
 
     /** SEC-19: one ADMIN_ACTION line per admin action, with the verified admin and the request id; no message bodies. */

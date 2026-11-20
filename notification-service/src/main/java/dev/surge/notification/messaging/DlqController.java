@@ -2,6 +2,7 @@ package dev.surge.notification.messaging;
 
 import dev.surge.common.security.AdminAudit;
 import dev.surge.notification.error.InvalidParameterException;
+import dev.surge.notification.error.ReplayFailedException;
 import java.util.List;
 import java.util.Map;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -39,7 +40,15 @@ public class DlqController {
     @PostMapping("/replay")
     public Map<String, Integer> replay(@RequestParam(name = "limit", defaultValue = "20") String limit) {
         AdminAudit.requireAdmin("notification.dlq.replay");
-        int replayed = dlq.replay(parseLimit(limit));
+        int max = parseLimit(limit);
+        int replayed;
+        try {
+            replayed = dlq.replay(max);
+        } catch (ReplayFailedException e) {
+            // it may have re-sent messages before failing: still on the record, with the count
+            AdminAudit.log("notification.dlq.replay", TARGET + ",replayed:" + e.replayed() + ",failed");
+            throw e;
+        }
         AdminAudit.log("notification.dlq.replay", TARGET + ",replayed:" + replayed);
         return Map.of("replayed", replayed);
     }

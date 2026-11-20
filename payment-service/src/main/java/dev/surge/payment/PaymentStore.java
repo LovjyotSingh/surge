@@ -26,8 +26,14 @@ import org.springframework.stereotype.Component;
  * minutes: its retries, refunds and the reconciler's lookups happen within the hold lifetime plus a minute, and a
  * checkout replayed later is answered from booking's own order. The 24 h retention matches booking's idempotency
  * window with a wide margin. Past either bound a reference is forgotten: a later charge with it is a new charge, and
- * its status or refund is 404. A new payment always survives at least its first few hundred successors (Caffeine's
- * admission window), far longer than any booking retry.
+ * its status or refund is 404.
+ *
+ * <p>The size cap is a memory guard, not a retention promise. Below it (the normal case: a 10,000-buyer load test
+ * makes at most about 500 charges) nothing is dropped before the retention ends. Once a map is full, Caffeine's
+ * TinyLFU admission decides what goes, not age: a brand-new payment can be dropped soon after it was stored, which
+ * would let a booking retry with the same reference charge again. The two maps also evict independently, so at the
+ * cap a payment may still be found by reference but no longer refunded by id, or the reverse. Raise
+ * {@code max-payments} rather than run near it.
  */
 @Component
 public class PaymentStore {

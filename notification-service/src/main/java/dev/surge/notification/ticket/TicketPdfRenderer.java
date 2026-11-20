@@ -76,11 +76,11 @@ public class TicketPdfRenderer {
             doc.add(order);
             doc.add(new Paragraph("#" + t.orderId() + "   Total " + money(t.totalInr()), body));
 
-            Image qr = Image.getInstance(QrCodes.png(qrPayload(t), QR_PIXELS));
-            qr.scaleAbsolute(QR_POINTS, QR_POINTS);
-            qr.setAlignment(Element.ALIGN_CENTER);
-            qr.setSpacingBefore(10);
-            doc.add(qr);
+            Image qrImage = Image.getInstance(QrCodes.png(qrPayload(t), QR_PIXELS));
+            qrImage.scaleAbsolute(QR_POINTS, QR_POINTS);
+            qrImage.setAlignment(Element.ALIGN_CENTER);
+            qrImage.setSpacingBefore(10);
+            doc.add(qrImage);
             doc.close();
         } catch (DocumentException | IOException e) {
             throw new IllegalStateException("Could not render ticket PDF", e);

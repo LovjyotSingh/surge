@@ -75,7 +75,15 @@ public class AdminController {
         if (opensInSeconds < 0 || opensInSeconds > MAX_OPENS_IN_SECONDS) {
             throw new InvalidParameterException("opensInSeconds must be between 0 and " + MAX_OPENS_IN_SECONDS);
         }
-        resetService.reset(eventId, opensInSeconds);
+        try {
+            resetService.reset(eventId, opensInSeconds);
+        } catch (EventNotFoundException e) {
+            throw e; // nothing was changed: no action to audit
+        } catch (RuntimeException e) {
+            // the reset may have changed data before it failed (it is not one transaction): still on the record
+            AdminAudit.log("booking.reset", "event:" + eventId + ",failed");
+            throw e;
+        }
         AdminAudit.log("booking.reset", "event:" + eventId);
     }
 
@@ -105,6 +113,7 @@ public class AdminController {
         if (stored == null) {
             throw new ReportNotFoundException();
         }
+        AdminAudit.log("booking.report.get", "loadtest-report:latest");
         return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(stored);
     }
 

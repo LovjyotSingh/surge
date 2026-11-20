@@ -264,14 +264,20 @@ class AdminControllerTest {
         mvc.perform(Admin.as(put("/api/bookings/admin/loadtest-reports/latest")).header("X-Request-Id", "rid-report-1")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"note\":\"payload-stays-out-of-logs\"}"))
                 .andExpect(status().isNoContent());
+        mvc.perform(Admin.as(get("/api/bookings/admin/loadtest-reports/latest")).header("X-Request-Id", "rid-get-1"))
+                .andExpect(status().isOk());
         // a failed action is no action: nothing is logged for it
         mvc.perform(Admin.as(post("/api/bookings/admin/events/999/reset"))).andExpect(status().isNotFound());
+        redis.delete(RedisKeys.LOADTEST_LATEST);
+        mvc.perform(Admin.as(get("/api/bookings/admin/loadtest-reports/latest"))).andExpect(status().isNotFound());
 
         assertThat(auditLines(output)).containsExactly(
                 "ADMIN_ACTION actor=u-admin action=booking.reset target=event:1 requestId=rid-reset-1",
                 "ADMIN_ACTION actor=u-admin action=booking.integrity target=event:1 requestId=rid-integrity-1",
                 "ADMIN_ACTION actor=u-admin action=booking.report.put target=loadtest-report:latest "
-                        + "requestId=rid-report-1");
+                        + "requestId=rid-report-1",
+                "ADMIN_ACTION actor=u-admin action=booking.report.get target=loadtest-report:latest "
+                        + "requestId=rid-get-1");
         assertThat(output.getAll()).doesNotContain("payload-stays-out-of-logs");
     }
 
