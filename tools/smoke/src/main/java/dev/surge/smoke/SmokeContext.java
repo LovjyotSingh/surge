@@ -101,6 +101,16 @@ public final class SmokeContext implements AutoCloseable {
 
     /** {@code n} AVAILABLE seats of the event that no check has used yet. */
     public List<Long> freeSeats(int n) {
+        List<Long> out = tryFreeSeats(n);
+        if (out == null) {
+            throw new CheckFailure("event " + eventId() + " has fewer than " + n + " free seat(s) "
+                + "(reset it first: POST /api/bookings/admin/events/" + eventId() + "/reset?opensInSeconds=0)");
+        }
+        return out;
+    }
+
+    /** Like {@link #freeSeats} but null (not a failure) when the event has fewer than {@code n} such seats. */
+    public List<Long> tryFreeSeats(int n) {
         Api.Resp r = expect(gateway.get("/api/bookings/events/" + eventId(), null), 200, "event detail");
         List<Long> out = new ArrayList<>();
         for (JsonNode seat : r.json().path("seats")) {
@@ -112,8 +122,13 @@ public final class SmokeContext implements AutoCloseable {
                 }
             }
         }
-        throw new CheckFailure("event " + eventId() + " has only " + out.size() + " free seat(s), need " + n
-            + " (reset it first: POST /api/bookings/admin/events/" + eventId() + "/reset?opensInSeconds=0)");
+        return null;
+    }
+
+    /** Admin reset of the event: all seats free, sale open now. */
+    public void resetEvent() {
+        expect(gateway.post("/api/bookings/admin/events/" + eventId() + "/reset?opensInSeconds=0", adminToken(),
+            null), 204, "reset event " + eventId());
     }
 
     /** The state of one seat ("AVAILABLE", "HELD", "SOLD") or "" when it is not on the map. */

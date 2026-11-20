@@ -132,7 +132,7 @@ class ChecksTest {
 
     private void stubBooking(String orderTotal) {
         ctx.userToken = "user-jwt";
-        stub.on("GET /api/catalog/events/1", Reply.of(200, "{\"id\":1,\"seatsLeft\":100}"));
+        stub.on("GET /api/catalog/events/1", Reply.of(200, "{\"id\":1,\"seatsLeft\":100,\"totalSeats\":100}"));
         stub.on("GET /api/bookings/events/1", Reply.of(200, "{\"seats\":[{\"id\":5,\"state\":\"AVAILABLE\"},"
             + "{\"id\":6,\"state\":\"AVAILABLE\"},{\"id\":7,\"state\":\"SOLD\"},{\"id\":8,\"state\":\"AVAILABLE\"}]}"));
         stub.on("POST /api/bookings/holds", Reply.of(201, "{\"holdId\":\"h-1\",\"quotedTotalInr\":2400.00}"));
@@ -153,6 +153,59 @@ class ChecksTest {
         assertThat(ctx.usedSeats).containsExactlyInAnyOrder(5L, 6L);
         assertThat(stub.receivedIdempotencyKeys.get(stub.received.indexOf("POST /api/bookings/orders")))
             .startsWith("smoke-");
+    }
+
+    @Test
+    void anEventWithFreeSeatsIsNotResetFirst() throws Exception {
+        stubBooking("2400");
+
+        new HoldCheckoutCheck().run(ctx);
+
+        assertThat(stub.received).doesNotContain("POST /api/bookings/admin/events/1/reset");
+    }
+
+    @Test
+    void aSoldOutEventIsResetFirstAndThenBought() throws Exception {
+        stubBooking("2400");
+        AtomicBoolean reset = new AtomicBoolean();
+        stub.onBody("POST /api/bookings/admin/events/1/reset", b -> {
+            reset.set(true);
+            return Reply.of(204, "");
+        });
+        stub.onBody("GET /api/bookings/events/1", b -> Reply.of(200, reset.get()
+            ? "{\"seats\":[{\"id\":1,\"state\":\"AVAILABLE\"},{\"id\":2,\"state\":\"AVAILABLE\"},"
+                + "{\"id\":3,\"state\":\"AVAILABLE\"}]}"
+            : "{\"seats\":[{\"id\":1,\"state\":\"AVAILABLE\"},{\"id\":2,\"state\":\"SOLD\"}]}"));
+
+        String detail = new HoldCheckoutCheck().run(ctx);
+
+        assertThat(detail).contains("reset first");
+        assertThat(stub.received.indexOf("POST /api/bookings/admin/events/1/reset"))
+            .isLessThan(stub.received.indexOf("POST /api/bookings/holds"));
+        assertThat(stub.receivedAuth.get(stub.received.indexOf("POST /api/bookings/admin/events/1/reset")))
+            .isEqualTo("Bearer adm");
+    }
+
+    @Test
+    void theBeforeCountWaitsUntilTheCatalogHasCaughtUpWithTheReset() throws Exception {
+        stubBooking("2400");
+        stub.on("GET /api/catalog/events/1",
+            Reply.of(200, "{\"seatsLeft\":0,\"totalSeats\":100}"),
+            Reply.of(200, "{\"seatsLeft\":40,\"totalSeats\":100}"),
+            Reply.of(200, "{\"seatsLeft\":100,\"totalSeats\":100}"));
+
+        new HoldCheckoutCheck(Duration.ofSeconds(5), TICK).run(ctx);
+
+        assertThat(ctx.seatsLeftBefore).isEqualTo(100);
+    }
+
+    @Test
+    void failsWhenTheCatalogNeverShowsAFreshEvent() {
+        stubBooking("2400");
+        stub.on("GET /api/catalog/events/1", Reply.of(200, "{\"seatsLeft\":90,\"totalSeats\":100}"));
+
+        assertThatThrownBy(() -> new HoldCheckoutCheck(SHORT, TICK).run(ctx)).isInstanceOf(CheckFailure.class)
+            .hasMessageContaining("catalog").hasMessageContaining("seatsLeft=90 of 100");
     }
 
     @Test
