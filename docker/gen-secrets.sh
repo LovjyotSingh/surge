@@ -7,7 +7,9 @@
 #     gateway.jwk booking.jwk notification.jwk
 #                                         internal identity signing keys, one per issuer (docker/gen-internal-keys.sh)
 #     internal-jwks.json                  their public halves (mode 644)
-#     redis-users.acl                     Redis ACL: default user off, user "surge" (SHA-256 of its password only)
+#     redis-users.acl                     booking's Redis ACL: default user off, user "booking"
+#     redis-edge-users.acl                the gateway's Redis ACL: default user off, user "gateway"
+#                                         (each stores only the SHA-256 of the password)
 #     rabbitmq-definitions.json           RabbitMQ users (salted SHA-256), vhost, permissions and ticket topology
 #
 # Every generated value is hex (URL-safe, no quotes or backslashes), so it is valid in a Eureka URL, a Kafka JAAS
@@ -77,7 +79,7 @@ sha256_hex() {
 
 mysql_root=$(secret); mysql_auth=$(secret); mysql_booking=$(secret); mysql_catalog=$(secret)
 mysql_notification=$(secret)
-redis=$(secret)
+redis_booking=$(secret); redis_gateway=$(secret)
 rabbit_admin=$(secret); rabbit_booking=$(secret); rabbit_notification=$(secret)
 kafka_admin=$(secret); kafka_booking=$(secret); kafka_catalog=$(secret); kafka_notification=$(secret)
 elastic=$(secret); elastic_catalog=$(secret)
@@ -98,8 +100,10 @@ MYSQL_BOOKING_PASSWORD=$mysql_booking
 MYSQL_CATALOG_PASSWORD=$mysql_catalog
 MYSQL_NOTIFICATION_PASSWORD=$mysql_notification
 
-# Redis ACL user "surge" (gateway and booking-service).
-REDIS_PASSWORD=$redis
+# Redis: booking's Redis (user "booking": holds, seat streams) and the gateway's own Redis (user "gateway": rate
+# limits, token denylist).
+REDIS_BOOKING_PASSWORD=$redis_booking
+REDIS_GATEWAY_PASSWORD=$redis_gateway
 
 # RabbitMQ: surge-admin (management UI), booking (publishes tickets), notification (consumes them).
 RABBIT_ADMIN_PASSWORD=$rabbit_admin
@@ -134,13 +138,17 @@ chmod 600 "$tmp_env" || true
 mv -f -- "$tmp_env" "$env_file"
 
 # Templates are committed with LF endings; strip any CR a Windows checkout may have added anyway.
-grep -v '^#' "$root/docker/redis/users.acl.template" | tr -d '\r' \
-    | sed "s|@@REDIS_SURGE_SHA256@@|$(sha256_hex "$redis")|" > "$secrets/redis-users.acl"
+redis_acl() { # <user> <password> <output file>
+    grep -v '^#' "$root/docker/redis/users.acl.template" | tr -d '\r' \
+        | sed -e "s|@@REDIS_USER@@|$1|" -e "s|@@REDIS_PASSWORD_SHA256@@|$(sha256_hex "$2")|" > "$3"
+}
+redis_acl booking "$redis_booking" "$secrets/redis-users.acl"
+redis_acl gateway "$redis_gateway" "$secrets/redis-edge-users.acl"
 tr -d '\r' < "$root/docker/rabbitmq/definitions.json.template" \
     | sed -e "s|@@ADMIN_HASH@@|$(rabbit_hash "$rabbit_admin")|" \
           -e "s|@@BOOKING_HASH@@|$(rabbit_hash "$rabbit_booking")|" \
           -e "s|@@NOTIFICATION_HASH@@|$(rabbit_hash "$rabbit_notification")|" > "$secrets/rabbitmq-definitions.json"
-chmod 600 "$secrets/redis-users.acl" "$secrets/rabbitmq-definitions.json" || true
+chmod 600 "$secrets/redis-users.acl" "$secrets/redis-edge-users.acl" "$secrets/rabbitmq-definitions.json" || true
 
 key_flags=""
 [ "$force" -eq 1 ] && key_flags="--force"
@@ -177,6 +185,7 @@ for key in jwt gateway booking notification; do
     grant_read "$secrets/$key.jwk" 10001
 done
 grant_read "$secrets/redis-users.acl" 999
+grant_read "$secrets/redis-edge-users.acl" 999
 grant_read "$secrets/rabbitmq-definitions.json" 999
 
 echo "Wrote $env_file (mode 600) and the files in $secrets. No value was printed."

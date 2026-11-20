@@ -129,7 +129,7 @@ jobs:
           sed -E 's/^([A-Z_0-9]+)=$/\1=ci-placeholder-0123456789/' .env.example > .env
           mkdir -p docker/secrets
           for f in jwt.jwk gateway.jwk booking.jwk notification.jwk internal-jwks.json redis-users.acl \
-                   rabbitmq-definitions.json; do
+                   redis-edge-users.acl rabbitmq-definitions.json; do
             : > "docker/secrets/$f"
           done
           docker compose -f compose.yaml -f compose.dev.yaml -f compose.loadtest.yaml \

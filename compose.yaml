@@ -67,6 +67,15 @@ x-spring-env: &spring-env
 # kernel dropped 9,433 connections in one run; nginx's 3 s and the gateway's 2 s connect timeouts then failed them
 # and opened the gateway's booking circuit breaker. A deep queue lets the kernel finish every handshake and the
 # server accept it a few milliseconds later. Namespaced sysctls: they need no capability.
+# CPU priority (cgroup weight; it only matters when the host is busy). The 10,000-buyer run saturated the laptop
+# (24 threads at 2,000-2,200 %), and the gateway's fail-closed 1 s token-denylist check then timed out on scheduling
+# delay alone (Redis answered within 8 ms): 503 for thousands of buyers. The request path (nginx, gateway, booking and
+# their Redis) gets 4x the weight of the work that may lag a few seconds during a sale: ticket PDFs and email,
+# catalog's projections, the brokers and search. Left at the default weight (1024): auth, payment, mysql,
+# config-server, discovery.
+x-cpu-request-path: &cpu-request-path 2048
+x-cpu-background: &cpu-background 512
+
 x-deep-backlog: &deep-backlog
   net.core.somaxconn: 16384
   net.ipv4.tcp_max_syn_backlog: 16384
@@ -106,8 +115,10 @@ services:
       retries: 30
       start_period: 30s
 
+  # booking's Redis: seat holds (atomic Lua), its own rate limits and the seat-stream pub/sub. ACL user "booking".
   redis:
     <<: *hardened
+    cpu_shares: *cpu-request-path
     image: redis:7.4.12-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
     profiles: [core]
     user: "999:1000"
@@ -126,8 +137,35 @@ services:
       timeout: 3s
       retries: 20
 
+  # The gateway's own Redis: edge rate limits and the token denylist (checked on every signed-in request, failing
+  # closed after 1 s). ACL user "gateway". Separate from booking's because a sale's burst sent all of the gateway's
+  # Redis calls down one pipelined connection behind booking's hold scripts: Redis itself answered a PING within
+  # 8 ms, yet the tail of the gateway's queue passed 1 s and thousands of buyers got 503. It also keeps a compromised
+  # booking away from the denylist and the rate buckets (SEC-05).
+  redis-edge:
+    <<: *hardened
+    cpu_shares: *cpu-request-path
+    image: redis:7.4.12-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
+    profiles: [platform]
+    user: "999:1000"
+    command: ["redis-server", "--aclfile", "/run/secrets/redis-edge-users.acl"]
+    secrets:
+      - source: redis_edge_acl
+        target: redis-edge-users.acl
+    volumes:
+      # Keeps the denylist of logged-out tokens across a restart.
+      - redis-edge-data:/data
+    networks: [data-redis-edge]
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -h 127.0.0.1 ping 2>&1 | grep -q NOAUTH"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   kafka:
     <<: *hardened
+    cpu_shares: *cpu-background
     image: apache/kafka:4.1.2@sha256:5cc2a2fd93fa2687b44015eee04fb2c3edd9e526bd64bf8bec5ff1e268772e0e
     profiles: [platform]
     entrypoint: ["/bin/bash", "/surge/start.sh"]
@@ -167,6 +205,7 @@ services:
 
   rabbitmq:
     <<: *hardened
+    cpu_shares: *cpu-background
     image: rabbitmq:4.3.7-management@sha256:8e913a7748f808be4ce117c3df11817935775bcd83934d4de92441a7e93e9899
     profiles: [platform]
     user: "999:999"
@@ -188,6 +227,7 @@ services:
 
   elasticsearch:
     <<: *hardened
+    cpu_shares: *cpu-background
     image: docker.elastic.co/elasticsearch/elasticsearch:9.2.8@sha256:f6c331bc14f54c32ce956d0f35cf17a2d302214bdf89b7234e5c9ada09602357
     profiles: [platform]
     # The image's entrypoint writes the keystore into the config directory: copy the image's config to a tmpfs
@@ -330,6 +370,7 @@ services:
 
   catalog-service:
     <<: *hardened
+    cpu_shares: *cpu-background
     image: surge/catalog-service:local
     build:
       <<: *service-build
@@ -361,6 +402,7 @@ services:
 
   booking-service:
     <<: *hardened
+    cpu_shares: *cpu-request-path
     image: surge/booking-service:local
     build:
       <<: *service-build
@@ -372,8 +414,8 @@ services:
       MYSQL_USER: booking
       MYSQL_PASSWORD: ${MYSQL_BOOKING_PASSWORD:?run docker/gen-secrets.sh first}
       REDIS_HOST: redis
-      REDIS_USER: surge
-      REDIS_PASSWORD: ${REDIS_PASSWORD:?run docker/gen-secrets.sh first}
+      REDIS_USER: booking
+      REDIS_PASSWORD: ${REDIS_BOOKING_PASSWORD:?run docker/gen-secrets.sh first}
       KAFKA_BOOTSTRAP: kafka:9092
       KAFKA_SECURITY_PROTOCOL: SASL_PLAINTEXT
       KAFKA_USER: booking
@@ -388,6 +430,8 @@ services:
       SURGE_INTERNAL_SIGNING_KEY: /run/secrets/booking.jwk
       # Tomcat's accept queue (its yml says 1000), bounded by the somaxconn below: see x-deep-backlog.
       SERVER_TOMCAT_ACCEPTCOUNT: "16384"
+      # Heap plus direct buffers must stay under mem_limit: see the memory note on the gateway.
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=50 -XX:MaxDirectMemorySize=384m -XX:+ExitOnOutOfMemoryError"
     secrets:
       - source: internal_jwks
         target: internal-jwks.json
@@ -395,7 +439,7 @@ services:
         target: booking.jwk
     networks: [app, data-mysql, data-redis, data-kafka, data-rabbit]
     sysctls: *deep-backlog
-    mem_limit: 1g
+    mem_limit: 2g
     depends_on:
       <<: *spring-depends
       mysql: { condition: service_healthy }
@@ -405,6 +449,7 @@ services:
 
   notification-service:
     <<: *hardened
+    cpu_shares: *cpu-background
     image: surge/notification-service:local
     build:
       <<: *service-build
@@ -453,6 +498,7 @@ services:
 
   gateway:
     <<: *hardened
+    cpu_shares: *cpu-request-path
     image: surge/gateway:local
     build:
       <<: *service-build
@@ -460,33 +506,37 @@ services:
     profiles: [platform]
     environment:
       <<: *spring-env
-      REDIS_HOST: redis
-      REDIS_USER: surge
-      REDIS_PASSWORD: ${REDIS_PASSWORD:?run docker/gen-secrets.sh first}
+      REDIS_HOST: redis-edge
+      REDIS_USER: gateway
+      REDIS_PASSWORD: ${REDIS_GATEWAY_PASSWORD:?run docker/gen-secrets.sh first}
       # Only nginx (its fixed address on the edge network) may name the client in X-Forwarded-For (SEC-11).
       SURGE_TRUSTED_PROXIES: "172[.]30[.]250[.]10"
       SURGE_INTERNAL_SIGNING_KEY: /run/secrets/gateway.jwk
+      # Memory: heap (45 %) + Netty's direct buffers (capped) + metaspace and threads must stay under mem_limit. With
+      # the defaults (heap 60 %, direct memory = heap size) a 10,000-buyer burst filled the cgroup: memory.max was hit
+      # 1,603 times, the JVM's own code pages were evicted (2,534 major faults) and requests took up to 40 s.
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=45 -XX:MaxDirectMemorySize=640m -XX:+ExitOnOutOfMemoryError"
     secrets:
       - source: gateway_key
         target: gateway.jwk
     networks:
       edge: { ipv4_address: 172.30.250.20 }
       app: {}
-      data-redis: {}
+      data-redis-edge: {}
     # Netty sizes its accept queue from somaxconn when it starts.
     sysctls: *deep-backlog
-    # Every request is verified, signed and rate-limited here; at 768m a 10,000-buyer burst pushed it to its limit
-    # (swapping, Redis calls past their 1 s timeout, 503s). 1280m leaves room for Netty's direct buffers.
-    mem_limit: 1280m
+    # Every request is verified, signed, rate-limited and proxied here, with two connections per request in flight.
+    mem_limit: 2g
     depends_on:
       <<: *spring-depends
       # Every signed-in request checks the token denylist in Redis (fails closed), so Redis comes first.
-      redis: { condition: service_healthy }
+      redis-edge: { condition: service_healthy }
       # The gateway fetches auth's JWKS on the first signed-in request.
       auth-service: { condition: service_healthy }
 
   web:
     <<: *hardened
+    cpu_shares: *cpu-request-path
     image: surge/web:local
     build: ./web
     profiles: [platform]
@@ -518,6 +568,7 @@ networks:
         - subnet: 172.30.251.0/24
   data-mysql: { internal: true }
   data-redis: { internal: true }
+  data-redis-edge: { internal: true }
   data-kafka: { internal: true }
   data-rabbit: { internal: true }
   data-search: { internal: true }
@@ -527,6 +578,7 @@ networks:
 volumes:
   mysql-data:
   redis-data:
+  redis-edge-data:
   kafka-data:
   rabbitmq-data:
   es-data:
@@ -546,5 +598,7 @@ secrets:
     file: ./docker/secrets/internal-jwks.json
   redis_acl:
     file: ./docker/secrets/redis-users.acl
+  redis_edge_acl:
+    file: ./docker/secrets/redis-edge-users.acl
   rabbitmq_definitions:
     file: ./docker/secrets/rabbitmq-definitions.json
