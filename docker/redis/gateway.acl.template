@@ -1,0 +1,16 @@
+# The gateway's Redis ACL (security audit SEC-05). docker/gen-secrets.sh renders it to
+# docker/secrets/redis-edge-users.acl for the "redis-edge" container, replacing @@REDIS_PASSWORD_SHA256@@ with the
+# SHA-256 of REDIS_GATEWAY_PASSWORD (Redis compares hashes; the plain password is not in the file) and dropping these
+# comment lines (Redis ACL files take no comments).
+#
+# default: disabled, so a connection without AUTH can run nothing ("NOAUTH Authentication required").
+# gateway: exactly the commands and keys the gateway uses, and no pub/sub (resetchannels, no channel granted).
+#   Connection   HELLO/AUTH need no grant; PING, INFO (Spring Boot's health check), CLIENT SETINFO (Lettuce names its
+#                library on connect; refused, it would fill ACL LOG on every new connection).
+#   Rate limits  Spring Cloud Gateway's RedisRateLimiter: EVALSHA, then EVAL when the script is not cached, of its
+#                request_rate_limiter.lua, which calls TIME, GET and SETEX (Redis checks a script's commands and keys
+#                against these same rules). Keys request_rate_limiter.{<bucket>:<client>}.tokens and .timestamp.
+#   Denylist     security/TokenDenylist: EXISTS (every signed-in request) and SET with an expiry (logout) on
+#                surge:jwt:revoked:<jti>. The gateway never deletes a revocation.
+user default off resetpass resetkeys resetchannels -@all
+user gateway on #@@REDIS_PASSWORD_SHA256@@ resetkeys resetchannels -@all +ping +info +client|setinfo +eval +evalsha +time +get +setex +exists +set ~request_rate_limiter.* ~surge:jwt:revoked:*

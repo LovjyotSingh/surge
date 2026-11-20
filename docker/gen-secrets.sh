@@ -9,7 +9,8 @@
 #     internal-jwks.json                  their public halves (mode 644)
 #     redis-users.acl                     booking's Redis ACL: default user off, user "booking"
 #     redis-edge-users.acl                the gateway's Redis ACL: default user off, user "gateway"
-#                                         (each stores only the SHA-256 of the password)
+#                                         (from docker/redis/<user>.acl.template: each user gets only the commands,
+#                                         keys and channels its service uses; only the SHA-256 of the password)
 #     rabbitmq-definitions.json           RabbitMQ users (salted SHA-256), vhost, permissions and ticket topology
 #
 # Every generated value is hex (URL-safe, no quotes or backslashes), so it is valid in a Eureka URL, a Kafka JAAS
@@ -138,9 +139,10 @@ chmod 600 "$tmp_env" || true
 mv -f -- "$tmp_env" "$env_file"
 
 # Templates are committed with LF endings; strip any CR a Windows checkout may have added anyway.
+# Each Redis has its own template (docker/redis/<user>.acl.template): one user with only what its service uses.
 redis_acl() { # <user> <password> <output file>
-    grep -v '^#' "$root/docker/redis/users.acl.template" | tr -d '\r' \
-        | sed -e "s|@@REDIS_USER@@|$1|" -e "s|@@REDIS_PASSWORD_SHA256@@|$(sha256_hex "$2")|" > "$3"
+    grep -v '^#' "$root/docker/redis/$1.acl.template" | tr -d '\r' \
+        | sed -e "s|@@REDIS_PASSWORD_SHA256@@|$(sha256_hex "$2")|" > "$3"
 }
 redis_acl booking "$redis_booking" "$secrets/redis-users.acl"
 redis_acl gateway "$redis_gateway" "$secrets/redis-edge-users.acl"

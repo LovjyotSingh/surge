@@ -1,0 +1,21 @@
+# booking's Redis ACL (security audit SEC-05). docker/gen-secrets.sh renders it to docker/secrets/redis-users.acl for
+# the "redis" container, replacing @@REDIS_PASSWORD_SHA256@@ with the SHA-256 of REDIS_BOOKING_PASSWORD (Redis compares
+# hashes; the plain password is not in the file) and dropping these comment lines (Redis ACL files take no comments).
+#
+# default: disabled, so a connection without AUTH can run nothing ("NOAUTH Authentication required").
+# booking: exactly the commands, keys and channels booking-service uses, nothing else (no KEYS, FLUSH*, CONFIG, ACL,
+#   MONITOR, DEBUG, SCRIPT, other keys). Keep in step with booking's code when it starts using Redis differently.
+#   Connection   HELLO/AUTH need no grant; PING, INFO (Spring Boot's health check), CLIENT SETINFO (Lettuce names its
+#                library on connect; refused, it would fill ACL LOG on every new connection).
+#   Scripts      EVALSHA, then EVAL when the script is not cached (Spring Data Redis). Redis checks every command
+#                and key a script calls against these same rules:
+#                hold.lua      GET ZREMRANGEBYSCORE ZCARD SISMEMBER EXISTS SET HSET PEXPIRE ZADD
+#                finalize.lua  SADD GET DEL ZREM          release.lua  GET DEL ZREM
+#                sweep.lua     ZREM EXISTS SISMEMBER      token_bucket.lua  TIME HMGET HSET PEXPIRE
+#                IdempotencyStore's two scripts  GET DEL SET
+#   Direct       GET SET (also NX/PX) MGET HGETALL SCARD SADD DEL ZRANGE ZRANGEBYSCORE ZREM SCAN (the event reset)
+#   Keys         seat:<event>:<seat> sold:<event> hold:<id> userhold:<event>:<user> userholds:<user> holds:expiry
+#                idem:<user>:<key> rate:holds:<user> loadtest:latest (hold/RedisKeys.java)
+#   Pub/sub      PUBLISH to and PSUBSCRIBE (pattern exactly seats:*) on the seat channels seats:<event>
+user default off resetpass resetkeys resetchannels -@all
+user booking on #@@REDIS_PASSWORD_SHA256@@ resetkeys resetchannels -@all +ping +info +client|setinfo +eval +evalsha +time +get +set +mget +del +exists +pexpire +scan +hset +hmget +hgetall +sadd +sismember +scard +zadd +zrem +zcard +zrange +zrangebyscore +zremrangebyscore +publish +psubscribe +punsubscribe ~seat:* ~sold:* ~hold:* ~userhold:* ~userholds:* ~holds:expiry ~idem:* ~rate:holds:* ~loadtest:latest &seats:*
