@@ -139,8 +139,8 @@ public final class SmokeContext implements AutoCloseable {
     }
 
     /** Puts the payment chaos settings (admin). */
-    public void setChaos(double errorRate) {
-        String body = "{\"failureRate\":0,\"latencyMs\":0,\"errorRate\":" + errorRate + "}";
+    public void setChaos(double errorRate, int latencyMs) {
+        String body = "{\"failureRate\":0,\"latencyMs\":" + latencyMs + ",\"errorRate\":" + errorRate + "}";
         expect(gateway.put("/api/payments/admin/chaos", adminToken(), body), 204, "set payment chaos");
     }
 

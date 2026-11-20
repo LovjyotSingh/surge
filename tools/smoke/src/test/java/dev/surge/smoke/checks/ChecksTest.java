@@ -265,8 +265,21 @@ class ChecksTest {
             held.set(true);
             return Reply.of(201, "{\"holdId\":\"h-2\",\"quotedTotalInr\":1200}");
         });
-        stub.onBody("POST /api/bookings/orders", b -> on.get() || !recovers
-            ? Reply.of(503, problem("payment-unavailable")) : Reply.of(201, "{\"orderId\":88,\"totalInr\":1200}"));
+        // Like the real stack: calls that reach payment are slow; once the circuit is open (after 3 calls) they are not.
+        AtomicInteger reachedPayment = new AtomicInteger();
+        stub.onBody("POST /api/bookings/orders", b -> {
+            if (!on.get() && recovers) {
+                return Reply.of(201, "{\"orderId\":88,\"totalInr\":1200}");
+            }
+            if (on.get() && reachedPayment.incrementAndGet() <= 3) {
+                try {
+                    Thread.sleep(80);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            return Reply.of(503, problem("payment-unavailable"));
+        });
         return on;
     }
 
@@ -274,7 +287,7 @@ class ChecksTest {
     void chaosOpensTheCircuitThenRecovers() throws Exception {
         stubChaos(true);
 
-        String detail = new PaymentChaosCheck(6, Duration.ofMillis(50), Duration.ofSeconds(2), TICK).run(ctx);
+        String detail = new PaymentChaosCheck(6, Duration.ofMillis(50), Duration.ofSeconds(2), TICK, 50).run(ctx);
 
         assertThat(detail).contains("fast").contains("recovered");
         int puts = (int) stub.received.stream().filter("PUT /api/payments/admin/chaos"::equals).count();
@@ -284,10 +297,32 @@ class ChecksTest {
     }
 
     @Test
+    void chaosIsSetWithLatencyAndLatencyIsClearedAgain() throws Exception {
+        stubChaos(true);
+
+        new PaymentChaosCheck(6, Duration.ofMillis(50), Duration.ofSeconds(2), TICK, 50).run(ctx);
+
+        int firstPut = stub.received.indexOf("PUT /api/payments/admin/chaos");
+        int lastPut = stub.received.lastIndexOf("PUT /api/payments/admin/chaos");
+        assertThat(stub.receivedBodies.get(firstPut)).contains("\"latencyMs\":500").contains("\"errorRate\":1.0");
+        assertThat(stub.receivedBodies.get(lastPut)).contains("\"latencyMs\":0").contains("\"errorRate\":0.0");
+    }
+
+    @Test
+    void chaosFailsWhenTheFirstFailingCheckoutIsNotSlow() {
+        stubChaos(true);
+
+        assertThatThrownBy(() -> new PaymentChaosCheck(6, Duration.ofMillis(50), Duration.ofSeconds(1), TICK, 5_000)
+            .run(ctx)).isInstanceOf(CheckFailure.class).hasMessageContaining("first failing checkout took only");
+        assertThat(stub.receivedBodies.get(stub.received.lastIndexOf("PUT /api/payments/admin/chaos")))
+            .contains("\"errorRate\":0.0");
+    }
+
+    @Test
     void chaosFailsWhenPaymentNeverRecoversButStillSwitchesChaosOff() {
         stubChaos(false);
 
-        assertThatThrownBy(() -> new PaymentChaosCheck(6, Duration.ofMillis(50), Duration.ofMillis(300), TICK)
+        assertThatThrownBy(() -> new PaymentChaosCheck(6, Duration.ofMillis(50), Duration.ofMillis(300), TICK, 50)
             .run(ctx)).isInstanceOf(CheckFailure.class).hasMessageContaining("recover");
         assertThat(stub.receivedBodies.get(stub.received.lastIndexOf("PUT /api/payments/admin/chaos")))
             .contains("\"errorRate\":0.0");
@@ -298,7 +333,7 @@ class ChecksTest {
         stubChaos(true);
         stub.on("POST /api/bookings/orders", Reply.of(201, "{\"orderId\":1,\"totalInr\":1}"));
 
-        assertThatThrownBy(() -> new PaymentChaosCheck(6, Duration.ofMillis(50), Duration.ofSeconds(1), TICK)
+        assertThatThrownBy(() -> new PaymentChaosCheck(6, Duration.ofMillis(50), Duration.ofSeconds(1), TICK, 50)
             .run(ctx)).isInstanceOf(CheckFailure.class).hasMessageContaining("payment-unavailable");
         assertThat(stub.receivedBodies.get(stub.received.lastIndexOf("PUT /api/payments/admin/chaos")))
             .contains("\"errorRate\":0.0");
@@ -311,7 +346,7 @@ class ChecksTest {
             + "{\"id\":9,\"state\":\"AVAILABLE\"}]}"));
         stub.on("POST /api/bookings/holds", Reply.of(201, "{\"holdId\":\"h-2\",\"quotedTotalInr\":1200}"));
 
-        assertThatThrownBy(() -> new PaymentChaosCheck(6, Duration.ofMillis(50), Duration.ofSeconds(1), TICK)
+        assertThatThrownBy(() -> new PaymentChaosCheck(6, Duration.ofMillis(50), Duration.ofSeconds(1), TICK, 50)
             .run(ctx)).isInstanceOf(CheckFailure.class).hasMessageContaining("held");
     }
 

@@ -18,7 +18,7 @@ public final class CleanupCheck implements Check {
     public String run(SmokeContext ctx) {
         String chaosProblem = null;
         try {
-            ctx.setChaos(0.0);
+            ctx.setChaos(0.0, 0);
         } catch (RuntimeException e) {
             chaosProblem = "could not switch payment chaos off (" + e.getMessage() + ")";
         }
