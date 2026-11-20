@@ -2,7 +2,9 @@ package dev.surge.gateway;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import dev.surge.gateway.error.ProblemWriter;
 import dev.surge.gateway.support.GatewayTestBase;
+import io.github.resilience4j.bulkhead.Bulkhead;
 import io.github.resilience4j.bulkhead.BulkheadConfig;
 import java.time.Duration;
 import java.util.List;
@@ -12,7 +14,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cloud.circuitbreaker.resilience4j.ReactiveResilience4jBulkheadProvider;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.test.web.reactive.server.WebTestClient;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 
@@ -53,6 +57,47 @@ class CircuitBreakerBulkheadTest extends GatewayTestBase {
                 .block(Duration.ofSeconds(30));
 
         assertThat(statuses).hasSize(CONCURRENT_HOLDS).containsOnly(201);
+    }
+
+    /**
+     * P2-R26: overload is an honest, retryable answer. A full bulkhead gives 503 {@code service-busy} with
+     * {@code Retry-After: 1} at once (no time-limiter wait); booking never sees the call. Other 503s stay
+     * {@code service-unavailable} ({@code GatewayRoutingTest.downstreamDownGives503Problem}).
+     */
+    @Test
+    void aFullBulkheadAnswersAtOnceWithServiceBusyAndRetryAfter() throws Exception {
+        hold("u-busy-0").expectStatus().isOk();
+        assertThat(BOOKING.next()).isNotNull();
+        // The provider created "booking" with its configured limit on that first call; take every permit it has.
+        Bulkhead booking = bulkheads.getBulkheadRegistry().bulkhead("booking");
+        int taken = 0;
+        while (booking.tryAcquirePermission()) {
+            taken++;
+        }
+        try {
+            assertThat(taken).isEqualTo(5000);
+            long start = System.nanoTime();
+            hold("u-busy-1").expectStatus().isEqualTo(HttpStatus.SERVICE_UNAVAILABLE)
+                    .expectHeader().valueEquals(HttpHeaders.RETRY_AFTER, "1")
+                    .expectHeader().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON)
+                    .expectBody()
+                    .jsonPath("$.type").isEqualTo(ProblemWriter.TYPE_BASE + "service-busy")
+                    .jsonPath("$.title").isEqualTo("Service busy")
+                    .jsonPath("$.status").isEqualTo(503);
+            assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(2));
+            assertThat(BOOKING.sawNothing()).isTrue();
+        } finally {
+            for (int i = 0; i < taken; i++) {
+                booking.onComplete();
+            }
+        }
+        // With a permit free again the next hold goes through.
+        hold("u-busy-2").expectStatus().isOk();
+    }
+
+    private WebTestClient.ResponseSpec hold(String user) {
+        return client.post().uri("/api/bookings/holds").header(HttpHeaders.AUTHORIZATION, bearer(userToken(user)))
+                .contentType(MediaType.APPLICATION_JSON).bodyValue("{\"eventId\":1,\"seatIds\":[1]}").exchange();
     }
 
     @Test

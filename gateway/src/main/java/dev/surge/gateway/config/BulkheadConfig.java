@@ -13,7 +13,8 @@ import org.springframework.context.annotation.Configuration;
  * The bulkhead inside each circuit breaker ({@link RouteConfig#BOOKING_BREAKER}, {@link RouteConfig#CATALOG_BREAKER}):
  * how many calls the gateway lets wait on that service at once. Each breaker has its own limit,
  * {@code surge.gateway.bulkhead.*} in application.yml (env {@code SURGE_GATEWAY_BULKHEAD_BOOKING} and so on), where
- * the numbers are explained. One call more is refused at once and gets the breaker's 503 fallback.
+ * the numbers are explained. One call more is refused at once and gets 503 {@code service-busy} with
+ * {@code Retry-After: 1} ({@code fallback.FallbackController}), an answer clients retry.
  *
  * <p>With {@code resilience4j-bulkhead} on the classpath, Spring Cloud CircuitBreaker wraps each reactive circuit
  * breaker in a Resilience4j semaphore bulkhead. Its library default, 25 concurrent calls, was never a choice: in the

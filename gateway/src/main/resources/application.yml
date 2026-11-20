@@ -71,9 +71,9 @@ surge:
   gateway:
     breaker-timeout: 10s
     # How many calls each circuit breaker lets wait on its service at once (a Resilience4j semaphore bulkhead,
-    # config/BulkheadConfig). One more is refused AT ONCE with the breaker's 503 fallback: it never queues (a wait
-    # would block a Netty thread) and never opens the breaker. Override per breaker in the environment, e.g.
-    # SURGE_GATEWAY_BULKHEAD_BOOKING=8000.
+    # config/BulkheadConfig). One more is refused AT ONCE with 503 service-busy and Retry-After: 1 (fallback/
+    # FallbackController), which clients retry: it never queues (a wait would block a Netty thread) and never opens
+    # the breaker. Override per breaker in the environment, e.g. SURGE_GATEWAY_BULKHEAD_BOOKING=8000.
     bulkhead:
       # Holds and checkouts. booking-service's Tomcat takes 20,000 connections (its server.tomcat.max-connections),
       # and up to 15,000 of them may be seat streams (surge.stream.max-subscribers-total), which take the stream route
