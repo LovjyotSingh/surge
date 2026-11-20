@@ -15,9 +15,9 @@ import java.util.Map;
  * an anonymous admin reset, a forged X-User-Id, a forged "lt-" token, security headers on the page, no-store on the
  * API, and logout revoking the token.
  *
- * <p>The load-test subject rule ("lt-" tokens refused unless the load-test overlay is on) is exercised with a
- * hand-made unsigned token, which has no valid signature, so it is refused either way. Proving the rule itself needs
- * a validly signed lt- token, which only the load-test overlay can mint.
+ * <p>"lt-" buyers: on the base stack nobody can get a validly signed one, because the admin mint endpoint is not
+ * registered (404; that is the control checked). The hand-made unsigned lt- token is kept as a cheap check that the
+ * gateway verifies signatures; it does not prove the gateway's own lt- subject rule.
  */
 public final class SecurityCheck implements Check {
 
@@ -55,6 +55,15 @@ public final class SecurityCheck implements Check {
             problems.add("forged lt- token: expected 401 but got " + forgedToken.describe());
         }
 
+        // The test-token controller is not even registered unless SURGE_AUTH_TEST_TOKENS is set (only the load-test
+        // overlay does that), so an admin asking for synthetic lt- buyers gets a plain 404 on this stack.
+        Api.Resp mint = api.post("/api/auth/admin/test-tokens", ctx.adminToken(),
+            "{\"prefix\":\"lt-smoke\",\"count\":1}");
+        if (mint.status() != 404) {
+            problems.add("admin test-tokens (lt- buyers): expected 404 because minting is off, got "
+                + mint.describe() + " (is compose.loadtest.yaml in use?)");
+        }
+
         Api.Resp page = api.get("/", null);
         List<String> missing = PAGE_HEADERS.stream().filter(h -> page.header(h).isEmpty()).toList();
         if (page.status() != 200 || !missing.isEmpty()) {
@@ -81,7 +90,7 @@ public final class SecurityCheck implements Check {
         if (!problems.isEmpty()) {
             throw new CheckFailure(String.join("; ", problems));
         }
-        return "anonymous reset 401, forged X-User-Id 401, forged lt- token 401, page headers ok, /api no-store, "
+        return "anonymous reset 401, forged X-User-Id 401, forged lt- token 401, lt- minting off (404), page headers ok, /api no-store, "
             + "logout revokes the token";
     }
 

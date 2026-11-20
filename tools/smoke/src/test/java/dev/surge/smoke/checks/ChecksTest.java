@@ -458,6 +458,7 @@ class ChecksTest {
             "Permissions-Policy", "camera=()", "Cross-Origin-Opener-Policy", "same-origin")));
         stub.on("GET /api/catalog/events/1", Reply.of(200, "{}", java.util.Map.of("Cache-Control", "no-store")));
         stub.on("POST /api/auth/logout", Reply.of(204, ""));
+        stub.on("POST /api/auth/admin/test-tokens", Reply.of(404, problem("not-found")));
         stub.on("GET /api/auth/me", Reply.of(401, problem("missing-user")));
     }
 
@@ -479,11 +480,12 @@ class ChecksTest {
         stub.on("POST /api/bookings/admin/events/1/reset", Reply.of(204, ""));
         stub.on("GET /api/catalog/events/1", Reply.of(200, "{}"));
         stub.on("GET /api/auth/me", Reply.of(200, "{}"));
+        stub.on("POST /api/auth/admin/test-tokens", Reply.of(200, "{\"tokens\":[]}"));
 
         assertThatThrownBy(() -> new SecurityCheck().run(ctx)).isInstanceOf(CheckFailure.class)
             .hasMessageContaining("anonymous reset")
             .hasMessageContaining("no-store")
-            .hasMessageContaining("logout");
+            .hasMessageContaining("logout").hasMessageContaining("test-tokens");
     }
 
     @Test
