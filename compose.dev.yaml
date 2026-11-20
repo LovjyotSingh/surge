@@ -31,7 +31,7 @@ services:
       MP_MAX_MESSAGES: "2000"
     ports:
       - "127.0.0.1:8025:8025"
-    networks: [egress]
+    networks: [egress, mail-api]
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
@@ -119,5 +119,15 @@ services:
     networks:
       devhost: {}
 
+  # The smoke test (compose.yaml, profile smoke) reads the verification code and the ticket email from Mailpit's
+  # API, over a network that has nothing else on it.
+  smoke:
+    networks:
+      mail-api: {}
+    depends_on:
+      mailpit: { condition: service_healthy }
+
 networks:
   devhost: {}
+  # Only Mailpit and the smoke test: its HTTP API (every email, so verification codes), no internet.
+  mail-api: { internal: true }

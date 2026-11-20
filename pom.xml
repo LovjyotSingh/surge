@@ -40,6 +40,7 @@
         <module>notification-service</module>
         <module>gateway</module>
         <module>tools/loadtest</module>
+        <module>tools/smoke</module>
     </modules>
 
     <dependencyManagement>
