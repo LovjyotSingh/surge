@@ -10,9 +10,10 @@
 #
 # What this file guarantees:
 #   - Only web (nginx) publishes a port. Everything else is reachable only from the networks below.
-#   - Networks: edge (web, gateway); app (internal: gateway, services, discovery, config-server); one internal
-#     data network per store, joined only by the services that use that store; egress (auth and notification only,
-#     for SMTP and S3).
+#   - Networks: public (web only: carries its published port); edge (internal: web, gateway); app (internal:
+#     gateway, services, discovery, config-server); one internal data network per store, joined only by the services
+#     that use that store; egress (auth and notification only, for SMTP and S3). Only public and egress reach the
+#     internet, so the gateway (which holds gateway.jwk) cannot.
 #   - No credential has a default: every one comes from .env (docker/gen-secrets.sh), and every Spring service runs
 #     with SURGE_ENV=prod, so it refuses to start with a development key or a missing credential.
 #   - Every container: all capabilities dropped, no-new-privileges, read-only root file system (writes go to tmpfs
@@ -541,9 +542,11 @@ services:
     build: ./web
     profiles: [platform]
     ports:
-      # The only published port. S10 (compose.prod.yaml) maps 80/443 with TLS instead.
+      # The only published port, on the public network (a port cannot be published from an internal network). S10
+      # (compose.prod.yaml) maps 80/443 with TLS instead.
       - "127.0.0.1:8080:8080"
     networks:
+      public: {}
       edge: { ipv4_address: 172.30.250.10 }
     # nginx's listen backlog (nginx.conf) is bounded by this.
     sysctls: *deep-backlog
@@ -554,9 +557,14 @@ services:
       gateway: { condition: service_healthy }
 
 networks:
-  # nginx and the gateway. A fixed subnet so the gateway can trust exactly nginx's address (SURGE_TRUSTED_PROXIES).
-  # Change the subnet, the two ipv4_address values and SURGE_TRUSTED_PROXIES together.
+  # Clients to nginx: web alone joins it, so that its port can be published (Docker publishes no port from an internal
+  # network). Not internal, so web is also the one container on the request path with a route to the internet.
+  public: {}
+  # nginx and the gateway, with no route to the internet: the gateway holds gateway.jwk. The test overlays add their
+  # client here (compose.loadtest.yaml). A fixed subnet so the gateway can trust exactly nginx's address
+  # (SURGE_TRUSTED_PROXIES). Change the subnet, the two ipv4_address values and SURGE_TRUSTED_PROXIES together.
   edge:
+    internal: true
     ipam:
       config:
         - subnet: 172.30.250.0/24
