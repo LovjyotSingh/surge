@@ -15,6 +15,7 @@ import org.springframework.core.Ordered;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * Redis token-bucket limiter that answers a denied request with a {@code rate-limited} problem and {@code Retry-After}
@@ -116,6 +117,9 @@ public class RateLimitFilter implements GatewayFilter, Ordered {
                     return limiter.isAllowed(bucket, bucket + ":" + maybeKey.get())
                             .onErrorResume(e -> Mono.just(new RateLimiter.Response(true,
                                     Map.of(limiter.getRemainingHeader(), "-1"))))
+                            // The rest of the request (later filters, routing) runs off the Redis client's reply
+                            // thread, so it never delays other requests' replies (see TokenDenylist#isRevoked).
+                            .publishOn(Schedulers.parallel())
                             .flatMap(response -> decide(exchange, chain, response));
                 });
     }

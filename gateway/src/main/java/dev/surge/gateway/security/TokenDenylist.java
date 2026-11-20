@@ -5,6 +5,7 @@ import java.time.Instant;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * Revoked user tokens (SEC-18), by {@code jti}, in Redis so every gateway instance sees a logout at once. An entry
@@ -28,8 +29,15 @@ public class TokenDenylist {
         this.redis = redis;
     }
 
+    /**
+     * The rest of the request (the security chain, the internal identity signature, the filters) continues on Reactor's
+     * parallel scheduler, never on the Redis client's thread that delivered the reply: there it would delay the replies
+     * of every other request queued behind it, and under a sale's burst those passed {@link #TIMEOUT} although Redis had
+     * answered in milliseconds (the 10,000-buyer run: 3,315 buyers got 503 from this timeout).
+     */
     public Mono<Boolean> isRevoked(String jti) {
-        return redis.hasKey(PREFIX + jti).timeout(TIMEOUT).defaultIfEmpty(Boolean.FALSE);
+        return redis.hasKey(PREFIX + jti).timeout(TIMEOUT).defaultIfEmpty(Boolean.FALSE)
+                .publishOn(Schedulers.parallel());
     }
 
     /** Denies {@code jti} until {@code expiresAt} (plus the skew); at least one second. */
