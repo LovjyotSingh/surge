@@ -2,6 +2,7 @@ package dev.surge.notification.ticket;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import dev.surge.common.security.SurgeEnv;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.ZoneId;
@@ -16,11 +17,15 @@ import org.openpdf.text.pdf.parser.PdfTextExtractor;
 
 class TicketPdfRendererTest {
 
-    private final TicketData data = new TicketData(1234L, "u-7", "Coldplay: Music of the Spheres",
+    /** Tests sign with the development key, as a dev run does. */
+    private static final TicketQr QR = TicketQr.fromConfig(null, SurgeEnv.DEV);
+
+    private final TicketData data = new TicketData(1234L, "u-7", 3L, "Coldplay: Music of the Spheres",
             "Jawaharlal Nehru Stadium", ZonedDateTime.of(2027, 1, 18, 19, 30, 0, 0, ZoneId.of("Asia/Kolkata")),
             List.of("PLATINUM A1", "PLATINUM A2"), new BigDecimal("4499"));
 
-    private final byte[] pdf = new TicketPdfRenderer().render(data);
+    private final TicketPdfRenderer renderer = new TicketPdfRenderer(QR);
+    private final byte[] pdf = renderer.render(data);
 
     @Test
     void startsWithPdfMagic() {
@@ -38,12 +43,12 @@ class TicketPdfRendererTest {
     }
 
     private static TicketData with(String title, List<String> seats) {
-        return new TicketData(77L, "u-1", title, "Venue", ZonedDateTime.of(2027, 1, 18, 19, 30, 0, 0,
+        return new TicketData(77L, "u-1", 5L, title, "Venue", ZonedDateTime.of(2027, 1, 18, 19, 30, 0, 0,
                 ZoneId.of("Asia/Kolkata")), seats, new BigDecimal("1499.50"));
     }
 
     private static String textOfOnePage(TicketData d) throws Exception {
-        PdfReader reader = new PdfReader(new TicketPdfRenderer().render(d));
+        PdfReader reader = new PdfReader(new TicketPdfRenderer(QR).render(d));
         assertThat(reader.getNumberOfPages()).isEqualTo(1);
         return new PdfTextExtractor(reader).getTextFromPage(1);
     }
@@ -63,7 +68,7 @@ class TicketPdfRendererTest {
 
     @Test
     void rendersConcurrentlyOnVirtualThreads() throws Exception {
-        TicketPdfRenderer renderer = new TicketPdfRenderer();
+        TicketPdfRenderer renderer = new TicketPdfRenderer(QR);
         try (var pool = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
             List<java.util.concurrent.Future<Integer>> pages = new java.util.ArrayList<>();
             for (int i = 0; i < 50; i++) {
@@ -101,13 +106,26 @@ class TicketPdfRendererTest {
         assertThat(text).contains("?");
         assertThat(TicketPdfRenderer.pdfSafe("अर")).isEqualTo("??");
         assertThat(TicketPdfRenderer.pdfSafe("Café 😀")).isEqualTo("Café ?");
-        assertThat(TicketPdfRenderer.qrPayload(with("x", List.of("A1")))).isEqualTo("surge:ticket:77:u-1");
+    }
+
+    /**
+     * SEC-20: the QR is {@code orderId.userId.<base64url HMAC-SHA256>} over the order, the user and the event, so it
+     * verifies for this ticket's event only. The guessable {@code surge:ticket:<orderId>:<userId>} is gone.
+     */
+    @Test
+    void theQrPayloadIsTheSignedTicket() {
+        String payload = renderer.qrPayload(data);
+        assertThat(payload).matches("^1234\\.u-7\\.[A-Za-z0-9_-]{43}$").doesNotContain("surge:ticket");
+        assertThat(QR.verify(payload, 3L)).isTrue();
+        assertThat(QR.verify(payload, 4L)).isFalse();
+        assertThat(renderer.qrPayload(with("x", List.of("A1")))).startsWith("77.u-1.")
+                .satisfies(p -> assertThat(QR.verify(p, 5L)).isTrue());
     }
 
     /**
      * OpenPDF stores a 1-bit PNG as CCITT G4, which its own reader cannot decode, so the pixels are not read back
-     * here. Decoding is proven by QrCodesTest; this test proves the PDF embeds a square image and that the encoded
-     * payload is the documented one.
+     * here. Decoding is proven by QrCodesTest and TicketQrTest; this test proves the PDF embeds a square image and
+     * that the encoded payload has the documented format.
      */
     @Test
     void embedsTheQrCodeImage() throws Exception {
@@ -125,6 +143,6 @@ class TicketPdfRendererTest {
         assertThat(images.get(0).getAsNumber(PdfName.WIDTH).intValue())
                 .isEqualTo(images.get(0).getAsNumber(PdfName.HEIGHT).intValue())
                 .isGreaterThanOrEqualTo(100);
-        assertThat(TicketPdfRenderer.qrPayload(data)).isEqualTo("surge:ticket:1234:u-7");
+        assertThat(renderer.qrPayload(data)).matches("^1234\\.u-7\\.[A-Za-z0-9_-]{43}$");
     }
 }

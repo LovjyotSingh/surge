@@ -75,8 +75,8 @@ public class TicketWorkflow {
         CatalogEvent event = catalog.event(message.eventId());
         String email = users.email(message.userId());
 
-        TicketData data = new TicketData(message.orderId(), message.userId(), event.title(), event.venueName(),
-                event.startsAtLocal(), order.seatLabels(), order.totalInr());
+        TicketData data = new TicketData(message.orderId(), message.userId(), message.eventId(), event.title(),
+                event.venueName(), event.startsAtLocal(), order.seatLabels(), order.totalInr());
         byte[] pdf = renderer.render(data);
         String key = store.put(message.orderId(), pdf);
 

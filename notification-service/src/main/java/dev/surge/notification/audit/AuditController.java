@@ -1,6 +1,6 @@
 package dev.surge.notification.audit;
 
-import dev.surge.common.security.CurrentIdentity;
+import dev.surge.common.security.AdminAudit;
 import dev.surge.notification.error.InvalidParameterException;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
@@ -14,7 +14,8 @@ import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Admin view of the daily audit file. The gateway and the identity chain let only ADMINs reach it; the controller
- * checks again ({@code CurrentIdentity}).
+ * checks again ({@code CurrentIdentity}, through {@link AdminAudit}) before it judges the {@code String} parameters
+ * (which cannot fail to bind), and writes one {@code ADMIN_ACTION} line per successful read.
  */
 @RestController
 @RequestMapping("/api/notifications/admin/audit")
@@ -36,10 +37,13 @@ public class AuditController {
     @GetMapping
     public AuditView audit(@RequestParam(name = "date", required = false) String date,
                            @RequestParam(name = "tail", defaultValue = "50") String tail) {
-        CurrentIdentity.requireAdmin();
+        AdminAudit.requireAdmin("notification.audit.tail");
         LocalDate day = date == null ? writer.today() : parseDate(date);
         AuditLogWriter.Tail result = writer.tail(day, parseTail(tail));
-        return new AuditView(day.toString(), result.lines(), result.tail().stream().map(this::parseLine).toList());
+        AuditView view = new AuditView(day.toString(), result.lines(),
+                result.tail().stream().map(this::parseLine).toList());
+        AdminAudit.log("notification.audit.tail", "audit:" + day);
+        return view;
     }
 
     private JsonNode parseLine(String line) {

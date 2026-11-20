@@ -41,8 +41,8 @@ class AccessRulesConfig {
                             "/api/bookings/orders/**").access(InternalAccess.gatewayUser())
                     .requestMatchers(HttpMethod.GET, "/internal/orders/*")
                     .access(InternalAccess.service(InternalTokens.SVC_NOTIFICATION));
-            // A developer's browser on the service port, without a token; never outside dev (S8 also turns
-            // springdoc off there). The gateway routes none of these paths.
+            // A developer's browser on the service port, without a token; never outside dev (common's
+            // DevOnlyApiDocs also turns springdoc itself off there). The gateway routes none of these paths.
             if (env == SurgeEnv.DEV) {
                 rules.requestMatchers(HttpMethod.GET, API_DOCS).permitAll();
             } else {

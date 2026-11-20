@@ -14,7 +14,10 @@ import dev.surge.auth.support.IntegrationTest;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.http.MediaType;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
@@ -22,6 +25,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 @IntegrationTest
+@ExtendWith(OutputCaptureExtension.class)
 class TestTokenControllerTest {
 
     @Autowired
@@ -92,5 +96,25 @@ class TestTokenControllerTest {
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         assertThat((List<?>) JsonPath.read(json, "$.tokens")).hasSize(20000);
         assertThat((System.nanoTime() - start) / 1_000_000_000).isLessThan(60);
+    }
+
+    /** SEC-19: a mint writes one ADMIN_ACTION line with the prefix and count only, never a token. */
+    @Test
+    void aMintWritesOneAuditLineWithoutTokens(CapturedOutput output) throws Exception {
+        String json = mvc.perform(mint("USER,ADMIN", "{\"prefix\":\"lt-audit\",\"count\":3}")
+                        .header("X-Request-Id", "rid-mint")).andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        // refused by validation: no action, no line
+        mvc.perform(mint("ADMIN", "{\"prefix\":\"nope\",\"count\":3}")).andExpect(status().isBadRequest());
+
+        assertThat(output.getAll().lines().filter(l -> l.contains("ADMIN_ACTION"))
+                .map(l -> l.substring(l.indexOf("ADMIN_ACTION"))).toList()).containsExactly(
+                "ADMIN_ACTION actor=u-mint action=auth.test-tokens.mint target=prefix:lt-audit,count:3 "
+                        + "requestId=rid-mint");
+        List<String> tokens = JsonPath.read(json, "$.tokens[*].token");
+        assertThat(tokens).hasSize(3).allSatisfy(token -> {
+            assertThat(output.getAll()).doesNotContain(token);
+            assertThat(output.getAll()).doesNotContain(token.substring(token.lastIndexOf('.') + 1));
+        });
     }
 }

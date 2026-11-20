@@ -57,4 +57,26 @@ class RequestIdFilterTest {
         var response = run("a".repeat(65), seen);
         assertThat(response.getHeader("X-Request-Id")).matches(UUID_REGEX);
     }
+
+    /** SEC-26: the gateway's rule, so a caller that reaches a service directly cannot forge log lines. */
+    @Test
+    void replacesAnythingButTheSafeCharacters() throws Exception {
+        for (String unsafe : new String[] {"a b<script>", "abc\nrequestId=evil", "a\tb", "x;y", "ä", "a%20b",
+                "id=1", "\"q\""}) {
+            var seen = new AtomicReference<String>();
+            var response = run(unsafe, seen);
+            assertThat(response.getHeader("X-Request-Id")).as(unsafe).matches(UUID_REGEX);
+            assertThat(seen.get()).as(unsafe).matches(UUID_REGEX);
+        }
+    }
+
+    @Test
+    void keepsEverySafeId() throws Exception {
+        for (String safe : new String[] {"a", "A.b_c-D9", "x".repeat(64),
+                "0f8fad5b-d9cb-469f-a165-70867728950e"}) {
+            var seen = new AtomicReference<String>();
+            assertThat(run(safe, seen).getHeader("X-Request-Id")).isEqualTo(safe);
+            assertThat(seen.get()).isEqualTo(safe);
+        }
+    }
 }

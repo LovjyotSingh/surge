@@ -17,8 +17,11 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeoutException;
+import jakarta.persistence.EntityManagerFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -46,12 +49,39 @@ class SaleMoveLockingTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired PlatformTransactionManager transactions;
     @Autowired TestData testData;
+    @Autowired EntityManagerFactory entityManagerFactory;
+
+    /**
+     * The two transactions run on their own two threads: on the shared common pool, a busy or single-core machine
+     * could leave the second task queued behind the first one's latch wait, and the test would hang, not prove a lock.
+     */
+    private ExecutorService pool;
+
+    @BeforeEach
+    void startPool() {
+        pool = Executors.newFixedThreadPool(2);
+    }
+
+    @AfterEach
+    void stopPool() {
+        pool.shutdownNow();
+    }
 
     @BeforeEach
     @AfterEach
     void cleanUp() {
         testData.deleteEvent(EVENT);
         jdbc.update("DELETE FROM processed_message WHERE consumer = 'booking-catalog'");
+    }
+
+    /**
+     * A checkout updates its seats in ascending id order (Hibernate's {@code order_updates}, and OrderWriter sorts
+     * them too), the same order the guard's locking read meets them in, so the two can wait for each other but never
+     * deadlock.
+     */
+    @Test
+    void checkoutUpdatesSeatsInAscendingIdOrder() {
+        assertThat(entityManagerFactory.getProperties()).containsEntry("hibernate.order_updates", "true");
     }
 
     @Test
@@ -64,10 +94,10 @@ class SaleMoveLockingTest {
                 markSold(seat);
                 sold.countDown();
                 await(commit);
-            }));
+            }), pool);
             assertThat(sold.await(10, SECONDS)).isTrue();
 
-            CompletableFuture<Void> move = CompletableFuture.runAsync(() -> handler.handle(scheduled(MOVED)));
+            CompletableFuture<Void> move = CompletableFuture.runAsync(() -> handler.handle(scheduled(MOVED)), pool);
             assertBlocked(move);
 
             commit.countDown();
@@ -91,10 +121,11 @@ class SaleMoveLockingTest {
                 handler.handle(scheduled(MOVED));
                 checked.countDown();
                 await(release);
-            }));
+            }), pool);
             assertThat(checked.await(10, SECONDS)).isTrue();
 
-            CompletableFuture<Void> checkout = CompletableFuture.runAsync(() -> inTransaction(() -> markSold(seat)));
+            CompletableFuture<Void> checkout = CompletableFuture.runAsync(() -> inTransaction(() -> markSold(seat)),
+                    pool);
             assertBlocked(checkout);
 
             release.countDown();

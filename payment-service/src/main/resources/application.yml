@@ -31,6 +31,11 @@ surge:
     allowed-issuers:
       - gateway
       - "svc:booking"
+  payment-store:
+    # SEC-29: the fake provider keeps at most this many payments (about 25 MB at 50,000) and forgets each one this long
+    # after it was made. booking needs a stored result for minutes (retries, refunds, reconciliation); see PaymentStore.
+    max-payments: 50000
+    retention: PT24H
 
 eureka:
   client:

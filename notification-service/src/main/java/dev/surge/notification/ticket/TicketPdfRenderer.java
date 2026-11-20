@@ -38,8 +38,14 @@ public class TicketPdfRenderer {
 
     private static final DateTimeFormatter WHEN =
             DateTimeFormatter.ofPattern("EEE d MMM yyyy, HH:mm z", Locale.ENGLISH);
-    private static final int QR_PIXELS = 360;
+    static final int QR_PIXELS = 360;
     private static final float QR_POINTS = 110f;
+
+    private final TicketQr qr;
+
+    public TicketPdfRenderer(TicketQr qr) {
+        this.qr = qr;
+    }
 
     public byte[] render(TicketData t) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -70,11 +76,11 @@ public class TicketPdfRenderer {
             doc.add(order);
             doc.add(new Paragraph("#" + t.orderId() + "   Total " + money(t.totalInr()), body));
 
-            Image qr = Image.getInstance(QrCodes.png(qrPayload(t), QR_PIXELS));
-            qr.scaleAbsolute(QR_POINTS, QR_POINTS);
-            qr.setAlignment(Element.ALIGN_CENTER);
-            qr.setSpacingBefore(10);
-            doc.add(qr);
+            Image qrImage = Image.getInstance(QrCodes.png(qrPayload(t), QR_PIXELS));
+            qrImage.scaleAbsolute(QR_POINTS, QR_POINTS);
+            qrImage.setAlignment(Element.ALIGN_CENTER);
+            qrImage.setSpacingBefore(10);
+            doc.add(qrImage);
             doc.close();
         } catch (DocumentException | IOException e) {
             throw new IllegalStateException("Could not render ticket PDF", e);
@@ -160,8 +166,9 @@ public class TicketPdfRenderer {
         return from == to ? prefix + from : prefix + from + "–" + row + to;
     }
 
-    static String qrPayload(TicketData t) {
-        return "surge:ticket:" + t.orderId() + ":" + t.userId();
+    /** The signed QR text ({@link TicketQr}): {@code orderId.userId.<HMAC over order, user and event>}. */
+    String qrPayload(TicketData t) {
+        return qr.payload(t.orderId(), t.userId(), t.eventId());
     }
 
     public static String money(BigDecimal inr) {

@@ -18,7 +18,10 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
@@ -26,6 +29,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 @IntegrationTest
+@ExtendWith(OutputCaptureExtension.class)
 class PaymentControllerTest {
 
     @Autowired
@@ -217,6 +221,25 @@ class PaymentControllerTest {
         mvc.perform(get("/api/payments/admin/chaos").with(Identity.admin())).andExpect(status().isOk())
                 .andExpect(jsonPath("$.failureRate").value(0.25)).andExpect(jsonPath("$.latencyMs").value(120))
                 .andExpect(jsonPath("$.errorRate").value(0.5));
+    }
+
+    /** SEC-19: one ADMIN_ACTION line per chaos read or change, with the verified admin and the request id. */
+    @Test
+    void chaosActionsWriteOneAuditLineEach(CapturedOutput output) throws Exception {
+        mvc.perform(get("/api/payments/admin/chaos").with(Identity.admin()).header("X-Request-Id", "rid-get"))
+                .andExpect(status().isOk());
+        mvc.perform(put("/api/payments/admin/chaos").with(Identity.admin()).header("X-Request-Id", "rid-put")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"failureRate\":0.125,\"latencyMs\":0,\"errorRate\":0}"))
+                .andExpect(status().isNoContent());
+        // invalid values change nothing: no line
+        setChaos(1.5, 0, 0, "ADMIN").andExpect(status().isBadRequest());
+
+        assertThat(output.getAll().lines().filter(l -> l.contains("ADMIN_ACTION"))
+                .map(l -> l.substring(l.indexOf("ADMIN_ACTION"))).toList()).containsExactly(
+                "ADMIN_ACTION actor=u-admin action=payment.chaos.get target=chaos requestId=rid-get",
+                "ADMIN_ACTION actor=u-admin action=payment.chaos.put target=chaos requestId=rid-put");
+        assertThat(output.getAll()).doesNotContain("0.125");
     }
 
     @Test

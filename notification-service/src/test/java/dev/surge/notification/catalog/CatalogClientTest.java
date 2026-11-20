@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import dev.surge.common.security.IdentityTokens;
+import dev.surge.common.security.SurgeEnv;
 import dev.surge.notification.config.ClientsConfig;
 import dev.surge.notification.support.SignedRequests;
 import java.time.Duration;
@@ -27,7 +28,7 @@ class CatalogClientTest {
         server.start();
         client = new CatalogClient(ClientsConfig.restClient(RestClient.builder(),
                 server.url("/").toString(), Duration.ofMillis(300), IdentityTokens.signer("svc:notification"),
-                "catalog-service"));
+                "catalog-service", SurgeEnv.DEV));
     }
 
     @AfterEach

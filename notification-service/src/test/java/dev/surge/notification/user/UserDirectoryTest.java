@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import dev.surge.common.security.IdentityTokens;
+import dev.surge.common.security.SurgeEnv;
 import dev.surge.notification.config.ClientsConfig;
 import dev.surge.notification.support.SignedRequests;
 import java.time.Duration;
@@ -27,7 +28,7 @@ class UserDirectoryTest {
         server.start();
         directory = new UserDirectory(ClientsConfig.restClient(RestClient.builder(),
                 server.url("/").toString(), Duration.ofMillis(300), IdentityTokens.signer("svc:notification"),
-                "auth-service"));
+                "auth-service", SurgeEnv.DEV));
     }
 
     @AfterEach

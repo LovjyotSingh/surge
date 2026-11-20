@@ -29,7 +29,8 @@ import tools.jackson.databind.json.JsonMapper;
  * {@code gateway.jwk}, {@code booking.jwk}, {@code notification.jwk} (private P-256 JWKs, {@code kid} = issuer name,
  * owner-only where the file system supports POSIX permissions; on Windows they get the directory's default ACL) and
  * {@code internal-jwks.json} (every public half). Existing files are never overwritten unless {@code --force} is given,
- * and then all four are staged first and moved into place together; {@code --dev} labels the files DEV ONLY. Key
+ * and then all four are staged first and moved into place one after another ({@link #generate}: atomic per file, not
+ * as a set); {@code --dev} labels the files DEV ONLY. Key
  * material is written to the files only, never to the console.
  *
  * <pre>InternalKeyGen [--force] [--dev] &lt;output-dir&gt;</pre>
@@ -95,9 +96,12 @@ public final class InternalKeyGen {
     }
 
     /**
-     * Writes all four files, or none when one exists and {@code force} is off. Everything is generated and written in
-     * a private staging directory next to the targets first, then moved into place (atomically per file where the
-     * file system can), so a failure half-way never leaves a mix of old and new keys. Returns the paths written.
+     * Writes all four files, or none when one exists and {@code force} is off. Every key is generated and every file
+     * written in a private staging directory next to the targets first, so a generation or write failure happens
+     * before anything is moved and leaves the existing files untouched. Then each file is moved into place on its
+     * own: atomically per file where the file system can, but NOT as a set. If a move fails part-way (disk full,
+     * permissions, a crash), some targets already hold new keys and the rest still hold old ones; re-run with
+     * {@code --force} to get a consistent set. Returns the paths written.
      */
     static List<Path> generate(Path dir, boolean force, boolean dev) throws IOException, JOSEException {
         Files.createDirectories(dir);

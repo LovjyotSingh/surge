@@ -93,13 +93,13 @@ class ApiErrorsTest {
         String holdId = JsonPath.read(held.getResponse().getContentAsString(), "$.holdId");
         doThrow(new IllegalStateException("gateway password=hunter2")).when(gateway).charge(any());
 
-        MvcResult r = perform(post("/api/bookings/orders").with(Identity.user("u1")).header("Idempotency-Key", "k1")
+        MvcResult r = perform(post("/api/bookings/orders").with(Identity.user("u1")).header("Idempotency-Key", "key-0001")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"holdId\":\"" + holdId + "\"}"),
                 HttpStatus.INTERNAL_SERVER_ERROR, "internal-error").andReturn();
 
         assertThat(r.getResponse().getContentAsString()).doesNotContain("hunter2").doesNotContain("IllegalState");
         // The failed request released its idempotency key, so the user can retry with it.
-        assertThat(redis.hasKey(RedisKeys.idempotency("u1", "k1"))).isFalse();
+        assertThat(redis.hasKey(RedisKeys.idempotency("u1", "key-0001"))).isFalse();
     }
 
     @Test

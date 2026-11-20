@@ -127,22 +127,41 @@ class InternalTokenSigningInterceptorTest {
 
     @Test
     void theAudienceComesFromTheClientsTargetCheckedAgainstItsBaseUrl() {
-        assertThat(InternalAudiences.forClient("catalog-service", "http://catalog-service")).isEqualTo(
-                "catalog-service");
-        assertThat(InternalAudiences.forClient("catalog-service", "http://catalog-service:8083/x")).isEqualTo(
-                "catalog-service");
-        // a stub or a direct address keeps the client's own target
-        assertThat(InternalAudiences.forClient("catalog-service", "http://localhost:51234/")).isEqualTo(
-                "catalog-service");
-        assertThat(InternalAudiences.forClient("auth-service", "http://10.0.0.7:8082")).isEqualTo("auth-service");
+        assertThat(InternalAudiences.forClient("catalog-service", "http://catalog-service", SurgeEnv.DEV))
+                .isEqualTo("catalog-service");
+        assertThat(InternalAudiences.forClient("catalog-service", "http://catalog-service:8083/x", SurgeEnv.DEV))
+                .isEqualTo("catalog-service");
+        // in dev, a stub or a direct address keeps the client's own target
+        assertThat(InternalAudiences.forClient("catalog-service", "http://localhost:51234/", SurgeEnv.DEV))
+                .isEqualTo("catalog-service");
+        assertThat(InternalAudiences.forClient("auth-service", "http://10.0.0.7:8082", SurgeEnv.DEV))
+                .isEqualTo("auth-service");
         // a base URL that names another service fails startup
         for (String wrong : List.of("http://booking-service", "http://BOOKING-SERVICE:8081")) {
-            assertThatThrownBy(() -> InternalAudiences.forClient("catalog-service", wrong))
-                    .isInstanceOf(IllegalStateException.class).hasMessageContaining("wrong service");
+            for (SurgeEnv env : SurgeEnv.values()) {
+                assertThatThrownBy(() -> InternalAudiences.forClient("catalog-service", wrong, env))
+                        .isInstanceOf(IllegalStateException.class).hasMessageContaining("wrong service");
+            }
         }
-        assertThatThrownBy(() -> InternalAudiences.forClient("catalogue", "http://catalog-service"))
+        assertThatThrownBy(() -> InternalAudiences.forClient("catalogue", "http://catalog-service", SurgeEnv.DEV))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> InternalAudiences.forClient("catalog-service", "http://bad host/"))
+        assertThatThrownBy(() -> InternalAudiences.forClient("catalog-service", "http://bad host/", SurgeEnv.DEV))
                 .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> InternalAudiences.forClient("catalog-service", "http://catalog-service", null))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /** In prod the client must name its target exactly: no stub host, no address, nothing a typo could reach. */
+    @Test
+    void inProdTheBaseUrlHostMustBeTheTargetServiceExactly() {
+        assertThat(InternalAudiences.forClient("catalog-service", "http://catalog-service", SurgeEnv.PROD))
+                .isEqualTo("catalog-service");
+        assertThat(InternalAudiences.forClient("payment-service", "http://payment-service:8084/api", SurgeEnv.PROD))
+                .isEqualTo("payment-service");
+        for (String other : List.of("http://localhost:51234/", "http://10.0.0.7:8083", "http://CATALOG-SERVICE",
+                "http://catalog-service.internal", "http://catalog", "/relative", "http://booking-service")) {
+            assertThatThrownBy(() -> InternalAudiences.forClient("catalog-service", other, SurgeEnv.PROD))
+                    .as(other).isInstanceOf(IllegalStateException.class);
+        }
     }
 }

@@ -2,6 +2,7 @@ package dev.surge.catalog.stats;
 
 import dev.surge.catalog.error.EventNotFoundException;
 import dev.surge.catalog.event.EventRepository;
+import dev.surge.common.security.AdminAudit;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
@@ -13,6 +14,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+/** Admin-only (identity chain, then AdminAccess before binding); each read writes one ADMIN_ACTION audit line. */
 @RestController
 @RequestMapping("/api/catalog/admin/stats")
 public class StatsController {
@@ -36,7 +38,9 @@ public class StatsController {
         List<SalesRow> rows = jdbc.query("SELECT day, tickets_sold, revenue_inr FROM sales_daily WHERE event_id = ?",
                 (rs, i) -> new SalesRow(rs.getObject("day", LocalDate.class), rs.getLong("tickets_sold"),
                         rs.getBigDecimal("revenue_inr")), eventId);
-        return aggregate(rows);
+        List<DailySales> daily = aggregate(rows);
+        AdminAudit.log("catalog.stats.daily", "event:" + eventId);
+        return daily;
     }
 
     /** Sums the rows per date, oldest date first. */

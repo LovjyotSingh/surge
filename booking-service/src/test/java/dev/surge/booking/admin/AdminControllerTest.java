@@ -21,7 +21,10 @@ import java.util.Set;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -31,6 +34,7 @@ import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 @IntegrationTest
+@ExtendWith(OutputCaptureExtension.class)
 class AdminControllerTest {
 
     @Autowired MockMvc mvc;
@@ -99,7 +103,7 @@ class AdminControllerTest {
 
     @Test
     void resetWithoutAdminDeletesNothing() throws Exception {
-        buy("u1", "k1", "[1]");
+        buy("u1", "key-0001", "[1]");
         mvc.perform(post("/api/bookings/admin/events/1/reset").with(Identity.user("u1")))
                 .andExpect(status().isForbidden());
         assertThat(count("SELECT COUNT(*) FROM orders WHERE event_id = 1")).isEqualTo(1);
@@ -109,7 +113,7 @@ class AdminControllerTest {
 
     @Test
     void integrityAfterSales() throws Exception {
-        buy("u1", "k1", "[1,2]");
+        buy("u1", "key-0001", "[1,2]");
         mvc.perform(Admin.as(get("/api/bookings/admin/events/1/integrity"))).andExpect(status().isOk())
                 .andExpect(jsonPath("$.eventId").value(1))
                 .andExpect(jsonPath("$.totalSeats").value(500))
@@ -122,7 +126,7 @@ class AdminControllerTest {
 
     @Test
     void integrityFlagsASoldSeatWithoutAnOrder() throws Exception {
-        buy("u1", "k1", "[1]");
+        buy("u1", "key-0001", "[1]");
         jdbc.update("UPDATE seat SET status = 'SOLD' WHERE id = 10");
         mvc.perform(Admin.as(get("/api/bookings/admin/events/1/integrity"))).andExpect(status().isOk())
                 .andExpect(jsonPath("$.soldSeats").value(2))
@@ -134,14 +138,14 @@ class AdminControllerTest {
     /** C1: a load test re-run reuses its keys after a reset. The stale key must not 404 or strand the new hold. */
     @Test
     void sameIdempotencyKeyBuysAgainAfterReset() throws Exception {
-        int firstOrder = buy("u1", "K", "[1]");
+        int firstOrder = buy("u1", "key-K000", "[1]");
 
         mvc.perform(Admin.as(post("/api/bookings/admin/events/1/reset"))).andExpect(status().isNoContent());
-        String key = RedisKeys.idempotency("u1", "K");
+        String key = RedisKeys.idempotency("u1", "key-K000");
         assertThat(redis.opsForValue().get(key)).isEqualTo(String.valueOf(firstOrder)); // reset keeps idem keys
 
         String holdId = hold("u1", "[1]");
-        MvcResult r = checkout("u1", "K", holdId).andExpect(status().isCreated())
+        MvcResult r = checkout("u1", "key-K000", holdId).andExpect(status().isCreated())
                 .andExpect(header().doesNotExist("Idempotent-Replayed")).andReturn();
         int secondOrder = JsonPath.read(r.getResponse().getContentAsString(), "$.orderId");
 
@@ -165,7 +169,7 @@ class AdminControllerTest {
 
     @Test
     void resetRestoresEverything() throws Exception {
-        buy("u1", "k1", "[1]");
+        buy("u1", "key-0001", "[1]");
         hold("u2", "[2]");
         redis.opsForValue().set("idem:u1:keep", "1");
         // An unrelated event's hold member must survive.
@@ -248,6 +252,39 @@ class AdminControllerTest {
                         .content(big))
                 .andExpect(status().isContentTooLarge())
                 .andExpect(jsonPath("$.type").value("https://surge.dev/problems/report-too-large"));
+    }
+
+    /** SEC-19: one ADMIN_ACTION line per admin action, with the verified admin and the request id; no payload. */
+    @Test
+    void everyAdminActionWritesOneAuditLine(CapturedOutput output) throws Exception {
+        mvc.perform(Admin.as(post("/api/bookings/admin/events/1/reset")).header("X-Request-Id", "rid-reset-1"))
+                .andExpect(status().isNoContent());
+        mvc.perform(Admin.as(get("/api/bookings/admin/events/1/integrity")).header("X-Request-Id", "rid-integrity-1"))
+                .andExpect(status().isOk());
+        mvc.perform(Admin.as(put("/api/bookings/admin/loadtest-reports/latest")).header("X-Request-Id", "rid-report-1")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"note\":\"payload-stays-out-of-logs\"}"))
+                .andExpect(status().isNoContent());
+        mvc.perform(Admin.as(get("/api/bookings/admin/loadtest-reports/latest")).header("X-Request-Id", "rid-get-1"))
+                .andExpect(status().isOk());
+        // a failed action is no action: nothing is logged for it
+        mvc.perform(Admin.as(post("/api/bookings/admin/events/999/reset"))).andExpect(status().isNotFound());
+        redis.delete(RedisKeys.LOADTEST_LATEST);
+        mvc.perform(Admin.as(get("/api/bookings/admin/loadtest-reports/latest"))).andExpect(status().isNotFound());
+
+        assertThat(auditLines(output)).containsExactly(
+                "ADMIN_ACTION actor=u-admin action=booking.reset target=event:1 requestId=rid-reset-1",
+                "ADMIN_ACTION actor=u-admin action=booking.integrity target=event:1 requestId=rid-integrity-1",
+                "ADMIN_ACTION actor=u-admin action=booking.report.put target=loadtest-report:latest "
+                        + "requestId=rid-report-1",
+                "ADMIN_ACTION actor=u-admin action=booking.report.get target=loadtest-report:latest "
+                        + "requestId=rid-get-1");
+        assertThat(output.getAll()).doesNotContain("payload-stays-out-of-logs");
+    }
+
+    /** The audit part of each ADMIN_ACTION line on the console (the log pattern adds a timestamp and logger). */
+    static java.util.List<String> auditLines(CapturedOutput output) {
+        return output.getAll().lines().filter(l -> l.contains("ADMIN_ACTION"))
+                .map(l -> l.substring(l.indexOf("ADMIN_ACTION"))).toList();
     }
 
     @Test

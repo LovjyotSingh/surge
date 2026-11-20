@@ -98,6 +98,8 @@ It resets event 1, runs, prints the report, shows it on the **Ops** page (http:/
 
 If you start auth-service by hand (outside compose), set `SURGE_ENV=dev` explicitly, for example `SURGE_ENV=dev ./mvnw -pl auth-service spring-boot:run`. With the variable missing it also defaults to `dev` and logs a warning that the public development admin password is in use. Never expose such an instance; real deployments set `SURGE_ENV=prod` and a `SURGE_ADMIN_PASSWORD` of at least 16 characters.
 
+**Tickets and admin audit.** Ticket QR codes are signed: `orderId.userId.<HMAC-SHA256>` with `SURGE_TICKET_QR_KEY` (base64 of at least 32 random bytes, `openssl rand -base64 32`; unset in dev = a committed dev key with a warning; prod refuses unset or the dev key). Every admin action logs one `ADMIN_ACTION actor=… action=… target=… requestId=…` line (logger `surge.admin-audit`).
+
 Stop everything with `docker compose --profile core down` (add `-v` to also delete the database data).
 
 Ports on your machine, all bound to `127.0.0.1` so nothing is reachable from your network: `8080` web and API through Nginx, `8081` booking-service directly (health, and the API docs in dev), `3307` MySQL, `6379` Redis.

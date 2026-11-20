@@ -1,0 +1,3 @@
+# SEC-27: springdoc only in SURGE_ENV=dev (dev.surge.common.security.DevOnlyApiDocs).
+org.springframework.boot.EnvironmentPostProcessor=\
+dev.surge.common.security.DevOnlyApiDocs
