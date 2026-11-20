@@ -43,4 +43,29 @@ class LoadTestConfigTest {
         assertThatThrownBy(() -> LoadTestConfig.parse(new String[] {"--users"}))
             .isInstanceOf(IllegalArgumentException.class);
     }
+
+    /** S10: compose mounts the admin password as a secret file and names it in SURGE_ADMIN_PASSWORD_FILE. */
+    @Test
+    void readsThePasswordFromTheFileNamedInTheEnvironment(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir)
+            throws java.io.IOException {
+        java.nio.file.Path file = java.nio.file.Files.writeString(dir.resolve("SURGE_ADMIN_PASSWORD"),
+            "password-from-a-file\n");
+
+        LoadTestConfig fromFile = LoadTestConfig.parse(new String[0],
+            java.util.Map.of("SURGE_ADMIN_PASSWORD_FILE", file.toString())::get);
+        assertThat(fromFile.adminPassword()).isEqualTo("password-from-a-file");
+
+        // the flag still wins
+        assertThat(LoadTestConfig.parse(new String[] {"--admin-password", "flag-pw"},
+            java.util.Map.of("SURGE_ADMIN_PASSWORD_FILE", file.toString())::get).adminPassword()).isEqualTo("flag-pw");
+
+        // both ways at once is refused, an unreadable file too, and neither shows a value
+        assertThatThrownBy(() -> LoadTestConfig.parse(new String[0], java.util.Map.of(
+                "SURGE_ADMIN_PASSWORD", "env-pw", "SURGE_ADMIN_PASSWORD_FILE", file.toString())::get))
+            .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("SURGE_ADMIN_PASSWORD_FILE")
+            .hasMessageNotContaining("env-pw").hasMessageNotContaining("password-from-a-file");
+        assertThatThrownBy(() -> LoadTestConfig.parse(new String[0],
+                java.util.Map.of("SURGE_ADMIN_PASSWORD_FILE", dir.resolve("missing").toString())::get))
+            .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("SURGE_ADMIN_PASSWORD_FILE");
+    }
 }
