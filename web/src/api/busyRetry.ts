@@ -4,6 +4,10 @@ import { ApiError } from './client'
  * P2-R26: the gateway answers 503 `service-busy` (with Retry-After) when a service already has as many calls as it may
  * take. The request was not processed, so sending it again unchanged is safe (same seats, same Idempotency-Key). A few
  * retries cover a sale's opening burst; after that the user gets a message and can try again.
+ *
+ * Each retry still spends a rate-limit token: the gateway's limiters run before its circuit breaker (see its
+ * FallbackController), so a busy attempt has already been counted. That is why there are only a few retries, each at
+ * least Retry-After (1 s) apart, well inside the per-user hold and order limits (2/s); more would end in 429.
  */
 export const BUSY_RETRIES = 3
 

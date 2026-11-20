@@ -23,6 +23,12 @@ import reactor.core.publisher.Mono;
  *       retry (P2-R26). It comes at once: the bulkhead refuses while subscribing, before any time limiter runs.</li>
  *   <li>Anything else (connection refused, the time limiter, an open breaker): 503 {@code service-unavailable}.</li>
  * </ul>
+ *
+ * <p>A busy answer still costs the caller rate-limit tokens: on the hold and order routes the rate limiters
+ * ({@code RouteConfig}: holds 2/s burst 10 and holds-ip 20/min, orders 2/s burst 10) run before the circuit breaker, so
+ * every attempt, refused or not, has already taken its token. Each retry takes another, and a client that retries
+ * often enough gets 429 instead. That order is deliberate (the limiters protect the breaker and the bulkhead too) and
+ * stays; a load test must watch its rate-limited count next to its busy retries.
  */
 @RestController
 public class FallbackController {
