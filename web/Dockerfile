@@ -10,13 +10,17 @@ RUN npm run build \
     && if grep -Eq '<script>|<script [^>]*>[^<]|<style|style=' dist/index.html; then \
          echo "dist/index.html has inline script or style; the CSP would block it" >&2; exit 1; fi
 
-# nginx stable branch, unprivileged (uid 101, listens on 8080; 8443 comes with TLS in S10). The slim variant has
-# no curl, xslt or other modules nginx.conf does not use; apk upgrade applies Alpine security fixes released after
-# the base image was built (the images job in CI fails on any fixable HIGH or CRITICAL).
-FROM nginxinc/nginx-unprivileged:1.30.6-alpine-slim@sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6
+# nginx stable branch, official image, run unprivileged as its nginx user (uid 101). This is everything the
+# nginxinc/nginx-unprivileged variant adds, done here so a security release is usable the day it ships (1.30.7
+# fixed six CVEs before an unprivileged 1.30.7 existed): nginx.conf already puts the pid file and every temp path
+# in /tmp and listens on 8080 (8443 comes with TLS in S10), and the cache directory is handed to uid 101. The slim
+# variant has no curl, xslt or other modules nginx.conf does not use; apk upgrade applies Alpine security fixes
+# released after the base image was built (the images job in CI fails on any fixable HIGH or CRITICAL).
+FROM nginx:1.30.7-alpine-slim@sha256:8c950211a641ec5b23f265450517001f6bcca533666120ebe36cb4cff3d00a55
 USER root
-# The stock server block (conf.d/default.conf) would answer on 8080 next to ours.
-RUN apk upgrade --no-cache && rm -f /etc/nginx/conf.d/default.conf
+# The stock server block (conf.d/default.conf) would answer on port 80 next to ours.
+RUN apk upgrade --no-cache && rm -f /etc/nginx/conf.d/default.conf \
+    && chown -R 101:101 /var/cache/nginx
 COPY --chown=root:root nginx.conf /etc/nginx/nginx.conf
 COPY --chown=root:root nginx/ /etc/nginx/surge/
 COPY --chown=root:root --from=build /app/dist /usr/share/nginx/html
