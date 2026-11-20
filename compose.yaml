@@ -61,7 +61,7 @@ x-spring-env: &spring-env
   EUREKA_PASSWORD: ${EUREKA_PASSWORD:?run docker/gen-secrets.sh first}
   # Register the address on the app network with Eureka (a service on several networks would otherwise pick the
   # first interface, possibly a data network the gateway cannot reach).
-  SPRING_CLOUD_INETUTILS_PREFERREDNETWORKS: "172.30.251."
+  SPRING_CLOUD_INETUTILS_PREFERREDNETWORKS: "10.30.251."
 
 # The request path (nginx -> gateway -> booking) takes a whole sale's burst at once: the 10,000-buyer load test opens
 # ~10,000 connections in the same instant on every hop. With the default accept queue (somaxconn 4096) the gateway's
@@ -511,7 +511,7 @@ services:
       REDIS_USER: gateway
       REDIS_PASSWORD: ${REDIS_GATEWAY_PASSWORD:?run docker/gen-secrets.sh first}
       # Only nginx (its fixed address on the edge network) may name the client in X-Forwarded-For (SEC-11).
-      SURGE_TRUSTED_PROXIES: "172[.]30[.]250[.]10"
+      SURGE_TRUSTED_PROXIES: "10[.]30[.]250[.]10"
       SURGE_INTERNAL_SIGNING_KEY: /run/secrets/gateway.jwk
       # Memory: heap (45 %) + Netty's direct buffers (capped) + metaspace and threads must stay under mem_limit. With
       # the defaults (heap 60 %, direct memory = heap size) a 10,000-buyer burst filled the cgroup: memory.max was hit
@@ -521,7 +521,7 @@ services:
       - source: gateway_key
         target: gateway.jwk
     networks:
-      edge: { ipv4_address: 172.30.250.20 }
+      edge: { ipv4_address: 10.30.250.20 }
       app: {}
       data-redis-edge: {}
     # Netty sizes its accept queue from somaxconn when it starts.
@@ -547,7 +547,7 @@ services:
       - "127.0.0.1:8080:8080"
     networks:
       public: {}
-      edge: { ipv4_address: 172.30.250.10 }
+      edge: { ipv4_address: 10.30.250.10 }
     # nginx's listen backlog (nginx.conf) is bounded by this.
     sysctls: *deep-backlog
     pids_limit: 256
@@ -590,17 +590,19 @@ networks:
   # nginx and the gateway, with no route to the internet: the gateway holds gateway.jwk. The test overlays add their
   # client here (compose.loadtest.yaml). A fixed subnet so the gateway can trust exactly nginx's address
   # (SURGE_TRUSTED_PROXIES). Change the subnet, the two ipv4_address values and SURGE_TRUSTED_PROXIES together.
+  # Both fixed subnets sit in 10.30.0.0/16, outside Docker's default address pools (172.17-31.0.0/16 and
+  # 192.168.0.0/16): an auto-assigned network (the dev overlay alone adds eight) can then never overlap them.
   edge:
     internal: true
     ipam:
       config:
-        - subnet: 172.30.250.0/24
+        - subnet: 10.30.250.0/24
   # Service to service. Fixed so each service registers this address with Eureka (SPRING_CLOUD_INETUTILS_…).
   app:
     internal: true
     ipam:
       config:
-        - subnet: 172.30.251.0/24
+        - subnet: 10.30.251.0/24
   data-mysql: { internal: true }
   data-redis: { internal: true }
   data-redis-edge: { internal: true }
