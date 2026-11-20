@@ -13,8 +13,8 @@ import java.util.List;
 
 /**
  * Hold two seats, pay: the order's total must equal the quote the hold gave. First makes sure the event is fresh:
- * if it has fewer than three free seats (a load test leaves it sold out) it is reset as admin, and the catalog must
- * show every seat free before the "before" count is read (the catalog learns of a reset through Kafka).
+ * it is always reset as admin (a load test leaves it sold out, a failed cleanup leaves it part sold), and the
+ * catalog must show every seat free before the "before" count is read (the catalog learns of a reset through Kafka).
  */
 public final class HoldCheckoutCheck implements Check {
 
@@ -43,11 +43,8 @@ public final class HoldCheckoutCheck implements Check {
     @Override
     public String run(SmokeContext ctx) {
         String token = ctx.requireUserToken();
-        boolean reset = false;
-        if (ctx.tryFreeSeats(3) == null) {
-            ctx.resetEvent();
-            reset = true;
-        }
+        // Always start from a fresh event: a run whose cleanup failed, or a load test, must not break this one.
+        ctx.resetEvent();
         Api.Resp event = Poll.until("the catalog to show every seat of event " + ctx.eventId() + " free", wait,
             interval, () -> {
                 Api.Resp r = ctx.api().get("/api/catalog/events/" + ctx.eventId(), null);
@@ -77,6 +74,6 @@ public final class HoldCheckoutCheck implements Check {
         ctx.orderId = order.json().path("orderId").asLong();
         ctx.quotedTotal = quote;
         return "order " + ctx.orderId + ": seats " + seats + ", charged " + total.toPlainString()
-            + " INR = quote" + (reset ? " (event was reset first)" : "");
+            + " INR = quote (event reset first)";
     }
 }

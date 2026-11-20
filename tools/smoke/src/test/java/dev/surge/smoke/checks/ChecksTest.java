@@ -132,6 +132,7 @@ class ChecksTest {
 
     private void stubBooking(String orderTotal) {
         ctx.userToken = "user-jwt";
+        stub.on("POST /api/bookings/admin/events/1/reset", Reply.of(204, ""));
         stub.on("GET /api/catalog/events/1", Reply.of(200, "{\"id\":1,\"seatsLeft\":100,\"totalSeats\":100}"));
         stub.on("GET /api/bookings/events/1", Reply.of(200, "{\"seats\":[{\"id\":5,\"state\":\"AVAILABLE\"},"
             + "{\"id\":6,\"state\":\"AVAILABLE\"},{\"id\":7,\"state\":\"SOLD\"},{\"id\":8,\"state\":\"AVAILABLE\"}]}"));
@@ -156,12 +157,23 @@ class ChecksTest {
     }
 
     @Test
-    void anEventWithFreeSeatsIsNotResetFirst() throws Exception {
+    void theEventIsResetFirstEvenWhenItHasFreeSeats() throws Exception {
         stubBooking("2400");
 
         new HoldCheckoutCheck().run(ctx);
 
-        assertThat(stub.received).doesNotContain("POST /api/bookings/admin/events/1/reset");
+        assertThat(stub.received.indexOf("POST /api/bookings/admin/events/1/reset")).isGreaterThanOrEqualTo(0)
+            .isLessThan(stub.received.indexOf("POST /api/bookings/holds"));
+    }
+
+    @Test
+    void failsWhenTheResetIsRefused() {
+        stubBooking("2400");
+        stub.on("POST /api/bookings/admin/events/1/reset", Reply.of(403, problem("forbidden")));
+
+        assertThatThrownBy(() -> new HoldCheckoutCheck().run(ctx)).isInstanceOf(CheckFailure.class)
+            .hasMessageContaining("reset event");
+        assertThat(stub.received).doesNotContain("POST /api/bookings/holds");
     }
 
     @Test
