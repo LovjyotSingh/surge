@@ -4,10 +4,17 @@
 # writes them to .env; compose passes them to the mysql container only).
 #
 # Run once by the mysql image's entrypoint (docker-entrypoint-initdb.d) on an EMPTY data directory, after
-# 01-databases.sql. The entrypoint may source this file instead of executing it, so it neither calls exit nor
-# changes shell options; a failing function stops the entrypoint (which runs with set -e).
+# 01-databases.sql. This file is executable (git keeps mode 755), so the entrypoint runs it as a program of its own:
+# it does not inherit the entrypoint's `set -e`, and only its exit status counts. Hence the body below runs in a
+# subshell with `set -euo pipefail`: the first command that fails (a bad password, a failing mysql call) ends the
+# script non-zero, and the entrypoint then stops instead of starting MySQL without that user. If a copy without the
+# executable bit is sourced instead, the subshell keeps those options out of the entrypoint (its own code is not
+# written for `set -u`), and its failure still stops the entrypoint (which runs with `set -e`).
 #
 # Rotating a service password later: ALTER USER '<user>'@'%' IDENTIFIED BY '<new>'; as root, then update .env.
+
+(
+set -euo pipefail
 
 surge_create_user() {
     local user=$1 database=$2 password=$3
@@ -28,3 +35,4 @@ surge_create_user auth auth "${MYSQL_AUTH_PASSWORD:-}"
 surge_create_user booking booking "${MYSQL_BOOKING_PASSWORD:-}"
 surge_create_user catalog catalog "${MYSQL_CATALOG_PASSWORD:-}"
 surge_create_user notification notification "${MYSQL_NOTIFICATION_PASSWORD:-}"
+)
