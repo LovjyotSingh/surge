@@ -52,6 +52,14 @@ updates:
       docker-minor-patch:
         update-types: [minor, patch]
 
+  - package-ecosystem: docker
+    directory: /tools/smoke
+    schedule:
+      interval: weekly
+    groups:
+      docker-minor-patch:
+        update-types: [minor, patch]
+
   # The store and dev-tool images in compose.yaml and its overlays (mysql, redis, kafka, rabbitmq,
   # elasticsearch, mailpit, s3mock), each pinned by tag and digest.
   - package-ecosystem: docker-compose

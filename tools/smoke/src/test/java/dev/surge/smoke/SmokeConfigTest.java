@@ -1,0 +1,60 @@
+package dev.surge.smoke;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import java.util.Map;
+import org.junit.jupiter.api.Test;
+
+class SmokeConfigTest {
+
+    @Test
+    void defaultsPointAtTheLocalStack() {
+        SmokeConfig c = SmokeConfig.parse(new String[0], Map.of("SURGE_ADMIN_PASSWORD", "pw")::get);
+
+        assertThat(c.baseUrl().toString()).isEqualTo("http://127.0.0.1:8080");
+        assertThat(c.mailUrl().toString()).isEqualTo("http://127.0.0.1:8025");
+        assertThat(c.adminEmail()).isEqualTo("admin@surge.local");
+        assertThat(c.eventId()).isEqualTo(1);
+    }
+
+    @Test
+    void environmentThenFlagsOverrideTheDefaults() {
+        Map<String, String> env = Map.of("SURGE_BASE_URL", "http://web:8080", "SURGE_MAIL_URL", "http://mailpit:8025",
+            "SURGE_ADMIN_EMAIL", "boss@x", "SURGE_ADMIN_PASSWORD", "secret-from-env");
+
+        SmokeConfig fromEnv = SmokeConfig.parse(new String[0], env::get);
+        assertThat(fromEnv.baseUrl().toString()).isEqualTo("http://web:8080");
+        assertThat(fromEnv.mailUrl().toString()).isEqualTo("http://mailpit:8025");
+        assertThat(fromEnv.adminEmail()).isEqualTo("boss@x");
+        assertThat(fromEnv.adminPassword()).isEqualTo("secret-from-env");
+
+        SmokeConfig flags = SmokeConfig.parse(new String[] {"--base-url", "http://h:1/", "--event", "7",
+            "--admin-password", "flag-pw"}, env::get);
+        assertThat(flags.baseUrl().toString()).isEqualTo("http://h:1");
+        assertThat(flags.eventId()).isEqualTo(7);
+        assertThat(flags.adminPassword()).isEqualTo("flag-pw");
+    }
+
+    @Test
+    void aMissingPasswordIsRefused() {
+        assertThatThrownBy(() -> SmokeConfig.parse(new String[0], k -> null))
+            .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("SURGE_ADMIN_PASSWORD");
+    }
+
+    @Test
+    void unknownOptionsAndBadNumbersAreRefused() {
+        assertThatThrownBy(() -> SmokeConfig.parse(new String[] {"--nope"}, k -> "x"))
+            .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("--nope");
+        assertThatThrownBy(() -> SmokeConfig.parse(new String[] {"--event", "abc"}, k -> "x"))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> SmokeConfig.parse(new String[] {"--event"}, k -> "x"))
+            .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("--event");
+    }
+
+    @Test
+    void thePasswordNeverShowsInToString() {
+        SmokeConfig c = SmokeConfig.parse(new String[0], Map.of("SURGE_ADMIN_PASSWORD", "hunter2hunter2")::get);
+        assertThat(c.toString()).doesNotContain("hunter2");
+    }
+}

@@ -89,13 +89,33 @@ class TestTokenControllerTest {
         mvc.perform(mint("ADMIN", "{\"prefix\":\"lt-ok\",\"count\":20001}")).andExpect(status().isBadRequest());
     }
 
+    /**
+     * Guards against a slow mint (for example signing with a freshly parsed key per token), measured in CPU time of
+     * the calling thread and not in wall-clock time. MockMvc runs the controller on this thread and the controller is
+     * single-threaded, so the thread's CPU time is the work of the mint itself. Wall-clock time also counts every
+     * moment this thread was not scheduled, so under CPU contention (a parallel build, a game) it fails for reasons
+     * that have nothing to do with the code. The budget is 120 s of CPU (6 ms per token). An uncontended run needs
+     * about 28 s (1.4 ms per token), so the budget is four times that: it absorbs slower CPUs and the cache effects of
+     * a busy machine, while a real regression of the kind above costs far more. A very generous wall-clock cap
+     * (5 minutes) is kept only to catch a hang or per-token blocking I/O, which CPU time does not see.
+     * The CPU measurement relies on the mint staying on the request thread (do not move it to an executor).
+     */
     @Test
     void mintsTwentyThousandInReasonableTime() throws Exception {
-        long start = System.nanoTime();
+        var threads = java.lang.management.ManagementFactory.getThreadMXBean();
+        org.junit.jupiter.api.Assumptions.assumeTrue(threads.isCurrentThreadCpuTimeSupported()
+                && threads.isThreadCpuTimeEnabled(),
+                "the JVM cannot measure per-thread CPU time");
+        long wallStart = System.nanoTime();
+        long cpuStart = threads.getCurrentThreadCpuTime();
         String json = mvc.perform(mint("ADMIN", "{\"prefix\":\"lt-big\",\"count\":20000}"))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        long cpuSeconds = (threads.getCurrentThreadCpuTime() - cpuStart) / 1_000_000_000;
+        long wallSeconds = (System.nanoTime() - wallStart) / 1_000_000_000;
         assertThat((List<?>) JsonPath.read(json, "$.tokens")).hasSize(20000);
-        assertThat((System.nanoTime() - start) / 1_000_000_000).isLessThan(60);
+        assertThat(cpuSeconds).as("CPU seconds on the request thread (wall clock was %d s)", wallSeconds)
+                .isLessThan(120);
+        assertThat(wallSeconds).as("wall-clock seconds: only a hang or blocking I/O should reach this").isLessThan(300);
     }
 
     /** SEC-19: a mint writes one ADMIN_ACTION line with the prefix and count only, never a token. */

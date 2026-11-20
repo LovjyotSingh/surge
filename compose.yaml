@@ -556,6 +556,33 @@ services:
     depends_on:
       gateway: { condition: service_healthy }
 
+  # End-to-end smoke test (plan Task 17): signs up, buys, checks the emails, the circuit breaker and the edge controls
+  # through nginx, like a browser. Needs compose.dev.yaml (it reads the verification code and the ticket from Mailpit).
+  #   docker compose -f compose.yaml -f compose.dev.yaml --profile core --profile platform --profile smoke \
+  #       run --rm smoke
+  # `run` names the service; leave the smoke profile out of `up` (it would start a run). It ends with event 1 reset.
+  # It gets only what it needs: the admin login (to set payment chaos, read the audit log and reset the event),
+  # It sits on the edge network (nginx and the gateway are reachable from it; it talks to nginx only); no store,
+  # broker or service network.
+  smoke:
+    <<: *one-shot
+    image: surge/smoke:local
+    build:
+      context: .
+      dockerfile: tools/smoke/Dockerfile
+    profiles: [smoke]
+    environment:
+      # Read by the tool from the environment, never from a flag (a flag would show in `ps`).
+      SURGE_ADMIN_EMAIL: ${SURGE_ADMIN_EMAIL:?run docker/gen-secrets.sh first}
+      SURGE_ADMIN_PASSWORD: ${SURGE_ADMIN_PASSWORD:?run docker/gen-secrets.sh first}
+      SURGE_BASE_URL: http://web:8080
+      SURGE_MAIL_URL: http://mailpit:8025
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError"
+    mem_limit: 512m
+    networks: [edge]
+    depends_on:
+      web: { condition: service_healthy }
+
 networks:
   # Clients to nginx: web alone joins it, so that its port can be published (Docker publishes no port from an internal
   # network). Not internal, so web is also the one container on the request path with a route to the internet.
