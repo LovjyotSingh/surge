@@ -125,7 +125,8 @@ public final class LoadTestMain {
             LoadTestReport report = new LoadTestReport(startedAt, cfg.users(), cfg.eventId(),
                 integrity.get("totalSeats").asInt(), integrity.get("soldSeats").asInt(),
                 integrity.get("oversold").asInt(), integrity.path("consistent").asBoolean(false), succeeded,
-                holdLat.size() + checkoutLat.size(), conflicts, rateLimited, busyRetries, errors,
+                // one latency per step; each busy retry is one more request inside its step
+                holdLat.size() + checkoutLat.size() + busyRetries, conflicts, rateLimited, busyRetries, errors,
                 durationMs, LatencyStats.of(holdLat), LatencyStats.of(checkoutLat), unauthorized);
 
             // Show the result and save the local files first: a failing publish must not lose a finished run.

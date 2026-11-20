@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -140,6 +141,52 @@ class BuyerTest {
             new Random(1), sleeps::add, () -> 0L, deadlineMs).call();
     }
 
+    /**
+     * Like {@link #run()} on a clock that only the back-off sleeps move (each HTTP call takes 0 ms on it), so a step's
+     * recorded latency is exactly the waits inside it.
+     */
+    private BuyerOutcome runOnSleepClock() throws Exception {
+        AtomicLong now = new AtomicLong();
+        return new Buyer("tok-0", "run-1-lt-0", 1, List.of(1L, 2L, 3L, 4L, 5L), api, new CountDownLatch(0), 0.7, 10,
+            new Random(1), ms -> {
+                sleeps.add(ms);
+                now.addAndGet(ms);
+            }, now::get, Buyer.RUN_DEADLINE.toMillis()).call();
+    }
+
+    private long sleptMs() {
+        return sleeps.stream().mapToLong(Long::longValue).sum();
+    }
+
+    @Test
+    void aBusyHoldIsOneStepTimedFromFirstSendToFinalAnswerWithTheWaits() throws Exception {
+        stub.on(HOLDS, BUSY, BUSY, HOLD_OK).on(ORDERS, ORDER_OK);
+        BuyerOutcome o = runOnSleepClock();
+        assertThat(o.bought()).isTrue();
+        assertThat(o.busyRetries()).isEqualTo(2);
+        assertThat(sleeps).hasSize(2);
+        // One figure for the hold, as the buyer saw it: both waits included, not two instant 503s and a fast 201.
+        assertThat(o.holdLatenciesMs()).containsExactly(sleptMs());
+        assertThat(o.checkoutLatenciesMs()).containsExactly(0L);
+    }
+
+    @Test
+    void aBusyCheckoutIsOneStepTimedWithTheWaits() throws Exception {
+        stub.on(HOLDS, HOLD_OK).on(ORDERS, BUSY, BUSY, ORDER_OK);
+        BuyerOutcome o = runOnSleepClock();
+        assertThat(o.bought()).isTrue();
+        assertThat(o.checkoutLatenciesMs()).containsExactly(sleptMs());
+        assertThat(o.holdLatenciesMs()).containsExactly(0L);
+    }
+
+    @Test
+    void aStepGivenUpWhileBusyIsStillOneFigureWithAllItsWaits() throws Exception {
+        stub.on(HOLDS, BUSY);
+        BuyerOutcome o = runOnSleepClock();
+        assertThat(o.errors()).isEqualTo(1);
+        assertThat(o.holdLatenciesMs()).containsExactly(sleptMs());
+    }
+
     @Test
     void busyHoldWaitsRetryAfterPlusJitterThenRetriesTheSameSeat() throws Exception {
         stub.on(HOLDS, BUSY, HOLD_OK).on(ORDERS, ORDER_OK);
@@ -168,7 +215,7 @@ class BuyerTest {
         assertThat(o.bought()).isTrue();
         assertThat(o.busyRetries()).isEqualTo(2);
         assertThat(o.errors()).isZero();
-        assertThat(o.checkoutLatenciesMs()).hasSize(3);
+        assertThat(o.checkoutLatenciesMs()).hasSize(1);
         assertThat(stub.received).containsExactly(HOLDS, ORDERS, ORDERS, ORDERS);
         assertThat(stub.receivedIdempotencyKeys.subList(1, 4)).containsOnly("run-1-lt-0");
     }

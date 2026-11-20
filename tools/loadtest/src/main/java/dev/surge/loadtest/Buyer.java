@@ -37,7 +37,7 @@ public final class Buyer implements Callable<BuyerOutcome> {
      * minute, so a retried request never goes out with an expired token (it would be a 401, i.e. a NOT VALID run).
      */
     static final Duration RUN_DEADLINE = Duration.ofMinutes(14);
-    /** The clock {@code deadlineMillis} is on: monotonic milliseconds. */
+    /** The clock {@code deadlineMillis} and the step latencies are on: monotonic milliseconds. */
     static final LongSupplier MONOTONIC_MILLIS = () -> System.nanoTime() / 1_000_000;
 
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -111,15 +111,29 @@ public final class Buyer implements Callable<BuyerOutcome> {
             String holdId = null;
             int attempts = 0;
             long seat = 0;
+            long stepStart = 0;
             boolean sameSeatAgain = false;
             while (holdId == null && attempts < maxAttempts) {
                 if (!sameSeatAgain) {
                     seat = SeatPicker.pick(seatIds, hotShare, rnd);
+                    stepStart = clockMillis.getAsLong();
                 }
                 sameSeatAgain = false;
-                long t0 = System.nanoTime();
                 HttpResponse<String> r = api.hold(bearer, eventId, seat);
-                holdLat.add(elapsedMs(t0));
+                if (isBusy(r)) {
+                    long wait = busyWaitMillis(r, busyRetries);
+                    if (wait < 0) {
+                        holdLat.add(clockMillis.getAsLong() - stepStart);
+                        errors++;
+                        break;
+                    }
+                    busyRetries++;
+                    sleeper.sleep(wait);
+                    sameSeatAgain = true;
+                    continue;
+                }
+                // One figure per hold attempt, from its first send to its final answer, busy waits included.
+                holdLat.add(clockMillis.getAsLong() - stepStart);
                 int status = r.statusCode();
                 if (status == 201) {
                     holdId = JSON.readTree(r.body()).get("holdId").asString();
@@ -129,15 +143,6 @@ public final class Buyer implements Callable<BuyerOutcome> {
                         break;
                     }
                     sleeper.sleep(retryAfterSeconds(r) * 1000L);
-                } else if (isBusy(r)) {
-                    long wait = busyWaitMillis(r, busyRetries);
-                    if (wait < 0) {
-                        errors++;
-                        break;
-                    }
-                    busyRetries++;
-                    sleeper.sleep(wait);
-                    sameSeatAgain = true;
                 } else if (status == 401 || status == 403) {
                     unauthorized++;
                     break;
@@ -157,15 +162,15 @@ public final class Buyer implements Callable<BuyerOutcome> {
                     checkoutLat);
             }
             HttpResponse<String> order;
+            long checkoutStart = clockMillis.getAsLong();
             while (true) {
-                long t0 = System.nanoTime();
                 order = api.checkout(bearer, idempotencyKey, holdId);
-                checkoutLat.add(elapsedMs(t0));
                 if (!isBusy(order)) {
                     break;
                 }
                 long wait = busyWaitMillis(order, busyRetries);
                 if (wait < 0) {
+                    checkoutLat.add(clockMillis.getAsLong() - checkoutStart);
                     errors++;
                     return new BuyerOutcome(false, conflicts, rateLimited, busyRetries, errors, unauthorized,
                         holdLat, checkoutLat);
@@ -173,6 +178,8 @@ public final class Buyer implements Callable<BuyerOutcome> {
                 busyRetries++;
                 sleeper.sleep(wait);
             }
+            // One figure for the checkout, from its first send to its final answer, busy waits included.
+            checkoutLat.add(clockMillis.getAsLong() - checkoutStart);
             if (order.statusCode() == 201) {
                 return new BuyerOutcome(true, conflicts, rateLimited, busyRetries, errors, unauthorized, holdLat,
                     checkoutLat);
@@ -206,10 +213,6 @@ public final class Buyer implements Callable<BuyerOutcome> {
         }
         long wait = retryAfterSeconds(r) * 1000L + rnd.nextInt(BUSY_JITTER_MS + 1);
         return clockMillis.getAsLong() + wait > deadlineMillis ? -1 : wait;
-    }
-
-    private static long elapsedMs(long startNanos) {
-        return (System.nanoTime() - startNanos) / 1_000_000;
     }
 
     private static long retryAfterSeconds(HttpResponse<String> r) {

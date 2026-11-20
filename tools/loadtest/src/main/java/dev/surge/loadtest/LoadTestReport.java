@@ -10,7 +10,9 @@ import java.time.Instant;
  * hold exists, which is {@code conflicts}): a 5xx, a timeout, too many 429s, a 503 service-busy the buyer gave up on,
  * and any 409 on the checkout (the buyer's own held seats cannot be sold out, so the system lost the hold).
  * {@code busyRetries} counts the 503 service-busy answers (a full gateway bulkhead) that buyers waited on and retried,
- * like {@code rateLimited} for 429s; a retried busy answer is not an error (P2-R26).
+ * like {@code rateLimited} for 429s; a retried busy answer is not an error (P2-R26). {@code hold} and {@code checkout}
+ * have one latency per step (a hold attempt, the checkout), from its first send to its final answer, busy waits
+ * included; {@code requests} counts every request sent, busy retries included.
  */
 public record LoadTestReport(Instant startedAt, int users, long eventId, int totalSeats, int sold,
                              int oversold, boolean consistent, int buyersSucceeded, int requests, int conflicts,

@@ -73,6 +73,26 @@ class LoadTestMainTest {
         }
     }
 
+    /**
+     * Each buyer's checkout is refused busy once (the queue's three busy answers, then 201s): the run passes, reports
+     * the 3 busy retries, and its request count still counts every request sent (3 holds + 3 checkouts + 3 retries),
+     * although each retried checkout is one latency figure.
+     */
+    @Test
+    void busyRetriesAreReportedAndCountedAsRequests(@TempDir Path out) throws Exception {
+        try (StubServer s = stub(3, 0, true)) {
+            Reply busy = new Reply(503, "{\"type\":\"https://surge.dev/problems/service-busy\"}",
+                java.util.Map.of("Retry-After", "1"));
+            s.on(ORDERS, busy, busy, busy, Reply.of(201, "{\"id\":1}"));
+
+            assertThat(LoadTestMain.run(config(s, out))).isZero();
+
+            String body = s.receivedBodies.get(s.received.indexOf(PUT_REPORT));
+            assertThat(body).containsPattern("\"busyRetries\"\\s*:\\s*3").containsPattern("\"requests\"\\s*:\\s*9")
+                .containsPattern("\"errors\"\\s*:\\s*0");
+        }
+    }
+
     @Test
     void idempotencyKeysAreUniquePerRun(@TempDir Path out) throws Exception {
         try (StubServer s = stub(3, 0, true)) {
