@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
+import { retryWhileBusy } from '../api/busyRetry'
 import { ApiError, api } from '../api/client'
 import type { CatalogEvent, EventDetail, HoldResponse, OrderResponse, SeatStateChange } from '../api/types'
 import { useAuth } from '../auth/context'
@@ -37,6 +38,10 @@ function describe(err: unknown, eventId?: number): Notice {
     }
     if (err.status === 429) {
       return { kind: 'error', text: `Slow down — try again in ${err.retryAfterSeconds ?? 1}s.` }
+    }
+    if (slug === 'service-busy') {
+      // Only after retryWhileBusy has already retried a few times.
+      return { kind: 'error', text: 'Surge is very busy right now — try again in a moment.' }
     }
     if (slug === 'seat-taken') {
       return { kind: 'error', text: 'Sorry, someone else got seat(s) first.' }
@@ -152,6 +157,9 @@ function EventView({ eventId }: { eventId: number }) {
     })
   }
 
+  // A busy service (503 service-busy) is retried by retryWhileBusy; meanwhile the user sees why nothing happened yet.
+  const showBusy = () => setNotice({ kind: 'info', text: 'Busy, retrying…' })
+
   const doHold = async () => {
     if (!user) {
       navigate(loginPath(`/events/${eventId}`))
@@ -160,7 +168,9 @@ function EventView({ eventId }: { eventId: number }) {
     setBusy(true)
     setNotice(null)
     try {
-      const res = await api.hold(eventId, [...selected])
+      const seatIds = [...selected]
+      const res = await retryWhileBusy(() => api.hold(eventId, seatIds), showBusy)
+      setNotice(null)
       idempotencyKey.current = crypto.randomUUID()
       setHold(res)
       setSelected(new Set(res.seatIds))
@@ -181,7 +191,10 @@ function EventView({ eventId }: { eventId: number }) {
     setBusy(true)
     setNotice(null)
     try {
-      const res = await api.checkout(hold.holdId, idempotencyKey.current)
+      const holdId = hold.holdId
+      const key = idempotencyKey.current
+      const res = await retryWhileBusy(() => api.checkout(holdId, key), showBusy)
+      setNotice(null)
       setOrder(res)
       setHold(null)
       setSelected(new Set())

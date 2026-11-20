@@ -88,6 +88,8 @@ export interface LoadTestReport {
   requests: number
   conflicts: number
   rateLimited: number
+  /** 503 service-busy answers the buyers waited on and retried (P2-R26). Missing in reports stored before it existed. */
+  busyRetries?: number
   errors: number
   durationMs: number
   hold: LatencyStats

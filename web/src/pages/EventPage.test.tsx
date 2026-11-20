@@ -283,6 +283,48 @@ describe('EventPage', () => {
     expect(await screen.findByText('Slow down — try again in 7s.')).toBeInTheDocument()
   })
 
+  // P2-R26: a 503 service-busy (the gateway's bulkhead was full; nothing was processed) is retried after Retry-After.
+  // Retry-After 0 and no jitter keep the waits at 0 ms here.
+  it('says it is busy and retries a service-busy hold by itself', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    let release: (value: typeof hold) => void = () => {}
+    mocked.hold
+      .mockRejectedValueOnce(new ApiError(problem('service-busy', 503), 0))
+      .mockReturnValueOnce(new Promise((resolve) => (release = resolve)))
+    renderPage()
+    await pickSeatAndHold(user)
+    expect(await screen.findByText('Busy, retrying…')).toBeInTheDocument()
+    act(() => release(hold))
+    expect(await screen.findByText('Seats held for you')).toBeInTheDocument()
+    expect(mocked.hold).toHaveBeenCalledTimes(2)
+    expect(screen.queryByText('Busy, retrying…')).not.toBeInTheDocument()
+  })
+
+  it('retries a service-busy checkout with the same idempotency key', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    mocked.hold.mockResolvedValue(hold)
+    mocked.checkout
+      .mockRejectedValueOnce(new ApiError(problem('service-busy', 503), 0))
+      .mockResolvedValueOnce({ orderId: 42, eventId: 1, status: 'CONFIRMED', totalInr: 1800, lines: [], createdAt: '' })
+    renderPage()
+    await pickSeatAndHold(user)
+    await user.click(await screen.findByRole('button', { name: 'Pay ₹1800' }))
+    expect(await screen.findByText('Booked! Order #42 — ₹1800')).toBeInTheDocument()
+    const [first, second] = mocked.checkout.mock.calls
+    expect(second[1]).toBe(first[1])
+  })
+
+  it('tells the user to try again when the service stays busy', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    mocked.hold.mockRejectedValue(new ApiError(problem('service-busy', 503), 0))
+    renderPage()
+    await pickSeatAndHold(user)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Surge is very busy right now — try again in a moment.')
+  })
+
   it('falls back on network errors', async () => {
     const user = userEvent.setup()
     mocked.hold.mockRejectedValue(new TypeError('Failed to fetch'))
