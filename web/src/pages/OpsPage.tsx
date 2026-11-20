@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ApiError, api } from '../api/client'
 import type { CatalogEvent, Chaos, DlqMessage, IntegrityReport, LoadTestReport } from '../api/types'
 import { GENERIC_ERROR } from '../format'
+import { passed } from './loadtestVerdict'
 
 type Report = LoadTestReport | null | undefined // undefined = loading
 
@@ -38,12 +39,8 @@ function buildChaos(loaded: Chaos, dirty: ReadonlySet<ChaosField>, failurePct: s
 
 // Both profiles: the loadtest service depends on web, which lives in the core profile.
 const LOADTEST_COMMAND =
-  'docker compose --profile core --profile loadtest run --rm loadtest --users 10000 --event 1'
-
-/** Same verdict as the load tester; `consistent` is missing in reports stored before it existed. */
-function passed(r: LoadTestReport): boolean {
-  return r.oversold === 0 && r.consistent !== false && r.buyersSucceeded === r.sold
-}
+  'docker compose -f compose.yaml -f compose.dev.yaml -f compose.loadtest.yaml --profile core --profile platform ' +
+  'run --rm loadtest --users 10000 --event 1'
 
 export default function OpsPage() {
   const [events, setEvents] = useState<CatalogEvent[]>([])

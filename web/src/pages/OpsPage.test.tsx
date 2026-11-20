@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, api } from '../api/client'
 import type { CatalogEvent, LoadTestReport } from '../api/types'
 import OpsPage from './OpsPage'
+import { passed } from './loadtestVerdict'
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>()
@@ -104,13 +105,29 @@ describe('OpsPage', () => {
     ).toBeInTheDocument()
   })
 
+  it('fails a run that sold nothing or ended in too many errors', async () => {
+    mocked.latestReport.mockResolvedValue({ ...report, sold: 0, buyersSucceeded: 0, errors: 1000 })
+    render(<OpsPage />)
+    expect(await screen.findByRole('cell', { name: 'FAIL ❌' })).toBeInTheDocument()
+  })
+
+  it('applies the load tester rules: nothing sold, errors above 1 %, conflicts are fine', () => {
+    expect(passed(report)).toBe(true)
+    expect(passed({ ...report, sold: 0, buyersSucceeded: 0 })).toBe(false)
+    expect(passed({ ...report, errors: 10 })).toBe(true) // 1 % of 1000
+    expect(passed({ ...report, errors: 11 })).toBe(false)
+    expect(passed({ ...report, conflicts: 900 })).toBe(true)
+    expect(passed({ ...report, totalSeats: 0, sold: 0, buyersSucceeded: 0 })).toBe(true)
+  })
+
   it('shows empty state with a command that works', async () => {
     mocked.latestReport.mockResolvedValue(null)
     render(<OpsPage />)
     expect(await screen.findByText(/No load test run yet/)).toBeInTheDocument()
     expect(
       screen.getByText(
-        'docker compose --profile core --profile loadtest run --rm loadtest --users 10000 --event 1',
+        'docker compose -f compose.yaml -f compose.dev.yaml -f compose.loadtest.yaml --profile core --profile platform ' +
+          'run --rm loadtest --users 10000 --event 1',
       ).tagName,
     ).toBe('CODE')
   })

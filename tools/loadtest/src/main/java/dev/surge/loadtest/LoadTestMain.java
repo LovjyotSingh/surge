@@ -142,11 +142,26 @@ public final class LoadTestMain {
                     err.println("ERROR: the report could not be sent to the Ops page: " + e.getMessage());
                 }
             }
-            // A failed verdict always wins (1); otherwise any auth or publishing problem is a setup problem (2).
-            if (!report.passed()) {
+            // A broken invariant always wins (1). Rejected buyers make the run not valid (2): nothing sold or many errors
+            // are then expected. Otherwise a run that sold nothing or ended in too many errors fails (1), and a
+            // publishing problem is a setup problem (2).
+            if (!report.invariantsHold()) {
                 return 1;
             }
-            return unauthorized > 0 || !published ? 2 : 0;
+            if (unauthorized > 0) {
+                return 2;
+            }
+            if (!report.passed()) {
+                if (report.nothingSold()) {
+                    err.println("ERROR: nothing was sold although the event has " + report.totalSeats() + " seats");
+                }
+                if (report.tooManyErrors()) {
+                    err.println("ERROR: " + report.errors() + " of " + report.users() + " buyers ended in an error "
+                        + "(more than " + LoadTestReport.MAX_ERROR_PERCENT + " %)");
+                }
+                return 1;
+            }
+            return published ? 0 : 2;
         }
     }
 

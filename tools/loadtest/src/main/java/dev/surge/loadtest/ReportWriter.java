@@ -38,8 +38,10 @@ public final class ReportWriter {
     public static String markdown(LoadTestReport r) {
         String verdict = r.passed() ? "PASS " + OK : "FAIL " + BAD;
         if (r.unauthorized() > 0) {
+            // Rejected buyers make the run not valid. Only a broken invariant is still reported as a FAIL; nothing sold
+            // or many errors are expected consequences of the rejection.
             String note = "NOT VALID: " + r.unauthorized() + " buyer tokens rejected";
-            verdict = r.passed() ? note : verdict + " (" + note + ")";
+            verdict = r.invariantsHold() ? note : verdict + " (" + note + ")";
         }
         return """
             # Surge load test
@@ -53,6 +55,8 @@ public final class ReportWriter {
             | Oversold (a seat in two order lines) | %d %s |
             | Seats marked SOLD = distinct seats in orders | %s %s |
             | Buyers who got a 201 = seats sold | %d = %d %s |
+            | Seats sold (at least one) | %d %s |
+            | Buyers ending in an error (at most %d %%) | %d of %d %s |
 
             | Metric | Value |
             |---|---|
@@ -74,6 +78,8 @@ public final class ReportWriter {
                 r.oversold(), mark(r.oversold() == 0),
                 r.consistent() ? "yes" : "no", mark(r.consistent()),
                 r.buyersSucceeded(), r.sold(), mark(r.buyersSucceeded() == r.sold()),
+                r.sold(), mark(!r.nothingSold()),
+                LoadTestReport.MAX_ERROR_PERCENT, r.errors(), r.users(), mark(!r.tooManyErrors()),
                 r.totalSeats(), r.sold(), r.buyersSucceeded(), r.requests(), r.conflicts(), r.rateLimited(), r.errors(),
                 r.hold().p50(), r.hold().p95(), r.hold().p99(), r.hold().max(),
                 r.checkout().p50(), r.checkout().p95(), r.checkout().p99(), r.checkout().max());
