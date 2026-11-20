@@ -246,6 +246,39 @@ class GatewaySecurityTest extends GatewayTestBase {
                 .exchange().expectStatus().isOk();
     }
 
+    /**
+     * nginx streams the CSV import to the gateway without buffering it ({@code proxy_request_buffering off}), so an
+     * anonymous upload must be refused before its body is read: here only 1 KB of a declared 6 MB ever arrives, and
+     * the answer still comes at once. A USER token is refused the same way. Catalog sees nothing.
+     */
+    @Test
+    void anUploadIsRefusedBeforeItsBodyIsRead() throws Exception {
+        assertThat(statusOfPartialUpload(null)).isEqualTo(401);
+        assertThat(statusOfPartialUpload(userToken("u-upload"))).isEqualTo(403);
+        assertThat(CATALOG.sawNothing()).isTrue();
+    }
+
+    /** The status line's code for an import whose body stops after 1 KB of 6 MB; fails if none comes within 5 s. */
+    private int statusOfPartialUpload(String token) throws Exception {
+        try (java.net.Socket socket = new java.net.Socket("localhost", port)) {
+            socket.setSoTimeout(5000);
+            String head = "POST /api/catalog/admin/events/import HTTP/1.1\r\n"
+                    + "Host: localhost\r\n"
+                    + "X-Forwarded-For: " + freshClientIp() + "\r\n"
+                    + (token == null ? "" : "Authorization: Bearer " + token + "\r\n")
+                    + "Content-Type: multipart/form-data; boundary=surge\r\n"
+                    + "Content-Length: 6000000\r\n\r\n";
+            var out = socket.getOutputStream();
+            out.write(head.getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            out.write(new byte[1024]);
+            out.flush();
+            String statusLine = new java.io.BufferedReader(new java.io.InputStreamReader(socket.getInputStream(),
+                    java.nio.charset.StandardCharsets.US_ASCII)).readLine();
+            assertThat(statusLine).as("the gateway answered without the rest of the body").startsWith("HTTP/1.1 ");
+            return Integer.parseInt(statusLine.substring(9, 12));
+        }
+    }
+
     @Test
     void unreachableOrHangingJwksFailsClosedWithin3Seconds() throws Exception {
         // an unknown kid forces a fetch of the key set (once the 30 s cooldown has passed); the mock answers after 5 s,
