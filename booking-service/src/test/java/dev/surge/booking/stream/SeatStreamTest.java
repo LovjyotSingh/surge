@@ -71,6 +71,13 @@ class SeatStreamTest {
                 .andExpect(request().asyncStarted()).andReturn();
         mvc.perform(post("/api/bookings/holds").with(Identity.user("stream-u2")).contentType(MediaType.APPLICATION_JSON)
                 .content("{\"eventId\":1,\"seatIds\":[5]}")).andExpect(status().is2xxSuccessful());
+        // The hold reaches the stream through Redis pub/sub, i.e. asynchronously: completing the stream before that
+        // event is written would end it with only the ":connected" comment (seen under CPU load).
+        long deadline = System.currentTimeMillis() + 3000;
+        while (System.currentTimeMillis() < deadline
+                && !started.getResponse().getContentAsString().contains("\"seatIds\":[5]")) {
+            Thread.sleep(50);
+        }
         registry.completeAll(1L);
 
         mvc.perform(asyncDispatch(started))
