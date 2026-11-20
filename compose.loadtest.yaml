@@ -1,0 +1,62 @@
+# Load-test overlay: the 10,000-buyer run through nginx and the gateway (plan Task 15/16).
+#
+#   docker compose -f compose.yaml -f compose.dev.yaml -f compose.loadtest.yaml \
+#       --profile core --profile platform up -d --build
+#   docker compose -f compose.yaml -f compose.dev.yaml -f compose.loadtest.yaml \
+#       --profile core --profile platform run --rm loadtest --users 10000 --event 1
+#
+# Leave the loadtest profile out of `up`: with it, `up` would also start a run with the default arguments. `run`
+# names the service, which is enough to start it. Give a freshly recreated stack a minute (Eureka registrations)
+# before the run.
+#
+# It turns ON what a public deployment must keep OFF (security audit SEC-07), so use it on a private machine only
+# and drop it (docker compose … up -d without this file) when the run is done:
+#   - auth-service mints test tokens for synthetic "lt-*" buyers. auth refuses that with SURGE_ENV=prod
+#     (StartupGuards), so auth alone runs with SURGE_ENV=dev here; it still gets every real credential and key.
+#   - the gateway accepts load-test subjects (and keys their per-IP hold bucket by subject: all buyers share one IP).
+#   - nginx exempts the load-test container's address from its per-IP limits (web/nginx-loadtest-exempt.conf).
+
+services:
+  auth-service:
+    environment:
+      SURGE_ENV: dev
+      SURGE_AUTH_TEST_TOKENS: "true"
+
+  gateway:
+    environment:
+      SURGE_ALLOW_LOADTEST_SUBJECTS: "true"
+
+  web:
+    volumes:
+      - ./web/nginx-loadtest-exempt.conf:/etc/nginx/surge/limit-exempt.geo:ro
+
+  loadtest:
+    image: surge/loadtest:local
+    build:
+      context: .
+      dockerfile: tools/loadtest/Dockerfile
+    profiles: [loadtest]
+    # entrypoint (not command), so `run loadtest --users N` appends arguments instead of replacing the base URL.
+    entrypoint: ["java", "-jar", "/app/loadtest.jar", "--base-url", "http://web:8080", "--out", "/app/reports"]
+    environment:
+      # Read by the tool from the environment, never from a flag (a flag would show in `ps`).
+      SURGE_ADMIN_PASSWORD: ${SURGE_ADMIN_PASSWORD:?run docker/gen-secrets.sh first}
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError"
+    # Runs as the image's uid 10001 unless UID is exported. On Linux, `export UID` first (or `chmod o+w reports`) so
+    # the container may write the bind-mounted ./reports. A failed write is only a warning: the report is printed
+    # and stored for the Ops page first.
+    user: "${UID:-10001}"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    pids_limit: 512
+    mem_limit: 1g
+    volumes:
+      - ./reports:/app/reports
+    networks:
+      # Fixed: nginx exempts exactly this address from its per-IP limits.
+      edge: { ipv4_address: 172.30.250.30 }
+    depends_on:
+      web: { condition: service_healthy }

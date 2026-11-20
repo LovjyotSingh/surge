@@ -1,0 +1,11 @@
+# Redis ACL (security audit SEC-05). docker/gen-secrets.sh renders this file once per Redis instance:
+#   docker/secrets/redis-users.acl       redis       (booking's holds and seat streams): user "booking"
+#   docker/secrets/redis-edge-users.acl  redis-edge  (the gateway's rate limits and token denylist): user "gateway"
+# replacing the placeholders with the user name and the SHA-256 of its password (Redis compares hashes; the plain
+# password is not in the file) and dropping these comment lines (Redis ACL files take no comments).
+#
+# default: disabled, so a connection without AUTH can run nothing ("NOAUTH Authentication required").
+# the application user: every command except the @dangerous category (FLUSHALL, KEYS, CONFIG, DEBUG, MONITOR,
+#          SHUTDOWN, ...), plus INFO, which Spring Boot's Redis health check needs.
+user default off resetpass resetkeys resetchannels -@all
+user @@REDIS_USER@@ on #@@REDIS_PASSWORD_SHA256@@ ~* &* +@all -@dangerous +info

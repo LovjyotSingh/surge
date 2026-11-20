@@ -93,6 +93,21 @@ class DecoderDenylistTest {
     }
 
     @Test
+    void theRequestContinuesOffTheRedisReplyThread() throws Exception {
+        // Under a burst, request work on the Redis client's reply thread delayed every other request's denylist
+        // reply past its 1 s timeout (503 for thousands of buyers in the 10k load test).
+        reactor.core.scheduler.Scheduler redisReplies = reactor.core.scheduler.Schedulers.newSingle("redis-reply");
+        try {
+            when(redis.hasKey(anyString())).thenReturn(Mono.just(false).publishOn(redisReplies));
+            String thread = decoder.decode(token()).map(jwt -> Thread.currentThread().getName())
+                    .block(Duration.ofSeconds(5));
+            assertThat(thread).startsWith("parallel-");
+        } finally {
+            redisReplies.dispose();
+        }
+    }
+
+    @Test
     void anEmptyAnswerCountsAsNotRevoked() throws Exception {
         when(redis.hasKey(anyString())).thenReturn(Mono.empty());
         assertThat(decode(token()).getSubject()).isEqualTo("u-1");

@@ -27,8 +27,9 @@ updates:
       actions-minor-patch:
         update-types: [minor, patch]
 
+  # docker/service.Dockerfile builds every Spring service image (base images pinned by tag and digest).
   - package-ecosystem: docker
-    directory: /booking-service
+    directory: /docker
     schedule:
       interval: weekly
     groups:
@@ -51,9 +52,8 @@ updates:
       docker-minor-patch:
         update-types: [minor, patch]
 
-  # Maven and npm are separate from compose: this tracks the image tags in compose.yaml
-  # (today mysql and redis; Task 16 adds the platform images). The docker-compose ecosystem is
-  # supported by Dependabot.
+  # The store and dev-tool images in compose.yaml and its overlays (mysql, redis, kafka, rabbitmq,
+  # elasticsearch, mailpit, s3mock), each pinned by tag and digest.
   - package-ecosystem: docker-compose
     directory: /
     schedule:
@@ -61,7 +61,3 @@ updates:
     groups:
       compose-minor-patch:
         update-types: [minor, patch]
-
-  # Task 16 adds a docker/ directory with more Dockerfiles. Add it here when it lands:
-  # - package-ecosystem: docker
-  #   directory: /docker

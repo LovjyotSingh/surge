@@ -2,6 +2,7 @@ target/
 node_modules/
 dist/
 .env
+.env.tmp.*
 .idea/
 *.iml
 .superpowers/
@@ -17,3 +18,5 @@ internal-jwks.json
 
 # Claude Code worktrees for parallel tasks (local only)
 .claude/worktrees/
+# docker/gen-secrets.sh output: credentials, JWT and internal identity keys, Redis ACL, RabbitMQ definitions.
+docker/secrets/

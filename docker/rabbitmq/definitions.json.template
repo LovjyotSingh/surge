@@ -1,0 +1,27 @@
+{
+  "users": [
+    {"name": "surge-admin", "password_hash": "@@ADMIN_HASH@@", "hashing_algorithm": "rabbit_password_hashing_sha256", "tags": ["administrator"]},
+    {"name": "booking", "password_hash": "@@BOOKING_HASH@@", "hashing_algorithm": "rabbit_password_hashing_sha256", "tags": []},
+    {"name": "notification", "password_hash": "@@NOTIFICATION_HASH@@", "hashing_algorithm": "rabbit_password_hashing_sha256", "tags": []}
+  ],
+  "vhosts": [
+    {"name": "surge"}
+  ],
+  "permissions": [
+    {"user": "surge-admin", "vhost": "surge", "configure": ".*", "write": ".*", "read": ".*"},
+    {"user": "booking", "vhost": "surge", "configure": "^surge\\.tickets$", "write": "^surge\\.tickets$", "read": "^$"},
+    {"user": "notification", "vhost": "surge", "configure": "^(surge\\.tickets|surge\\.tickets\\.dlx|tickets|tickets\\.dlq)$", "write": "^(surge\\.tickets|surge\\.tickets\\.dlx|tickets|tickets\\.dlq)$", "read": "^(surge\\.tickets|surge\\.tickets\\.dlx|tickets|tickets\\.dlq)$"}
+  ],
+  "exchanges": [
+    {"name": "surge.tickets", "vhost": "surge", "type": "direct", "durable": true, "auto_delete": false, "internal": false, "arguments": {}},
+    {"name": "surge.tickets.dlx", "vhost": "surge", "type": "fanout", "durable": true, "auto_delete": false, "internal": false, "arguments": {}}
+  ],
+  "queues": [
+    {"name": "tickets", "vhost": "surge", "durable": true, "auto_delete": false, "arguments": {"x-dead-letter-exchange": "surge.tickets.dlx"}},
+    {"name": "tickets.dlq", "vhost": "surge", "durable": true, "auto_delete": false, "arguments": {"x-queue-type": "classic"}}
+  ],
+  "bindings": [
+    {"source": "surge.tickets", "vhost": "surge", "destination": "tickets", "destination_type": "queue", "routing_key": "ticket.requested", "arguments": {}},
+    {"source": "surge.tickets.dlx", "vhost": "surge", "destination": "tickets.dlq", "destination_type": "queue", "routing_key": "", "arguments": {}}
+  ]
+}

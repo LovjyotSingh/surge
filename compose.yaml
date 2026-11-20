@@ -1,72 +1,604 @@
-# Every published port is bound to 127.0.0.1: Redis has no password, and the admin API is unauthenticated in
-# phase 1, so nothing here may be reachable from the network.
+# Surge platform (plan Task 16; security audit Tasks B and C).
+#
+#   docker/gen-secrets.sh                                    # once: writes .env (mode 600) and docker/secrets/
+#   docker compose -f compose.yaml -f compose.dev.yaml --profile core --profile platform up -d --build
+#   open http://localhost:8080
+#
+# compose.dev.yaml adds Mailpit and S3Mock and 127.0.0.1-only debug ports; without it, MAIL_* and S3_* in .env must
+# point at a real SMTP server and S3 bucket. compose.loadtest.yaml adds the 10,000-buyer load test (and turns on
+# test tokens, so never use it on a public deployment).
+#
+# What this file guarantees:
+#   - Only web (nginx) publishes a port. Everything else is reachable only from the networks below.
+#   - Networks: edge (web, gateway); app (internal: gateway, services, discovery, config-server); one internal
+#     data network per store, joined only by the services that use that store; egress (auth and notification only,
+#     for SMTP and S3).
+#   - No credential has a default: every one comes from .env (docker/gen-secrets.sh), and every Spring service runs
+#     with SURGE_ENV=prod, so it refuses to start with a development key or a missing credential.
+#   - Every container: all capabilities dropped, no-new-privileges, read-only root file system (writes go to tmpfs
+#     or a named volume), pid and memory limits, rotated logs, a health check. Images are pinned by digest.
+#   - Start order follows health: stores, then the one-shot kafka-init/es-init, then config-server and discovery,
+#     then the services, the gateway (Redis is on its critical path: token denylist) and finally nginx.
+
+x-hardened: &hardened
+  restart: unless-stopped
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m
+  pids_limit: 512
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+x-one-shot: &one-shot
+  restart: "no"
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  read_only: true
+  tmpfs:
+    - /tmp:size=32m
+  pids_limit: 256
+  logging:
+    driver: json-file
+    options:
+      max-size: "1m"
+      max-file: "2"
+
+# Every Spring service: prod guards on, heap sized from the memory limit, config server and Eureka with HTTP Basic.
+x-spring-env: &spring-env
+  SURGE_ENV: prod
+  JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError"
+  CONFIG_URL: http://config-server:8888
+  CONFIG_USER: ${CONFIG_USER:?run docker/gen-secrets.sh first}
+  CONFIG_PASSWORD: ${CONFIG_PASSWORD:?run docker/gen-secrets.sh first}
+  EUREKA_HOST: discovery:8761
+  EUREKA_USER: ${EUREKA_USER:?run docker/gen-secrets.sh first}
+  EUREKA_PASSWORD: ${EUREKA_PASSWORD:?run docker/gen-secrets.sh first}
+  # Register the address on the app network with Eureka (a service on several networks would otherwise pick the
+  # first interface, possibly a data network the gateway cannot reach).
+  SPRING_CLOUD_INETUTILS_PREFERREDNETWORKS: "172.30.251."
+
+# The request path (nginx -> gateway -> booking) takes a whole sale's burst at once: the 10,000-buyer load test opens
+# ~10,000 connections in the same instant on every hop. With the default accept queue (somaxconn 4096) the gateway's
+# kernel dropped 9,433 connections in one run; nginx's 3 s and the gateway's 2 s connect timeouts then failed them
+# and opened the gateway's booking circuit breaker. A deep queue lets the kernel finish every handshake and the
+# server accept it a few milliseconds later. Namespaced sysctls: they need no capability.
+# CPU priority (cgroup weight; it only matters when the host is busy). The 10,000-buyer run saturated the laptop
+# (24 threads at 2,000-2,200 %), and the gateway's fail-closed 1 s token-denylist check then timed out on scheduling
+# delay alone (Redis answered within 8 ms): 503 for thousands of buyers. The request path (nginx, gateway, booking and
+# their Redis) gets 4x the weight of the work that may lag a few seconds during a sale: ticket PDFs and email,
+# catalog's projections, the brokers and search. Left at the default weight (1024): auth, payment, mysql,
+# config-server, discovery.
+x-cpu-request-path: &cpu-request-path 2048
+x-cpu-background: &cpu-background 512
+
+x-deep-backlog: &deep-backlog
+  net.core.somaxconn: 16384
+  net.ipv4.tcp_max_syn_backlog: 16384
+
+x-spring-depends: &spring-depends
+  config-server: { condition: service_healthy }
+  discovery: { condition: service_healthy }
+
 services:
+  # ---------------------------------------------------------------- stores
   mysql:
-    image: mysql:8.4
+    <<: *hardened
+    image: mysql:8.4.13@sha256:a81d043930e51745522bd5c430961cf8286f0a23f0a9a2a6e0108f7ea71b0902
     profiles: [core]
+    user: "999:999"
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-surge-root}
-      MYSQL_DATABASE: booking
-      MYSQL_USER: ${MYSQL_USER:-surge}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-surge}
-    ports: ["127.0.0.1:3307:3306"]
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?run docker/gen-secrets.sh first}
+      # root may log in only from inside this container.
+      MYSQL_ROOT_HOST: localhost
+      MYSQL_AUTH_PASSWORD: ${MYSQL_AUTH_PASSWORD:?run docker/gen-secrets.sh first}
+      MYSQL_BOOKING_PASSWORD: ${MYSQL_BOOKING_PASSWORD:?run docker/gen-secrets.sh first}
+      MYSQL_CATALOG_PASSWORD: ${MYSQL_CATALOG_PASSWORD:?run docker/gen-secrets.sh first}
+      MYSQL_NOTIFICATION_PASSWORD: ${MYSQL_NOTIFICATION_PASSWORD:?run docker/gen-secrets.sh first}
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./docker/mysql-init:/docker-entrypoint-initdb.d:ro
+    tmpfs:
+      - /tmp:size=64m
+      - /var/run/mysqld:size=1m
+    networks: [data-mysql]
+    mem_limit: 768m
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-surge-root}"]
+      # Over TCP, so it fails while the entrypoint's temporary init server (no networking) runs.
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 --silent"]
       interval: 5s
       timeout: 5s
-      retries: 20
+      retries: 30
+      start_period: 30s
 
+  # booking's Redis: seat holds (atomic Lua), its own rate limits and the seat-stream pub/sub. ACL user "booking".
   redis:
-    image: redis:7-alpine
+    <<: *hardened
+    cpu_shares: *cpu-request-path
+    image: redis:7.4.12-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
     profiles: [core]
-    ports: ["127.0.0.1:6379:6379"]
+    user: "999:1000"
+    command: ["redis-server", "--aclfile", "/run/secrets/redis-users.acl"]
+    secrets:
+      - source: redis_acl
+        target: redis-users.acl
+    volumes:
+      - redis-data:/data
+    networks: [data-redis]
+    mem_limit: 256m
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # Up and refusing anonymous clients: needs no password in the health check.
+      test: ["CMD-SHELL", "redis-cli -h 127.0.0.1 ping 2>&1 | grep -q NOAUTH"]
       interval: 5s
       timeout: 3s
       retries: 20
 
-  booking-service:
-    build:
-      context: .
-      dockerfile: booking-service/Dockerfile
-    profiles: [core]
-    environment:
-      MYSQL_URL: jdbc:mysql://mysql:3306/booking
-      MYSQL_USER: ${MYSQL_USER:-surge}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-surge}
-      REDIS_HOST: redis
-    ports: ["127.0.0.1:8081:8081"]
-    depends_on:
-      mysql: { condition: service_healthy }
-      redis: { condition: service_healthy }
+  # The gateway's own Redis: edge rate limits and the token denylist (checked on every signed-in request, failing
+  # closed after 1 s). ACL user "gateway". Separate from booking's because a sale's burst sent all of the gateway's
+  # Redis calls down one pipelined connection behind booking's hold scripts: Redis itself answered a PING within
+  # 8 ms, yet the tail of the gateway's queue passed 1 s and thousands of buyers got 503. It also keeps a compromised
+  # booking away from the denylist and the rate buckets (SEC-05).
+  redis-edge:
+    <<: *hardened
+    cpu_shares: *cpu-request-path
+    image: redis:7.4.12-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
+    profiles: [platform]
+    user: "999:1000"
+    command: ["redis-server", "--aclfile", "/run/secrets/redis-edge-users.acl"]
+    secrets:
+      - source: redis_edge_acl
+        target: redis-edge-users.acl
+    volumes:
+      # Keeps the denylist of logged-out tokens across a restart.
+      - redis-edge-data:/data
+    networks: [data-redis-edge]
+    mem_limit: 256m
     healthcheck:
-      # JRE image has no curl/wget; use bash's /dev/tcp.
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /actuator/health HTTP/1.0\r\n\r\n' >&3 && grep -q '\"status\":\"UP\"' <&3"]
+      test: ["CMD-SHELL", "redis-cli -h 127.0.0.1 ping 2>&1 | grep -q NOAUTH"]
       interval: 5s
-      timeout: 5s
+      timeout: 3s
+      retries: 20
+
+  kafka:
+    <<: *hardened
+    cpu_shares: *cpu-background
+    image: apache/kafka:4.1.2@sha256:5cc2a2fd93fa2687b44015eee04fb2c3edd9e526bd64bf8bec5ff1e268772e0e
+    profiles: [platform]
+    entrypoint: ["/bin/bash", "/surge/start.sh"]
+    environment:
+      KAFKA_CLUSTER_ID: NoOXAfmjJb01oJoreTRC5g
+      KAFKA_ADMIN_PASSWORD: ${KAFKA_ADMIN_PASSWORD:?run docker/gen-secrets.sh first}
+      KAFKA_HEAP_OPTS: "-XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+      - ./docker/kafka:/surge:ro
+    networks: [data-kafka]
+    mem_limit: 768m
+    healthcheck:
+      # The listener is up; kafka-init then proves it with authenticated admin calls before any service starts.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9092"]
+      interval: 5s
+      timeout: 3s
       retries: 30
       start_period: 20s
 
-  web:
-    build: ./web
-    profiles: [core]
-    ports: ["127.0.0.1:8080:80"]
-    depends_on:
-      booking-service: { condition: service_healthy }
-
-  loadtest:
-    build:
-      context: .
-      dockerfile: tools/loadtest/Dockerfile
-    profiles: [loadtest]
-    # entrypoint (not command) so `run loadtest --users N` appends args instead of replacing the base URL
-    entrypoint: ["java", "-jar", "/app/loadtest.jar", "--base-url", "http://web", "--out", "/app/reports"]
-    # Runs as the image's user 10001 unless UID is exported. On Linux, `export UID` first (or `chmod o+w reports`)
-    # so the container may write the bind-mounted ./reports. A failed write is only a warning: the report is
-    # printed and stored for the Ops page first.
-    user: "${UID:-10001}"
+  kafka-init:
+    <<: *one-shot
+    image: apache/kafka:4.1.2@sha256:5cc2a2fd93fa2687b44015eee04fb2c3edd9e526bd64bf8bec5ff1e268772e0e
+    profiles: [platform]
+    entrypoint: ["/bin/bash", "/surge/init.sh"]
+    environment:
+      KAFKA_ADMIN_PASSWORD: ${KAFKA_ADMIN_PASSWORD:?run docker/gen-secrets.sh first}
+      KAFKA_BOOKING_PASSWORD: ${KAFKA_BOOKING_PASSWORD:?run docker/gen-secrets.sh first}
+      KAFKA_CATALOG_PASSWORD: ${KAFKA_CATALOG_PASSWORD:?run docker/gen-secrets.sh first}
+      KAFKA_NOTIFICATION_PASSWORD: ${KAFKA_NOTIFICATION_PASSWORD:?run docker/gen-secrets.sh first}
     volumes:
-      - ./reports:/app/reports
+      - ./docker/kafka:/surge:ro
+    networks: [data-kafka]
+    mem_limit: 512m
     depends_on:
-      web: { condition: service_started }
+      kafka: { condition: service_healthy }
+
+  rabbitmq:
+    <<: *hardened
+    cpu_shares: *cpu-background
+    image: rabbitmq:4.3.7-management@sha256:8e913a7748f808be4ce117c3df11817935775bcd83934d4de92441a7e93e9899
+    profiles: [platform]
+    user: "999:999"
+    hostname: rabbitmq
+    secrets:
+      - source: rabbitmq_definitions
+        target: rabbitmq-definitions.json
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+      - ./docker/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/20-surge.conf:ro
+    networks: [data-rabbit]
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
+
+  elasticsearch:
+    <<: *hardened
+    cpu_shares: *cpu-background
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.2.8@sha256:f6c331bc14f54c32ce956d0f35cf17a2d302214bdf89b7234e5c9ada09602357
+    profiles: [platform]
+    # The image's entrypoint writes the keystore into the config directory: copy the image's config to a tmpfs
+    # (fresh on every start) so the root file system can stay read-only.
+    entrypoint:
+      - /bin/bash
+      - -c
+      - >-
+        mkdir -p /tmp/es-config && cp -a /usr/share/elasticsearch/config/. /tmp/es-config/
+        && export ES_PATH_CONF=/tmp/es-config
+        && exec /bin/tini -- /usr/local/bin/docker-entrypoint.sh eswrapper
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "true"
+      # Plain HTTP inside the data network, like the other stores (S10 decides about TLS between containers).
+      xpack.security.http.ssl.enabled: "false"
+      xpack.security.transport.ssl.enabled: "false"
+      xpack.ml.enabled: "false"
+      ingest.geoip.downloader.enabled: "false"
+      cluster.routing.allocation.disk.threshold_enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+      # Sets the "elastic" password when the data volume is new (docker/elasticsearch/init.sh then creates "catalog").
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?run docker/gen-secrets.sh first}
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    tmpfs:
+      # ES unpacks native libraries into its temp directory, so this tmpfs allows exec.
+      - /tmp:size=256m,exec
+      - /usr/share/elasticsearch/logs:size=64m
+    networks: [data-search]
+    pids_limit: 1024
+    mem_limit: 1280m
+    healthcheck:
+      # HTTP is up and demands credentials (401); es-init then waits for cluster health with a password.
+      test: ["CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9200/ | grep -q 401"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 30s
+
+  es-init:
+    <<: *one-shot
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.2.8@sha256:f6c331bc14f54c32ce956d0f35cf17a2d302214bdf89b7234e5c9ada09602357
+    profiles: [platform]
+    entrypoint: ["/bin/bash", "/surge/init.sh"]
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?run docker/gen-secrets.sh first}
+      ELASTICSEARCH_CATALOG_PASSWORD: ${ELASTICSEARCH_CATALOG_PASSWORD:?run docker/gen-secrets.sh first}
+    volumes:
+      - ./docker/elasticsearch:/surge:ro
+    networks: [data-search]
+    mem_limit: 128m
+    depends_on:
+      elasticsearch: { condition: service_healthy }
+
+  # ---------------------------------------------------------------- platform services
+  config-server:
+    <<: *hardened
+    image: surge/config-server:local
+    build: &service-build
+      context: .
+      dockerfile: docker/service.Dockerfile
+      args: { MODULE: config-server, PORT: "8888" }
+    profiles: [platform]
+    environment:
+      SURGE_ENV: prod
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError"
+      CONFIG_USER: ${CONFIG_USER:?run docker/gen-secrets.sh first}
+      CONFIG_PASSWORD: ${CONFIG_PASSWORD:?run docker/gen-secrets.sh first}
+      CONFIG_REPO: file:/config-repo/
+    volumes:
+      - ./config-repo:/config-repo:ro
+    networks: [app]
+    mem_limit: 512m
+
+  discovery:
+    <<: *hardened
+    image: surge/discovery:local
+    build:
+      <<: *service-build
+      args: { MODULE: discovery, PORT: "8761" }
+    profiles: [platform]
+    environment:
+      SURGE_ENV: prod
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError"
+      EUREKA_USER: ${EUREKA_USER:?run docker/gen-secrets.sh first}
+      EUREKA_PASSWORD: ${EUREKA_PASSWORD:?run docker/gen-secrets.sh first}
+      # A single, standalone registry: with this hostname it recognises its default peer URL (localhost) as itself
+      # and does not replicate to it (which would fail with 401, as that URL carries no credentials).
+      EUREKA_INSTANCE_HOSTNAME: localhost
+    networks: [app]
+    mem_limit: 512m
+
+  auth-service:
+    <<: *hardened
+    image: surge/auth-service:local
+    build:
+      <<: *service-build
+      args: { MODULE: auth-service, PORT: "8082" }
+    profiles: [platform]
+    environment:
+      <<: *spring-env
+      MYSQL_URL: jdbc:mysql://mysql:3306/auth
+      MYSQL_USER: auth
+      MYSQL_PASSWORD: ${MYSQL_AUTH_PASSWORD:?run docker/gen-secrets.sh first}
+      MAIL_HOST: ${MAIL_HOST:-}
+      MAIL_PORT: ${MAIL_PORT:-587}
+      SURGE_ADMIN_EMAIL: ${SURGE_ADMIN_EMAIL:-admin@surge.local}
+      SURGE_ADMIN_PASSWORD: ${SURGE_ADMIN_PASSWORD:?run docker/gen-secrets.sh first}
+      SURGE_JWT_KEY_FILE: /run/secrets/jwt.jwk
+      SURGE_INTERNAL_JWKS: /run/secrets/internal-jwks.json
+    secrets:
+      - source: jwt_key
+        target: jwt.jwk
+      - source: internal_jwks
+        target: internal-jwks.json
+    networks: [app, data-mysql, egress]
+    mem_limit: 768m
+    depends_on:
+      <<: *spring-depends
+      mysql: { condition: service_healthy }
+
+  payment-service:
+    <<: *hardened
+    image: surge/payment-service:local
+    build:
+      <<: *service-build
+      args: { MODULE: payment-service, PORT: "8084" }
+    profiles: [platform]
+    # In-memory payment store: exactly one instance.
+    environment:
+      <<: *spring-env
+      SURGE_INTERNAL_JWKS: /run/secrets/internal-jwks.json
+    secrets:
+      - source: internal_jwks
+        target: internal-jwks.json
+    networks: [app]
+    mem_limit: 512m
+    depends_on: *spring-depends
+
+  catalog-service:
+    <<: *hardened
+    cpu_shares: *cpu-background
+    image: surge/catalog-service:local
+    build:
+      <<: *service-build
+      args: { MODULE: catalog-service, PORT: "8083" }
+    profiles: [platform]
+    environment:
+      <<: *spring-env
+      MYSQL_URL: jdbc:mysql://mysql:3306/catalog
+      MYSQL_USER: catalog
+      MYSQL_PASSWORD: ${MYSQL_CATALOG_PASSWORD:?run docker/gen-secrets.sh first}
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_SECURITY_PROTOCOL: SASL_PLAINTEXT
+      KAFKA_USER: catalog
+      KAFKA_PASSWORD: ${KAFKA_CATALOG_PASSWORD:?run docker/gen-secrets.sh first}
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ELASTICSEARCH_USER: catalog
+      ELASTICSEARCH_PASSWORD: ${ELASTICSEARCH_CATALOG_PASSWORD:?run docker/gen-secrets.sh first}
+      SURGE_INTERNAL_JWKS: /run/secrets/internal-jwks.json
+    secrets:
+      - source: internal_jwks
+        target: internal-jwks.json
+    networks: [app, data-mysql, data-kafka, data-search]
+    mem_limit: 768m
+    depends_on:
+      <<: *spring-depends
+      mysql: { condition: service_healthy }
+      kafka-init: { condition: service_completed_successfully }
+      es-init: { condition: service_completed_successfully }
+
+  booking-service:
+    <<: *hardened
+    cpu_shares: *cpu-request-path
+    image: surge/booking-service:local
+    build:
+      <<: *service-build
+      args: { MODULE: booking-service, PORT: "8081" }
+    profiles: [core]
+    environment:
+      <<: *spring-env
+      MYSQL_URL: jdbc:mysql://mysql:3306/booking
+      MYSQL_USER: booking
+      MYSQL_PASSWORD: ${MYSQL_BOOKING_PASSWORD:?run docker/gen-secrets.sh first}
+      REDIS_HOST: redis
+      REDIS_USER: booking
+      REDIS_PASSWORD: ${REDIS_BOOKING_PASSWORD:?run docker/gen-secrets.sh first}
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_SECURITY_PROTOCOL: SASL_PLAINTEXT
+      KAFKA_USER: booking
+      KAFKA_PASSWORD: ${KAFKA_BOOKING_PASSWORD:?run docker/gen-secrets.sh first}
+      RABBIT_HOST: rabbitmq
+      RABBIT_VHOST: surge
+      RABBIT_USER: booking
+      RABBIT_PASSWORD: ${RABBIT_BOOKING_PASSWORD:?run docker/gen-secrets.sh first}
+      # The real payment-service over HTTP (circuit breaker, retry). config-repo/booking-service.yml says the same.
+      SURGE_PAYMENT_MODE: http
+      SURGE_INTERNAL_JWKS: /run/secrets/internal-jwks.json
+      SURGE_INTERNAL_SIGNING_KEY: /run/secrets/booking.jwk
+      # Tomcat's accept queue (its yml says 1000), bounded by the somaxconn below: see x-deep-backlog.
+      SERVER_TOMCAT_ACCEPTCOUNT: "16384"
+      # Heap plus direct buffers must stay under mem_limit: see the memory note on the gateway.
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=50 -XX:MaxDirectMemorySize=384m -XX:+ExitOnOutOfMemoryError"
+    secrets:
+      - source: internal_jwks
+        target: internal-jwks.json
+      - source: booking_key
+        target: booking.jwk
+    networks: [app, data-mysql, data-redis, data-kafka, data-rabbit]
+    sysctls: *deep-backlog
+    mem_limit: 2g
+    depends_on:
+      <<: *spring-depends
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      kafka-init: { condition: service_completed_successfully }
+
+  notification-service:
+    <<: *hardened
+    cpu_shares: *cpu-background
+    image: surge/notification-service:local
+    build:
+      <<: *service-build
+      args: { MODULE: notification-service, PORT: "8086" }
+    profiles: [platform]
+    environment:
+      <<: *spring-env
+      MYSQL_URL: jdbc:mysql://mysql:3306/notification
+      MYSQL_USER: notification
+      MYSQL_PASSWORD: ${MYSQL_NOTIFICATION_PASSWORD:?run docker/gen-secrets.sh first}
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_SECURITY_PROTOCOL: SASL_PLAINTEXT
+      KAFKA_USER: notification
+      KAFKA_PASSWORD: ${KAFKA_NOTIFICATION_PASSWORD:?run docker/gen-secrets.sh first}
+      RABBIT_HOST: rabbitmq
+      RABBIT_VHOST: surge
+      RABBIT_USER: notification
+      RABBIT_PASSWORD: ${RABBIT_NOTIFICATION_PASSWORD:?run docker/gen-secrets.sh first}
+      MAIL_HOST: ${MAIL_HOST:-}
+      MAIL_PORT: ${MAIL_PORT:-587}
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_REGION: ${S3_REGION:-ap-south-1}
+      S3_BUCKET: ${S3_BUCKET:-surge-tickets}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?run docker/gen-secrets.sh first}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?run docker/gen-secrets.sh first}
+      SURGE_TICKET_QR_KEY: ${SURGE_TICKET_QR_KEY:?run docker/gen-secrets.sh first}
+      AUDIT_DIR: /var/lib/surge/audit
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
+      SURGE_INTERNAL_JWKS: /run/secrets/internal-jwks.json
+      SURGE_INTERNAL_SIGNING_KEY: /run/secrets/notification.jwk
+    secrets:
+      - source: internal_jwks
+        target: internal-jwks.json
+      - source: notification_key
+        target: notification.jwk
+    volumes:
+      # The daily orders-YYYY-MM-DD.jsonl audit files (Task 13) survive restarts.
+      - audit-data:/var/lib/surge/audit
+    networks: [app, data-mysql, data-kafka, data-rabbit, egress]
+    mem_limit: 768m
+    depends_on:
+      <<: *spring-depends
+      mysql: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      kafka-init: { condition: service_completed_successfully }
+
+  gateway:
+    <<: *hardened
+    cpu_shares: *cpu-request-path
+    image: surge/gateway:local
+    build:
+      <<: *service-build
+      args: { MODULE: gateway, PORT: "8085" }
+    profiles: [platform]
+    environment:
+      <<: *spring-env
+      REDIS_HOST: redis-edge
+      REDIS_USER: gateway
+      REDIS_PASSWORD: ${REDIS_GATEWAY_PASSWORD:?run docker/gen-secrets.sh first}
+      # Only nginx (its fixed address on the edge network) may name the client in X-Forwarded-For (SEC-11).
+      SURGE_TRUSTED_PROXIES: "172[.]30[.]250[.]10"
+      SURGE_INTERNAL_SIGNING_KEY: /run/secrets/gateway.jwk
+      # Memory: heap (45 %) + Netty's direct buffers (capped) + metaspace and threads must stay under mem_limit. With
+      # the defaults (heap 60 %, direct memory = heap size) a 10,000-buyer burst filled the cgroup: memory.max was hit
+      # 1,603 times, the JVM's own code pages were evicted (2,534 major faults) and requests took up to 40 s.
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=45 -XX:MaxDirectMemorySize=640m -XX:+ExitOnOutOfMemoryError"
+    secrets:
+      - source: gateway_key
+        target: gateway.jwk
+    networks:
+      edge: { ipv4_address: 172.30.250.20 }
+      app: {}
+      data-redis-edge: {}
+    # Netty sizes its accept queue from somaxconn when it starts.
+    sysctls: *deep-backlog
+    # Every request is verified, signed, rate-limited and proxied here, with two connections per request in flight.
+    mem_limit: 2g
+    depends_on:
+      <<: *spring-depends
+      # Every signed-in request checks the token denylist in Redis (fails closed), so Redis comes first.
+      redis-edge: { condition: service_healthy }
+      # The gateway fetches auth's JWKS on the first signed-in request.
+      auth-service: { condition: service_healthy }
+
+  web:
+    <<: *hardened
+    cpu_shares: *cpu-request-path
+    image: surge/web:local
+    build: ./web
+    profiles: [platform]
+    ports:
+      # The only published port. S10 (compose.prod.yaml) maps 80/443 with TLS instead.
+      - "127.0.0.1:8080:8080"
+    networks:
+      edge: { ipv4_address: 172.30.250.10 }
+    # nginx's listen backlog (nginx.conf) is bounded by this.
+    sysctls: *deep-backlog
+    pids_limit: 256
+    # Buffers for thousands of concurrent connections: at 256m the 10,000-buyer burst hit the limit (memory.max).
+    mem_limit: 512m
+    depends_on:
+      gateway: { condition: service_healthy }
+
+networks:
+  # nginx and the gateway. A fixed subnet so the gateway can trust exactly nginx's address (SURGE_TRUSTED_PROXIES).
+  # Change the subnet, the two ipv4_address values and SURGE_TRUSTED_PROXIES together.
+  edge:
+    ipam:
+      config:
+        - subnet: 172.30.250.0/24
+  # Service to service. Fixed so each service registers this address with Eureka (SPRING_CLOUD_INETUTILS_…).
+  app:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.251.0/24
+  data-mysql: { internal: true }
+  data-redis: { internal: true }
+  data-redis-edge: { internal: true }
+  data-kafka: { internal: true }
+  data-rabbit: { internal: true }
+  data-search: { internal: true }
+  # Outbound internet for auth and notification only (SMTP, S3). In compose.dev.yaml Mailpit and S3Mock sit here.
+  egress: {}
+
+volumes:
+  mysql-data:
+  redis-data:
+  redis-edge-data:
+  kafka-data:
+  rabbitmq-data:
+  es-data:
+  audit-data:
+
+# Mounted read-only, each into its owner only, at /run/secrets/<target>. Made by docker/gen-secrets.sh.
+secrets:
+  jwt_key:
+    file: ./docker/secrets/jwt.jwk
+  gateway_key:
+    file: ./docker/secrets/gateway.jwk
+  booking_key:
+    file: ./docker/secrets/booking.jwk
+  notification_key:
+    file: ./docker/secrets/notification.jwk
+  internal_jwks:
+    file: ./docker/secrets/internal-jwks.json
+  redis_acl:
+    file: ./docker/secrets/redis-users.acl
+  redis_edge_acl:
+    file: ./docker/secrets/redis-edge-users.acl
+  rabbitmq_definitions:
+    file: ./docker/secrets/rabbitmq-definitions.json

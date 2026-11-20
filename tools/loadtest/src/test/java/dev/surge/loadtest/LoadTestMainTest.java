@@ -115,6 +115,24 @@ class LoadTestMainTest {
     }
 
     @Test
+    void aRunWhereEveryHoldFailedExitsOneInsteadOfPassing(@TempDir Path out) throws Exception {
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+        try (StubServer s = stub(0, 0, true);
+             PrintStream o = new PrintStream(stdout, true, StandardCharsets.UTF_8);
+             PrintStream e = new PrintStream(stderr, true, StandardCharsets.UTF_8)) {
+            s.on("POST /api/bookings/holds", Reply.of(503, "{\"type\":\"https://surge.dev/problems/service-unavailable\"}"));
+
+            assertThat(LoadTestMain.run(config(s, out), o, e)).isEqualTo(1);
+            assertThat(s.received).doesNotContain(ORDERS);
+        }
+        assertThat(stdout.toString(StandardCharsets.UTF_8)).contains("**FAIL ❌**").doesNotContain("PASS");
+        assertThat(stderr.toString(StandardCharsets.UTF_8))
+            .contains("ERROR: nothing was sold although the event has 10 seats")
+            .contains("ERROR: 3 of 3 buyers ended in an error (more than 1 %)");
+    }
+
+    @Test
     void oversoldExitsOne(@TempDir Path out) throws Exception {
         try (StubServer s = stub(3, 1, true)) {
             assertThat(LoadTestMain.run(config(s, out))).isEqualTo(1);

@@ -1,3 +1,8 @@
 mvnw text eol=lf
 mvnw.cmd text eol=crlf
 *.sh text eol=lf
+# Mounted into or copied into Linux containers as-is: a CR would break nginx, RabbitMQ, Redis ACLs and SQL.
+docker/** text eol=lf
+web/nginx.conf text eol=lf
+web/nginx/** text eol=lf
+web/nginx-*.conf text eol=lf
