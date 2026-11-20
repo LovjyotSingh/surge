@@ -6,6 +6,7 @@ import dev.surge.gateway.ratelimit.KeyResolvers;
 import dev.surge.gateway.ratelimit.RateLimitFilter;
 import dev.surge.gateway.ratelimit.RateLimitFilter.Limit;
 import dev.surge.gateway.ratelimit.RateLimitFilter.OnLimiterFailure;
+import io.github.resilience4j.bulkhead.BulkheadFullException;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 import io.github.resilience4j.timelimiter.TimeLimiterConfig;
 import java.time.Duration;
@@ -28,6 +29,11 @@ import org.springframework.http.HttpMethod;
  */
 @Configuration
 class RouteConfig {
+
+    /** The circuit breaker (and its bulkhead, {@link BulkheadConfig}) on the hold and order routes. */
+    static final String BOOKING_BREAKER = "booking";
+    /** The circuit breaker (and its bulkhead) on catalog's public reads. */
+    static final String CATALOG_BREAKER = "catalog";
 
     private static final String RESPONSE_TIMEOUT = "response-timeout";
     private static final String AUDIENCE = RouteAudiences.METADATA_KEY;
@@ -148,7 +154,7 @@ class RouteConfig {
                         .metadata(AUDIENCE, RouteAudiences.AUTH).uri(auth))
                 // --- catalog (public reads) ---
                 .route("catalog", r -> r.method(HttpMethod.GET).and().path("/api/catalog/**")
-                        .filters(f -> f.filter(catalogLimit).circuitBreaker(c -> c.setName("catalog")
+                        .filters(f -> f.filter(catalogLimit).circuitBreaker(c -> c.setName(CATALOG_BREAKER)
                                 .setFallbackUri("forward:/fallback/catalog")))
                         .metadata(AUDIENCE, RouteAudiences.CATALOG).uri(catalog))
                 // --- booking: the SSE stream has no response timeout; other public event reads use the default ---
@@ -163,11 +169,13 @@ class RouteConfig {
                         .metadata(AUDIENCE, RouteAudiences.BOOKING).uri(booking))
                 .route("booking-holds", r -> r.path("/api/bookings/holds/**")
                         .filters(f -> f.filter(holdsLimit).filter(holdsIpLimit)
-                                .circuitBreaker(c -> c.setName("booking").setFallbackUri("forward:/fallback/booking")))
+                                .circuitBreaker(c -> c.setName(BOOKING_BREAKER)
+                                        .setFallbackUri("forward:/fallback/booking")))
                         .metadata(AUDIENCE, RouteAudiences.BOOKING).uri(booking))
                 .route("booking-orders", r -> r.path("/api/bookings/orders/**")
                         .filters(f -> f.filter(ordersLimit)
-                                .circuitBreaker(c -> c.setName("booking").setFallbackUri("forward:/fallback/booking")))
+                                .circuitBreaker(c -> c.setName(BOOKING_BREAKER)
+                                        .setFallbackUri("forward:/fallback/booking")))
                         .metadata(AUDIENCE, RouteAudiences.BOOKING).uri(booking))
                 // --- notification ---
                 .route("notification-tickets", r -> r.method(HttpMethod.GET).and()
@@ -181,6 +189,10 @@ class RouteConfig {
      * Resilience4j's default time limiter is 1 s, far below what a checkout may take (payment client alone allows 2 s plus
      * a retry), so the limiter is lifted to {@code surge.gateway.breaker-timeout}. Only connection failures and timeouts open the
      * breaker; a downstream 4xx/5xx is passed through untouched.
+     *
+     * <p>A call its bulkhead refused ({@link BulkheadConfig}) is ignored, neither a failure nor a success: it never
+     * reached the service. Counted as a failure, one burst past the bulkhead would open the breaker and turn away every
+     * hold and checkout for 10 s, including the calls the bulkhead had room for.
      */
     @Bean
     Customizer<ReactiveResilience4JCircuitBreakerFactory> breakerDefaults(
@@ -192,6 +204,7 @@ class RouteConfig {
                         .failureRateThreshold(50)
                         .waitDurationInOpenState(Duration.ofSeconds(10))
                         .permittedNumberOfCallsInHalfOpenState(3)
+                        .ignoreExceptions(BulkheadFullException.class)
                         .build())
                 .timeLimiterConfig(TimeLimiterConfig.custom().timeoutDuration(timeout).build())
                 .build());
