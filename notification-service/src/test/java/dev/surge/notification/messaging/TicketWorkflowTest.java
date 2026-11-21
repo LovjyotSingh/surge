@@ -113,7 +113,7 @@ class TicketWorkflowTest extends TicketTestBase {
     }
 
     @Test
-    void poisonMessageGoesToDlqAfterThreeAttempts() throws Exception {
+    void poisonMessageGoesToDlqAfterFiveAttempts() throws Exception {
         long badOrder = nextOrderId();
         TicketRequested bad = stubOrder("u-1", badOrder);
         long goodOrder = nextOrderId();
@@ -126,7 +126,7 @@ class TicketWorkflowTest extends TicketTestBase {
         JsonNode summary = awaitOneEmail();
         assertThat(summary.get("To").get(0).get("Address").asString()).isEqualTo("u-2@example.com");
         await().atMost(TIMEOUT).untilAsserted(() -> assertThat(queueDepth("tickets.dlq")).isEqualTo(1));
-        verify(store, times(3)).put(eq(badOrder), any());
+        verify(store, times(5)).put(eq(badOrder), any());
         assertThat(queueDepth("tickets")).isZero();
         // The failed attempts left nothing behind: no row, no claim, no email.
         assertThat(tickets.findById(badOrder)).isEmpty();
@@ -163,7 +163,7 @@ class TicketWorkflowTest extends TicketTestBase {
                 dev.surge.common.messaging.MessageTypes.TICKET_REQUESTED_KEY, org.springframework.amqp.core.MessageBuilder
                 .withBody("plain text, not a ticket".getBytes()).setContentType("text/plain").build());
 
-        // A retry would take 1 s + 2 s per message: all of them being dead-lettered fast means none was retried.
+        // A retry would take 1 s, 2 s, 4 s and 8 s per message: all of them being dead-lettered fast means none was retried.
         await().atMost(Duration.ofSeconds(10)).untilAsserted(() ->
                 assertThat(queueDepth("tickets.dlq")).isEqualTo(bodies.size() + 1));
         // One workflow call per message that parsed into a record, never a second.
