@@ -28,6 +28,30 @@ describe('retryWhileBusy', () => {
     expect(onRetry).toHaveBeenCalledOnce()
   })
 
+  it('treats 503 auth-unavailable like service-busy: same wait, same limit of retries', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    const authDown = () =>
+      new ApiError(
+        { type: 'https://surge.dev/problems/auth-unavailable', title: 'Authentication unavailable', status: 503 },
+        1,
+      )
+    const waits: number[] = []
+    const onRetry = vi.fn()
+    const recovers = vi.fn().mockRejectedValueOnce(authDown()).mockResolvedValueOnce('held')
+    await expect(
+      retryWhileBusy(recovers, onRetry, async (ms) => {
+        waits.push(ms)
+      }),
+    ).resolves.toBe('held')
+    expect(waits).toEqual([1000])
+    expect(onRetry).toHaveBeenCalledOnce()
+
+    const last = authDown()
+    const never = vi.fn().mockRejectedValue(last)
+    await expect(retryWhileBusy(never, () => {}, async () => {})).rejects.toBe(last)
+    expect(never).toHaveBeenCalledTimes(BUSY_RETRIES + 1)
+  })
+
   it('waits 1 s when there is no Retry-After', async () => {
     vi.spyOn(Math, 'random').mockReturnValue(0)
     const waits: number[] = []
