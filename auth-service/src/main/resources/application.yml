@@ -20,10 +20,19 @@ spring:
     username: ${MYSQL_USER:surge}
     password: ${MYSQL_PASSWORD:surge}
   mail:
-    # The email verification code (S5). Mailpit locally, like notification-service; no auth, no TLS.
+    # The email verification code (S5). Mailpit locally, like notification-service: no auth, no TLS. compose.prod.yaml
+    # sets a real provider (MAIL_PASSWORD from a secret file) with SMTP AUTH and STARTTLS required; a public deployment
+    # refuses to start without them (common's MailSettings).
     host: ${MAIL_HOST:localhost}
     port: ${MAIL_PORT:1025}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
     properties:
+      mail.smtp.auth: ${MAIL_SMTP_AUTH:false}
+      mail.smtp.starttls.enable: ${MAIL_STARTTLS:false}
+      mail.smtp.starttls.required: ${MAIL_STARTTLS:false}
+      mail.smtp.ssl.checkserveridentity: true
+      mail.smtp.ssl.protocols: TLSv1.2 TLSv1.3
       mail.smtp.connectiontimeout: 5000
       mail.smtp.timeout: 10000
       mail.smtp.writetimeout: 10000
@@ -39,6 +48,10 @@ spring:
 surge:
   # dev (default, local) or prod. Compose's prod overlay sets SURGE_ENV=prod, which turns on the startup guards.
   env: ${SURGE_ENV:dev}
+  mail:
+    # The verification email's sender, e.g. "Surge <no-reply@example.com>": an address on a domain whose SPF, DKIM and
+    # DMARC the mail provider has verified. A public deployment refuses surge.local (common's MailSettings).
+    from: ${MAIL_FROM:no-reply@surge.local}
   security:
     # The prod overlay sets SURGE_PUBLIC_DEPLOYMENT=true: SURGE_ENV=dev then refuses to start (StartupGuards, SurgeEnv).
     public-deployment: ${SURGE_PUBLIC_DEPLOYMENT:false}

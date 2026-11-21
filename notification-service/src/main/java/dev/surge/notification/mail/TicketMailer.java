@@ -15,23 +15,26 @@ import org.springframework.stereotype.Component;
 @Component
 public class TicketMailer {
 
-    static final String FROM = "tickets@surge.local";
     private static final DateTimeFormatter WHEN = DateTimeFormatter.ofPattern("EEE d MMM yyyy, HH:mm z", Locale.ENGLISH);
 
     private final JavaMailSender mail;
     private final String publicBaseUrl;
+    private final String from;
 
+    /** @param from {@code surge.mail.from} (env MAIL_FROM), e.g. {@code Surge <tickets@example.com>} */
     public TicketMailer(JavaMailSender mail,
-                        @Value("${surge.notification.public-base-url:http://localhost:8080}") String publicBaseUrl) {
+                        @Value("${surge.notification.public-base-url:http://localhost:8080}") String publicBaseUrl,
+                        @Value("${surge.mail.from:tickets@surge.local}") String from) {
         this.mail = mail;
         this.publicBaseUrl = publicBaseUrl;
+        this.from = from;
     }
 
     public void send(String to, TicketData ticket, byte[] pdf) {
         try {
             MimeMessage message = mail.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
-            helper.setFrom(FROM);
+            helper.setFrom(from);
             helper.setTo(to);
             helper.setSubject("Your Surge tickets — " + oneLine(ticket.eventTitle()));
             helper.setText(body(ticket), false);
