@@ -108,7 +108,7 @@ S3_BUCKET=surge-example-tickets
 S3_REGION=ap-south-1
 # S3_ENDPOINT=                      # empty = AWS; another S3 store must be https://
 PUBLIC_BASE_URL=https://surge.example.com # must be https:// (the ticket email's sign-in link)
-SURGE_ADMIN_EMAIL=you@surge.example.com   # optional; gen-secrets wrote admin@surge.local
+SURGE_ADMIN_EMAIL=you@surge.example.com   # required: gen-secrets wrote admin@surge.local, which a public deployment refuses
 ```
 
 **Your provider's secrets, in their files.** Never type a secret on a command line: it would end up in `ps` and in your shell history. `docker/set-secret.sh` reads the value from the terminal without showing it, or from a pipe (for example from your password manager), and writes the file:
@@ -121,6 +121,8 @@ sudo docker/set-secret.sh s3_secret_key        # the IAM user's secret key
 ```
 
 The admin sign-in password is in `docker/secrets/surge_admin_password`. Store a copy in your password manager.
+
+**The admin email must not be `@surge.local`.** That is the public default (`admin@surge.local`), and anyone could sign up as it before you do and lock you out of the admin account. With `SURGE_ENV=prod` and `SURGE_PUBLIC_DEPLOYMENT=true` (the prod overlay sets both) auth-service refuses to start with a `@surge.local` admin email, and says so in its log. Set `SURGE_ADMIN_EMAIL` in `.env` to an address you own **before** the first start.
 
 ## 5. S3 for the ticket PDFs
 
@@ -213,6 +215,8 @@ sudo docker compose -f compose.yaml -f compose.prod.yaml --profile core --profil
 Wait until every service is `healthy` and `kafka-init` and `es-init` have exited with 0. A service that refuses to start names the setting it wants in its log, never the value. Read it with `docker compose … logs <service>`.
 
 **Never** add `compose.dev.yaml`, `compose.loadtest.yaml` or `compose.tls-local.yaml` on the server, and never start the `smoke` or `loadtest` profiles there. Leave `SURGE_AUTH_TEST_TOKENS` unset.
+
+> **The smoke tool is destructive.** Its last step turns payment chaos off and **resets event N** (default 1) with the admin token, which deletes that event's holds, orders and tickets. It therefore refuses a `--base-url` whose host is not local (`localhost`, `127.0.0.1`, `::1`, a single-label Docker name such as `web`, `*.localhost`, `*.test`) and exits with code 2. Against anything else it needs `--destructive`. Never pass it to a server with real sales.
 
 ## 9. After the first deploy
 
