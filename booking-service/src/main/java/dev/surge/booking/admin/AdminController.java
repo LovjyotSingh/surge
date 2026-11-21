@@ -64,7 +64,10 @@ public class AdminController {
                 + "WHERE o.event_id = ?", eventId);
         int distinct = count("SELECT COUNT(DISTINCT oi.seat_id) FROM order_item oi JOIN orders o ON o.id = oi.order_id "
                 + "WHERE o.event_id = ?", eventId);
-        IntegrityReport report = IntegrityReport.of(eventId, total, sold, items, distinct);
+        // Seat by seat: a seat is SOLD exactly when it has an order line (UNIQUE(seat_id): at most one).
+        int mismatches = count("SELECT COUNT(*) FROM seat s LEFT JOIN order_item oi ON oi.seat_id = s.id "
+                + "WHERE s.event_id = ? AND ((s.status = 'SOLD') <> (oi.seat_id IS NOT NULL))", eventId);
+        IntegrityReport report = IntegrityReport.of(eventId, total, sold, items, distinct, mismatches);
         AdminAudit.log("booking.integrity", "event:" + eventId);
         return report;
     }

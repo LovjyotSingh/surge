@@ -30,13 +30,29 @@ class ReportWriterTest {
         String md = Files.readString(dir.resolve("loadtest-20261112-120000.md"));
         assertThat(md).contains("**PASS ✅**")
             .contains("| Oversold (a seat in two order lines) | 0 ✅ |")
-            .contains("| Seats marked SOLD = distinct seats in orders | yes ✅ |")
-            .contains("| Buyers who got a 201 = seats sold | 500 = 500 ✅ |")
+            .contains("| Seats marked SOLD match order lines, seat by seat | yes ✅ |")
+            .contains("| Buyers who got a 201 (or a replay) = seats sold in this run | 500 = 500 ✅ |")
             .contains("| Sold | 500 |").contains("| Requests | 640 |")
             .contains("| Busy retries (503 service-busy, retried) | 12 |");
         assertThat(Files.readString(dir.resolve("loadtest-20261112-120000.json")))
             .contains("\"oversold\"").contains("\"consistent\"").contains("\"sold\"").contains("2026-11-12T06:30:00Z")
             .containsPattern("\"busyRetries\"\\s*:\\s*12");
+    }
+
+    @Test
+    void theJsonCarriesTheVerdictTheDeltaAndTheNewCounters(@TempDir Path dir) throws Exception {
+        var r = new LoadTestReport(Instant.parse("2026-11-12T06:30:00Z"), 10, 1, 500, 8, 0, true, 3, 9, 0, 0, 0, 0, 1,
+            ZERO, ZERO, 0, 5, 0, 2);
+        assertThat(r.soldInRun()).isEqualTo(3);
+        assertThat(r.passed()).isTrue();
+        String json = Files.readString(ReportWriter.write(dir, r).get(0));
+        assertThat(json).containsPattern("\"passed\"\\s*:\\s*true").containsPattern("\"soldInRun\"\\s*:\\s*3")
+            .containsPattern("\"soldBefore\"\\s*:\\s*5").containsPattern("\"checkoutRetries\"\\s*:\\s*2")
+            .containsPattern("\"seatMismatches\"\\s*:\\s*0");
+        assertThat(ReportWriter.markdown(r)).contains("| 3 = 3 ✅ |")
+            .contains("| Checkout retries (same Idempotency-Key) | 2 |");
+        // a failed run says so in the JSON as well
+        assertThat(ReportWriter.json(report(501, 1, true, 501))).containsPattern("\"passed\"\\s*:\\s*false");
     }
 
     @Test
@@ -48,7 +64,7 @@ class ReportWriterTest {
     @Test
     void marksInconsistentSoldSeatsAsFailure() {
         String md = ReportWriter.markdown(report(500, 0, false, 500));
-        assertThat(md).contains("**FAIL ❌**").contains("| Seats marked SOLD = distinct seats in orders | no ❌ |");
+        assertThat(md).contains("**FAIL ❌**").contains("| Seats marked SOLD match order lines, seat by seat | no ❌ |");
     }
 
     @Test

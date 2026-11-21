@@ -399,12 +399,16 @@ class CheckoutTest {
         verify(gateway, times(1)).refund(any());
         assertThat(redis.hasKey(RedisKeys.idempotency("u2", "key-0002"))).isFalse();
 
-        // The lost hold is released (not left to expire), and nothing is added to the sold set.
+        // The lost hold is released (not left to expire), and the seat MySQL says is sold goes into the sold set.
         assertThat(redis.hasKey(RedisKeys.hold(h2))).isFalse();
         assertThat(redis.hasKey(RedisKeys.userHold(1, "u2"))).isFalse();
         assertThat(redis.hasKey(RedisKeys.seat(1, 7))).isFalse();
         assertThat(redis.opsForZSet().range(RedisKeys.HOLD_EXPIRY, 0, -1)).isEmpty();
-        assertThat(redis.opsForSet().isMember(RedisKeys.sold(1), "7")).isFalse();
+        assertThat(redis.opsForSet().isMember(RedisKeys.sold(1), "7")).isTrue();
+        // ... so the next buyer is refused at the hold, before any payment is taken
+        mvc.perform(post("/api/bookings/holds").with(Identity.user("u3")).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"eventId\":1,\"seatIds\":[7]}")).andExpect(status().isConflict());
+        verify(gateway, times(2)).charge(any()); // u1 and u2 only
         hold("u2", "[8]"); // no hold-exists: u2 can pick again straight away
     }
 

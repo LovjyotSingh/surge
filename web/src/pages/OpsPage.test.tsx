@@ -118,6 +118,9 @@ describe('OpsPage', () => {
     expect(passed({ ...report, errors: 11 })).toBe(false)
     expect(passed({ ...report, conflicts: 900 })).toBe(true)
     expect(passed({ ...report, totalSeats: 0, sold: 0, buyersSucceeded: 0 })).toBe(true)
+    // the tester's own verdict, when the report carries it, is not re-derived
+    expect(passed({ ...report, passed: false })).toBe(false)
+    expect(passed({ ...report, passed: true, errors: 500 })).toBe(true)
   })
 
   it('shows empty state with a command that works', async () => {

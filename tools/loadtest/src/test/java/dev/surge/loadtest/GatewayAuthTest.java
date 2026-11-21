@@ -32,6 +32,8 @@ class GatewayAuthTest {
     private static final String ORDERS = "POST /api/bookings/orders";
     private static final String PASSWORD = "pw-never-printed-9f3";
     private static final String ADMIN_TOKEN = "admin.jwt.secret";
+    private static final String INTEGRITY_BEFORE = "{\"eventId\":1,\"totalSeats\":10,\"soldSeats\":0,\"orderItems\":0,"
+        + "\"distinctSeatsSold\":0,\"oversold\":0,\"consistent\":true}";
     private static final String INTEGRITY_OK = "{\"eventId\":1,\"totalSeats\":10,\"soldSeats\":3,\"orderItems\":3,"
         + "\"distinctSeatsSold\":3,\"oversold\":0,\"consistent\":true}";
 
@@ -56,7 +58,7 @@ class GatewayAuthTest {
             .on("GET /api/bookings/events/1", Reply.of(200, "{\"id\":1,\"seats\":[" + seats + "]}"))
             .on(HOLDS, Reply.of(201, "{\"holdId\":\"h-1\"}"))
             .on(ORDERS, Reply.of(201, "{\"id\":1}"))
-            .on(INTEGRITY, Reply.of(200, INTEGRITY_OK))
+            .on(INTEGRITY, Reply.of(200, INTEGRITY_BEFORE), Reply.of(200, INTEGRITY_OK))
             .on(PUT_REPORT, Reply.of(204, ""));
     }
 
@@ -195,11 +197,11 @@ class GatewayAuthTest {
     @Test
     void adminCallRetriesOnceAfterAnExpiredToken(@TempDir Path out) throws Exception {
         try (StubServer s = stub()) {
-            s.on(INTEGRITY, Reply.of(401, ""), Reply.of(200, INTEGRITY_OK));
+            s.on(INTEGRITY, Reply.of(401, ""), Reply.of(200, INTEGRITY_BEFORE), Reply.of(200, INTEGRITY_OK));
             assertThat(run(config(s, out, "--admin-password", PASSWORD)).exit()).isZero();
 
             assertThat(count(s, LOGIN)).isEqualTo(2);
-            assertThat(count(s, INTEGRITY)).isEqualTo(2);
+            assertThat(count(s, INTEGRITY)).isEqualTo(3); // 401, the baseline, the final read
         }
     }
 

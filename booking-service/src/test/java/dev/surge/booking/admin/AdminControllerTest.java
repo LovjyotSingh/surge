@@ -121,6 +121,7 @@ class AdminControllerTest {
                 .andExpect(jsonPath("$.orderItems").value(2))
                 .andExpect(jsonPath("$.distinctSeatsSold").value(2))
                 .andExpect(jsonPath("$.oversold").value(0))
+                .andExpect(jsonPath("$.seatMismatches").value(0))
                 .andExpect(jsonPath("$.consistent").value(true));
     }
 
@@ -132,6 +133,39 @@ class AdminControllerTest {
                 .andExpect(jsonPath("$.soldSeats").value(2))
                 .andExpect(jsonPath("$.distinctSeatsSold").value(1))
                 .andExpect(jsonPath("$.oversold").value(0))
+                .andExpect(jsonPath("$.seatMismatches").value(1))
+                .andExpect(jsonPath("$.consistent").value(false));
+    }
+
+    /** An order line (a real order's, so the foreign keys hold) on a seat that is still AVAILABLE. */
+    private void addOrderLineOnAvailableSeat(int orderId, long seatId) {
+        jdbc.update("INSERT INTO order_item (order_id, seat_id, price_inr) VALUES (?, ?, 100.00)", orderId, seatId);
+    }
+
+    @Test
+    void integrityFlagsAnOrderLineOnAnAvailableSeat() throws Exception {
+        int orderId = buy("u1", "key-0001", "[1]");
+        addOrderLineOnAvailableSeat(orderId, 10);
+        mvc.perform(Admin.as(get("/api/bookings/admin/events/1/integrity"))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.soldSeats").value(1))
+                .andExpect(jsonPath("$.orderItems").value(2))
+                .andExpect(jsonPath("$.distinctSeatsSold").value(2))
+                .andExpect(jsonPath("$.oversold").value(0))
+                .andExpect(jsonPath("$.seatMismatches").value(1))
+                .andExpect(jsonPath("$.consistent").value(false));
+    }
+
+    /** The old count check (soldSeats == distinctSeatsSold) passed here: the two defects cancelled each other out. */
+    @Test
+    void integrityDoesNotLetASoldSeatWithoutAnOrderAndAnOrderLineOnAnAvailableSeatCancelOut() throws Exception {
+        int orderId = buy("u1", "key-0001", "[1]");
+        jdbc.update("UPDATE seat SET status = 'SOLD' WHERE id = 10");
+        addOrderLineOnAvailableSeat(orderId, 11);
+        mvc.perform(Admin.as(get("/api/bookings/admin/events/1/integrity"))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.soldSeats").value(2))
+                .andExpect(jsonPath("$.distinctSeatsSold").value(2))
+                .andExpect(jsonPath("$.oversold").value(0))
+                .andExpect(jsonPath("$.seatMismatches").value(2))
                 .andExpect(jsonPath("$.consistent").value(false));
     }
 
