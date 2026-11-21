@@ -21,8 +21,7 @@ class VerificationMailerFromTest {
         JavaMailSender mail = mock(JavaMailSender.class);
         when(mail.createMimeMessage()).thenReturn(new MimeMessage(Session.getInstance(new Properties())));
 
-        new VerificationMailer(mail, "Surge <no-reply@tickets.example.com>").send("buyer@example.com", "Buyer",
-                "123456");
+        new VerificationMailer(mail, "Surge <no-reply@tickets.example.com>").send("buyer@example.com", "123456");
 
         ArgumentCaptor<MimeMessage> sent = ArgumentCaptor.forClass(MimeMessage.class);
         verify(mail).send(sent.capture());

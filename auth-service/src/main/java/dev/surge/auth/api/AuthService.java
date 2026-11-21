@@ -21,16 +21,26 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Signup and sign-in. Signup applies the {@link PasswordPolicy}, creates an unverified account and emails its
  * verification code. Sign-in goes through the per-account {@link LoginThrottle} first: a locked account gets 429
  * without any password check, for registered and unknown emails alike. Failed or throttled sign-ins of the admin
  * account are logged at WARN, never with the email.
+ *
+ * <p>An address whose account is still unverified after {@link #UNVERIFIED_LIFETIME} is up for grabs: a new signup
+ * deletes that account (its code goes with it) and creates its own, so the real owner of an address is never locked
+ * out by someone else's abandoned signup. A verified account, the admin and an unverified account younger than that
+ * are never replaced (409), and the delete itself only matches an unverified USER row, so a verification that lands
+ * during the signup wins. Every signup email also counts against the address's daily budget.
  */
 @Service
 public class AuthService {
     private static final Logger log = LoggerFactory.getLogger(AuthService.class);
+
+    /** How long an unverified account keeps its email address to itself. */
+    public static final Duration UNVERIFIED_LIFETIME = Duration.ofHours(24);
 
     private final UserRepository users;
     private final PasswordEncoder encoder;
@@ -39,6 +49,7 @@ public class AuthService {
     private final LoginThrottle throttle;
     private final PasswordPolicy passwords;
     private final EmailVerificationService verification;
+    private final TransactionTemplate tx;
     /** Checked against when the email is unknown, so both failure paths cost one BCrypt comparison. */
     private final String dummyHash;
 
@@ -47,7 +58,7 @@ public class AuthService {
     private Instant adminLockWarnedUntil;
 
     AuthService(UserRepository users, PasswordEncoder encoder, TokenService tokens, Clock clock, LoginThrottle throttle,
-                PasswordPolicy passwords, EmailVerificationService verification,
+                PasswordPolicy passwords, EmailVerificationService verification, TransactionTemplate tx,
                 @Value("${surge.auth.admin-email}") String adminEmail) {
         this.adminEmail = Emails.normalize(adminEmail);
         this.users = users;
@@ -57,6 +68,7 @@ public class AuthService {
         this.throttle = throttle;
         this.passwords = passwords;
         this.verification = verification;
+        this.tx = tx;
         this.dummyHash = encoder.encode("surge-dummy-password");
     }
 
@@ -66,18 +78,32 @@ public class AuthService {
         if (weak.isPresent()) {
             throw new InvalidBodyException(Map.of("password", weak.get()));
         }
-        if (adminEmail.equals(email) || users.existsByEmail(email)) {
+        Instant now = clock.instant();
+        Instant staleBefore = now.minus(UNVERIFIED_LIFETIME);
+        Optional<User> existing = users.findByEmail(email);
+        if (adminEmail.equals(email)
+                || existing.isPresent() && !stale(existing.get(), staleBefore)) {
             throw new EmailTakenException();
         }
+        verification.reserveSend(email);
+        User fresh = new User(email, encoder.encode(req.password()), req.displayName().trim(), Role.USER, now);
         User saved;
         try {
-            saved = users.saveAndFlush(new User(email, encoder.encode(req.password()), req.displayName().trim(),
-                    Role.USER, clock.instant()));
+            saved = tx.execute(status -> {
+                if (existing.isPresent() && users.deleteStaleUnverified(existing.get().getId(), staleBefore) == 0) {
+                    throw new EmailTakenException();
+                }
+                return users.saveAndFlush(fresh);
+            });
         } catch (DataIntegrityViolationException e) {
             throw new EmailTakenException();
         }
         verification.start(saved);
         return tokens.issue(UserViews.of(saved));
+    }
+
+    private static boolean stale(User user, Instant staleBefore) {
+        return !user.isEmailVerified() && user.getRole() == Role.USER && user.getCreatedAt().isBefore(staleBefore);
     }
 
     public TokenResponse login(LoginRequest req) {

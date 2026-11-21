@@ -10,12 +10,13 @@ import org.springframework.mail.MailPreparationException;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Component;
-import org.springframework.web.util.HtmlUtils;
 
 /**
  * Emails the 6-digit verification code (plain text and HTML, the code in large type). The copy says the code expires
  * in 15 minutes and tells the reader where to look when Surge's emails go missing: Spam, including the Gmail app's
- * ☰ → Spam. Neither the address nor the code is ever logged.
+ * ☰ → Spam. Neither the address nor the code is ever logged. The email carries nothing the sender typed (no display
+ * name): it goes to an address nobody has proven they own, so it must not be usable to deliver text of the
+ * sender's choosing from Surge's domain.
  */
 @Component
 public class VerificationMailer {
@@ -34,14 +35,14 @@ public class VerificationMailer {
     }
 
     /** Sends the code; throws a {@link MailException} when the mail server does not take it. */
-    public void send(String to, String displayName, String code) {
+    public void send(String to, String code) {
         try {
             MimeMessage message = mail.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
             helper.setFrom(from);
             helper.setTo(to);
             helper.setSubject(SUBJECT);
-            helper.setText(text(displayName, code), html(displayName, code));
+            helper.setText(text(code), html(code));
             mail.send(message);
         } catch (MessagingException e) {
             throw new MailPreparationException("Could not build the verification email", e);
@@ -49,9 +50,9 @@ public class VerificationMailer {
     }
 
     /** {@link #send}, but a failure is only logged (signup must not fail because the mail server is down). */
-    public boolean trySend(String to, String displayName, String code) {
+    public boolean trySend(String to, String code) {
         try {
-            send(to, displayName, code);
+            send(to, code);
             return true;
         } catch (MailException | IllegalArgumentException e) {
             log.warn("Could not send a verification email: {}", e.getClass().getSimpleName());
@@ -59,10 +60,8 @@ public class VerificationMailer {
         }
     }
 
-    static String text(String displayName, String code) {
+    static String text(String code) {
         return """
-                Hi %s,
-
                 Your Surge verification code is:
 
                     %s
@@ -74,14 +73,13 @@ public class VerificationMailer {
                 In the Gmail app, tap ☰ (the menu) → Spam, open the email and tap "Not spam".
 
                 Surge
-                """.formatted(oneLine(displayName), code);
+                """.formatted(code);
     }
 
-    static String html(String displayName, String code) {
+    static String html(String code) {
         return """
                 <!doctype html>
                 <html><body style="font-family:Arial,Helvetica,sans-serif;color:#111">
-                <p>Hi %s,</p>
                 <p>Your Surge verification code is:</p>
                 <p style="font-size:36px;font-weight:700;letter-spacing:8px;font-family:Consolas,Menlo,monospace;margin:16px 0">%s</p>
                 <p>Enter it on the <strong>Verify email</strong> page. It <strong>expires in 15 minutes</strong> and works once.
@@ -91,10 +89,6 @@ public class VerificationMailer {
                 and tap <strong>Not spam</strong>.</p>
                 <p>Surge</p>
                 </body></html>
-                """.formatted(HtmlUtils.htmlEscape(oneLine(displayName)), code);
-    }
-
-    private static String oneLine(String s) {
-        return s == null ? "" : s.replaceAll("[\\r\\n]+", " ").trim();
+                """.formatted(code);
     }
 }
