@@ -87,6 +87,8 @@ surge:
 
 eureka:
   client:
+    # Startup routing window after `up --wait`: re-fetch the registry every 5 s, not the 30 s default.
+    registry-fetch-interval-seconds: 5
     service-url:
       # HTTP Basic in the URL (SEC-04): EUREKA_USER / EUREKA_PASSWORD (URL-safe), EUREKA_HOST = host:port. Unset =
       # the development pair, which only a dev discovery server accepts; SURGE_ENV=prod refuses it (StoreCredentials).
