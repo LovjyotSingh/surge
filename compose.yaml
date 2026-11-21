@@ -470,6 +470,9 @@ services:
       redis: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
       kafka-init: { condition: service_completed_successfully }
+      # Every checkout calls payment through Eureka: start only once payment is up and registered, so the first
+      # checkouts after `up` do not answer 503 payment-unavailable while booking's registry copy lacks it.
+      payment-service: { condition: service_healthy }
 
   notification-service:
     <<: *hardened
