@@ -24,7 +24,9 @@ spring:
     password: ${MYSQL_PASSWORD:surge}
     hikari:
       maximum-pool-size: 30
-      connection-timeout: 10000
+      # Inside the gateway's 10 s breaker timeout (surge.gateway.breaker-timeout): a request waits at most this long
+      # for a connection, then fails fast as 503 (error/ApiExceptionHandler) instead of being cut off by the gateway.
+      connection-timeout: 3000
   jpa:
     open-in-view: false
     hibernate:
@@ -71,6 +73,11 @@ spring:
       # Redis); SURGE_ENV=prod refuses a blank password.
       username: ${REDIS_USER:}
       password: ${REDIS_PASSWORD:}
+      # Lettuce's default command timeout is 60 s. These (command 2 s, connect 1 s) and Hikari's 3 s above stay
+      # inside the gateway's 10 s breaker timeout. The seat-stream pub/sub container (config/RedisListenerConfig)
+      # shares the connection factory: a subscription waits for pushes, not for replies, so this timeout does not cut it.
+      timeout: 2s
+      connect-timeout: 1s
       repositories:
         enabled: false
 

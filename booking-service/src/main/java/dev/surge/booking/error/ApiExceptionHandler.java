@@ -9,6 +9,9 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.TypeMismatchException;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.dao.QueryTimeoutException;
+import org.springframework.dao.TransientDataAccessResourceException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
@@ -16,6 +19,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -135,8 +139,8 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * SEC-09: the per-event or total seat-stream cap is reached. A browser's EventSource does not reconnect after a
-     * non-200 answer, so the seat map stays without live updates until the page is reloaded.
+     * SEC-09: the per-event or total seat-stream cap is reached. A browser's EventSource gives up after a non-200
+     * answer, but the web client's {@code useSeatStream} then reopens the stream itself with a growing backoff.
      */
     @ExceptionHandler(StreamCapacityException.class)
     ResponseEntity<ProblemDetail> streamCapacity(StreamCapacityException e) {
@@ -144,6 +148,22 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
                 e.getMessage());
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).contentType(MediaType.APPLICATION_PROBLEM_JSON)
                 .header(HttpHeaders.RETRY_AFTER, "30").body(pd);
+    }
+
+    /**
+     * Redis or the database cannot answer in time (their client timeouts in application.yml, 2 s and 3 s, sit inside
+     * the gateway's 10 s breaker timeout) or at all: a resource failure, not a bug and not a conflict. 503
+     * {@code service-unavailable} with {@code Retry-After: 1}, which the web client and the load-test buyer retry.
+     * Lock conflicts (optimistic, pessimistic, deadlock) are not here: they are conflicts, not a missing resource.
+     */
+    @ExceptionHandler({DataAccessResourceFailureException.class, QueryTimeoutException.class,
+            TransientDataAccessResourceException.class, CannotCreateTransactionException.class})
+    ResponseEntity<ProblemDetail> resourceUnavailable(Exception e) {
+        log.warn("Resource unavailable: {}", e.toString());
+        ProblemDetail pd = Problems.of(HttpStatus.SERVICE_UNAVAILABLE, "service-unavailable", "Service unavailable",
+                "A backing service did not answer in time. Retry in a moment.");
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).contentType(MediaType.APPLICATION_PROBLEM_JSON)
+                .header(HttpHeaders.RETRY_AFTER, "1").body(pd);
     }
 
     @ExceptionHandler(SeatConflictException.class)
