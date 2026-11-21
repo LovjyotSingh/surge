@@ -1,9 +1,14 @@
 package dev.surge.config;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.Environment;
+import org.springframework.core.env.PropertySource;
+import org.springframework.core.env.StandardEnvironment;
 
 /**
  * The one HTTP Basic user this server accepts. config-server does not depend on {@code common}, so the
@@ -43,6 +48,7 @@ record BasicCredentials(String username, String password) {
             throw new IllegalStateException("SURGE_ENV=dev is not allowed when surge.security.public-deployment=true; "
                     + "set SURGE_ENV=prod");
         }
+        refuseBothWays(environment, passwordVar);
         String username = environment.getProperty(prefix + ".username", "").strip();
         String password = environment.getProperty(prefix + ".password", "");
         boolean noUser = username.isEmpty();
@@ -71,6 +77,25 @@ record BasicCredentials(String username, String password) {
                     + " characters when SURGE_ENV=prod");
         }
         return new BasicCredentials(username, password);
+    }
+
+    /**
+     * S10: compose mounts the password as the file {@code <SURGE_SECRETS_DIR or /run/secrets/env>/<passwordVar>}, which
+     * application.yml imports as a config tree. There a non-empty environment variable of the same name would silently
+     * win, so, as the services' SecretFiles does, a password set both ways is refused (naming the variable only).
+     */
+    private static void refuseBothWays(Environment environment, String passwordVar) {
+        Path file = Path.of(environment.getProperty("SURGE_SECRETS_DIR", "/run/secrets/env"), passwordVar);
+        if (!Files.isRegularFile(file) || !(environment instanceof ConfigurableEnvironment configurable)) {
+            return;
+        }
+        PropertySource<?> variables = configurable.getPropertySources()
+                .get(StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME);
+        Object variable = variables == null ? null : variables.getProperty(passwordVar);
+        if (variable != null && !variable.toString().isEmpty()) {
+            throw new IllegalStateException(passwordVar + " is set both as an environment variable and as the secret "
+                    + "file " + file + "; set it one way only");
+        }
     }
 
     @Override
