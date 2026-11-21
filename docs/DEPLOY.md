@@ -15,8 +15,9 @@ The examples use the domain `surge.example.com`, the checkout `/opt/surge` and a
 ## 1. The VM and its firewall
 
 1. Create a VM with at least 4 vCPUs, 12 GB of RAM and 40 GB of disk. The stack idles at about 6.5 GB.
-2. Install Docker Engine and the Compose plugin from Docker's own apt repository. Install `ufw`, `fail2ban`, `certbot`, `age` (for backups) and `unattended-upgrades` from the distribution.
-3. In the cloud security group, and in `ufw`, allow only:
+2. Install Docker Engine and the Compose plugin from Docker's own apt repository. You need Compose 2.24.4 or newer: the overlays use the `!override` tag. Check with `docker compose version`.
+3. Install `ufw`, `fail2ban`, `certbot`, `age` (for backups), `unattended-upgrades`, `openssl` and a JDK 25 (`openjdk-25-jre-headless` or Temurin) from the distribution. `docker/gen-secrets.sh` makes the JWT and internal identity keys through `./mvnw`, so it needs `java` on `PATH` (or `JAVA_HOME`). Without one it stops before writing anything.
+4. In the cloud security group, and in `ufw`, allow only:
    - port 22 from your own IP address;
    - ports 80 and 443 from anywhere.
 
@@ -29,8 +30,8 @@ The examples use the domain `surge.example.com`, the checkout `/opt/surge` and a
    sudo ufw enable
    ```
 
-4. **Docker-published ports bypass `ufw`.** That is why `compose.prod.yaml` publishes nothing but 80 and 443. Never add a `ports:` entry on the server. To reach an internal UI, use `ssh -L` plus `docker compose exec`; do not publish a port.
-5. Stop containers from reaching the cloud metadata endpoint, which can hand out the VM's cloud credentials:
+5. **Docker-published ports bypass `ufw`.** That is why `compose.prod.yaml` publishes nothing but 80 and 443. Never add a `ports:` entry on the server. To reach an internal UI, use `ssh -L` plus `docker compose exec`; do not publish a port.
+6. Stop containers from reaching the cloud metadata endpoint, which can hand out the VM's cloud credentials:
 
    ```bash
    sudo iptables -I DOCKER-USER -d 169.254.169.254 -j DROP
@@ -54,7 +55,16 @@ The examples use the domain `surge.example.com`, the checkout `/opt/surge` and a
 
 ## 3. DNS
 
-Create an `A` record for `surge.example.com` pointing at the VM's IPv4 address. Add an `AAAA` record only if the VM has IPv6 and the firewall rules cover it. Wait until `dig +short surge.example.com` returns the address.
+Create an `A` record for `surge.example.com` pointing at the VM's IPv4 address. Wait until `dig +short surge.example.com` returns the address.
+
+**Do not publish an `AAAA` record.** The `public` network that nginx publishes from is IPv4 only. Docker's userland proxy (`docker-proxy`) would still accept IPv6 connections on 80 and 443 and relay them over IPv4. nginx would then see every IPv6 client as one `$remote_addr`, the proxy's, so all of them would share one per-IP budget: 4 seat streams, 1 sign-in per second and 50 connections.
+
+If you need IPv6, three things are required:
+- `"ipv6": true` and `"ip6tables": true` in `/etc/docker/daemon.json`;
+- `enable_ipv6: true` with an IPv6 subnet on the `public` network in a compose overlay of your own;
+- the `AAAA` record and the `ufw` rules for v6.
+
+After that, check that nginx's access log shows real client addresses (`docker compose … logs web | grep remote_addr`) for an IPv6 and an IPv4 request.
 
 ## 4. Code and secrets
 
@@ -71,13 +81,25 @@ sudo docker/gen-secrets.sh
 
 Run it as root on the server, so each key file is owned by the uid of the container that reads it. Every value is random, and no value is printed.
 
-Compose mounts each file read-only into only the containers that use it, at `/run/secrets/env/<VARIABLE>`. No password is ever an environment variable, so `docker inspect` and `/proc/<pid>/environ` cannot show one. Never commit `.env` or `docker/secrets/`, and never copy either into `config-repo/`. Both are gitignored.
+**It never overwrites.** Without `--force` it writes only what is missing: if `.env` is lost, it rewrites only `.env`; if one file is deleted, it rewrites only that file.
+
+**What `--force` replaces.** Every generated password and key, so read the rotation notes in step 11 first. It keeps:
+- the provider secrets (`mail_password`, `s3_access_key`, `s3_secret_key`);
+- every `.env` line it does not own (`MAIL_*`, `S3_*`, `PUBLIC_BASE_URL`, `SURGE_SERVER_NAME`);
+- the user names and the admin email.
+
+**Where the files go.** Compose mounts each file read-only into only the containers that use it, at `/run/secrets/env/<VARIABLE>`. No password is passed as an environment variable, so `docker inspect` shows none. Inside a container, any process can read the files mounted into it, as it could read its environment before. Two passwords still end up in a process environment inside their own container:
+- MySQL's entrypoint exports the root password into `mysqld`'s environment;
+- the Elasticsearch process gets `ELASTIC_PASSWORD`.
+
+Never commit `.env` or `docker/secrets/`, and never copy either into `config-repo/`. Both are gitignored.
 
 Then add the values that are not generated.
 
-**Your settings, in `.env`:**
+**Your settings, in `.env`** (edit it with `sudoedit .env`):
 
 ```bash
+SURGE_SERVER_NAME=surge.example.com       # port 80 redirects only to https://<this name>
 MAIL_HOST=smtp.your-provider.example
 MAIL_PORT=587
 MAIL_USERNAME=<provider user>
@@ -85,16 +107,17 @@ MAIL_FROM=Surge <tickets@surge.example.com>
 S3_BUCKET=surge-example-tickets
 S3_REGION=ap-south-1
 # S3_ENDPOINT=                      # empty = AWS; another S3 store must be https://
-PUBLIC_BASE_URL=https://surge.example.com
+PUBLIC_BASE_URL=https://surge.example.com # must be https:// (the ticket email's sign-in link)
 SURGE_ADMIN_EMAIL=you@surge.example.com   # optional; gen-secrets wrote admin@surge.local
 ```
 
-**Your provider's secrets, in their files:**
+**Your provider's secrets, in their files.** Never type a secret on a command line: it would end up in `ps` and in your shell history. `docker/set-secret.sh` reads the value from the terminal without showing it, or from a pipe (for example from your password manager), and writes the file:
 
 ```bash
-sudo sh -c 'umask 022; printf %s "<smtp password>" > docker/secrets/mail_password'
-sudo sh -c 'umask 022; printf %s "<IAM access key id>" > docker/secrets/s3_access_key'
-sudo sh -c 'umask 022; printf %s "<IAM secret key>" > docker/secrets/s3_secret_key'
+sudo docker/set-secret.sh mail_password        # your SMTP provider's password or API key
+sudo docker/set-secret.sh s3_access_key        # the IAM user's access key id
+sudo docker/set-secret.sh s3_secret_key        # the IAM user's secret key
+# or: pass show surge/smtp | sudo docker/set-secret.sh mail_password
 ```
 
 The admin sign-in password is in `docker/secrets/surge_admin_password`. Store a copy in your password manager.
@@ -140,8 +163,10 @@ nginx needs a certificate before it can start, and certbot needs nginx running t
    sudo install -d -m 755 /var/www/surge-acme
    ```
 
-2. **Start the platform** (step 8). Check that `curl -sI http://surge.example.com/` answers `301`.
-3. **Deploy hook.** Write it before the first certificate request, so certbot copies the certificate where nginx reads it and reloads nginx on every issue and renewal. nginx runs as uid/gid 101 and cannot read certbot's root-only key, so the hook copies the key with group 101. Save this as `/etc/letsencrypt/renewal-hooks/deploy/surge.sh` and make it executable with `chmod 755`:
+2. **Start the platform** (step 8). Check that `curl -sI http://surge.example.com/` answers `301` to `https://surge.example.com/` (the `SURGE_SERVER_NAME` from `.env`, whatever `Host` the request sent).
+3. **Deploy hook.** It copies the certificate to where nginx reads it, then reloads nginx. nginx runs as uid/gid 101 and cannot read certbot's root-only key, so the hook copies the key with group 101.
+   - Save it as `/etc/surge/certbot-deploy-hook.sh` and make it executable with `sudo chmod 755`.
+   - Do not put it in `/etc/letsencrypt/renewal-hooks/deploy/`. certbot runs that directory only on `renew`, not on the first `certonly`, and with step 4's `--deploy-hook` it would also run twice.
 
    ```sh
    #!/bin/sh
@@ -156,17 +181,26 @@ nginx needs a certificate before it can start, and certbot needs nginx running t
    docker compose -f compose.yaml -f compose.prod.yaml --profile core --profile platform exec -T web nginx -s reload
    ```
 
-4. **Certificate.** nginx serves `/.well-known/acme-challenge/` on port 80 from `/var/www/surge-acme`:
+4. **Certificate.** nginx serves `/.well-known/acme-challenge/` on port 80 from `/var/www/surge-acme`. Pass the hook with `--deploy-hook`. certbot then runs it right after this first issue, and stores it in the renewal configuration for every renewal:
 
    ```bash
    sudo certbot certonly --webroot -w /var/www/surge-acme -d surge.example.com --cert-name surge \
+       --deploy-hook /etc/surge/certbot-deploy-hook.sh \
        --email you@surge.example.com --agree-tos --no-eff-email
    sudo certbot renew --dry-run
    ```
 
+   - **Check the copy.** `sudo openssl x509 -in /etc/surge/tls/fullchain.pem -noout -issuer` must name Let's Encrypt, not `CN=surge.example.com`. Otherwise nginx is still serving the 30-day self-signed placeholder, and the site breaks when it expires.
+   - **If the certificate was issued without the hook**, run the hook once by hand:
+
+     ```bash
+     sudo RENEWED_LINEAGE=/etc/letsencrypt/live/surge /etc/surge/certbot-deploy-hook.sh
+     ```
+
    certbot's systemd timer renews the certificate automatically and runs the hook each time.
 5. **Check:** `curl -sI https://surge.example.com/` must answer without `-k` and show `Strict-Transport-Security`.
-6. **HSTS preload.** HSTS starts as one year with subdomains. Add `preload` (in `web/nginx/http.conf`) and submit the domain to hstspreload.org only after a few weeks of clean HTTPS. Preloading is hard to undo.
+6. **`includeSubDomains`.** HSTS is one year with `includeSubDomains`. Every browser that has visited will then refuse plain HTTP on every subdomain of the name you serve, for a year. That is fine for a dedicated name such as `surge.example.com`. On an apex domain (`example.com`), first make sure no subdomain is served over HTTP only, for example an intranet host or a printer. If one is, remove `includeSubDomains` from `web/nginx-templates/surge/tls-site.conf.template` before the first start.
+7. **HSTS preload.** Add `preload` (in the same template) and submit the domain to hstspreload.org only after a few weeks of clean HTTPS. Preloading is hard to undo.
 
 ## 8. Start
 
@@ -198,11 +232,16 @@ Run these from your own machine unless a line says otherwise.
 
    ```bash
    for c in $(sudo docker ps -q); do
-     sudo docker inspect --format '{{.Name}} {{range .Config.Env}}{{println .}}{{end}}' "$c"
-   done | grep -iE 'password=|secret|_key='
+     sudo docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$c" | sed "s|^|$c |"
+   done | grep -iE '(password|secret|_key)=[^/]'
    ```
 
-9. **Guards.** Optional, on a staging copy: replace one secret file with a known default, such as `surge-local` in `s3_access_key` or `surge-admin` in `surge_admin_password`. `up` must then fail for that service. Restore the file afterwards.
+   - Variables that only name a file are fine, so the pattern skips values that start with `/`. Examples: `MYSQL_ROOT_PASSWORD_FILE=/run/…`, `SURGE_ADMIN_PASSWORD_FILE=/run/…`, `SURGE_INTERNAL_SIGNING_KEY=/run/secrets/…`.
+   - Any other `…PASSWORD=`, `…SECRET…=` or `…_KEY=` line is a leak.
+9. **Guards.** Optional, on a staging copy:
+   1. Replace one secret file with a known default, for example `printf surge-local | sudo docker/set-secret.sh s3_access_key`, or `surge-admin` for `surge_admin_password`.
+   2. Recreate that service with `docker compose … up -d --force-recreate notification-service`. It must fail to start.
+   3. Restore the file and recreate the service again.
 
 ## 10. Backups
 
@@ -234,14 +273,21 @@ sudo docker run --rm -v surge_audit-data:/audit:ro alpine tar -C /audit -c . \
 
 **Rotation.** Rotate at least yearly, and at once after any suspected compromise.
 
+Recreate every container that reads a changed file. Compose does not notice that a secret file's content changed, so a plain `up -d` keeps the old container and the old password keeps working. Below, `dc` stands for `sudo docker compose -f compose.yaml -f compose.prod.yaml --profile core --profile platform`.
+
+The simplest way to rotate one generated password is to delete its file and run `docker/gen-secrets.sh` again without `--force`. It writes only the missing file, renders the Redis ACL or RabbitMQ definitions that depend on it again, and keeps everything else.
+
 | Secret | How to rotate |
 |---|---|
-| Admin password | Write a new `docker/secrets/surge_admin_password`, then `up -d auth-service`. The new password works and the old one gets `401`. |
-| JWT key | Run `docker/gen-jwt-key.sh --force docker/secrets/jwt.jwk`, then `up -d auth-service`. Everyone signs in again. auth can also serve the old public key for one token lifetime (`SURGE_JWT_PREVIOUS_KEY_FILE`, see auth's `jwt/JwtKeys`), but compose does not mount one yet. |
-| Kafka, the Elasticsearch `catalog` user, Eureka, config | Write a new value into the file, then `up -d`. These follow their files at the next start. |
-| Redis, RabbitMQ | Write a new value into the file, then render the ACL or definitions file again. `gen-secrets.sh` does the rendering, but `--force` replaces every value, MySQL's included. |
-| MySQL users, the `elastic` password | Change them in the store first (`ALTER USER …`, `elasticsearch-reset-password`), then write the file. These are applied only when their volume is created. |
-| Everything at once | `docker/gen-secrets.sh --force` on fresh volumes: `docker compose … down -v` deletes all data. |
+| Admin password | Delete `surge_admin_password` and rerun `gen-secrets.sh` (or write your own with `set-secret.sh`), then `dc up -d --force-recreate auth-service`. The new password works and the old one gets `401`. |
+| JWT key | `docker/gen-jwt-key.sh --force docker/secrets/jwt.jwk`, then `dc up -d --force-recreate auth-service`. Everyone signs in again. auth can also serve the old public key for one token lifetime (`SURGE_JWT_PREVIOUS_KEY_FILE`, see auth's `jwt/JwtKeys`), but compose does not mount one yet. |
+| Eureka, config | Delete `eureka_password` or `config_password` and rerun `gen-secrets.sh`, then `dc up -d --force-recreate`. Every Spring service, discovery and config-server read them, so recreate them all. |
+| Kafka users | Delete the `kafka_*_password` file and rerun `gen-secrets.sh`, then `dc up -d --force-recreate kafka kafka-init` and the service that uses that user. |
+| Elasticsearch `catalog` | Delete `elasticsearch_catalog_password` and rerun `gen-secrets.sh`, then `dc up -d --force-recreate es-init catalog-service`. |
+| Redis, RabbitMQ | Delete the `redis_*` or `rabbit_*` password file and rerun `gen-secrets.sh` (it renders the ACL or definitions again). Then `dc up -d --force-recreate` the store (`redis`, `redis-edge` or `rabbitmq`) and its services. |
+| S3 keys, mail password | Create the new key at the provider, `set-secret.sh s3_access_key` / `s3_secret_key` / `mail_password`, then `dc up -d --force-recreate notification-service` (and `auth-service` for mail). Only then revoke the old key. |
+| MySQL users, the `elastic` password | Change them in the store first (`ALTER USER …`, `elasticsearch-reset-password`), then `set-secret.sh` the same value and recreate the services that read it. These files are read only when their volume is created. |
+| Everything at once | `docker/gen-secrets.sh --force` replaces every generated password and key. It keeps `mail_password`, the S3 keys and your `.env` settings. Because of MySQL and `elastic`, use it only with fresh volumes: `dc down -v` deletes all data. |
 
 **Watching.**
 - Disk, memory and container restarts (`docker compose ps`, `docker stats`).
@@ -256,10 +302,11 @@ sudo docker run --rm -v surge_audit-data:/audit:ro alpine tar -C /audit -c . \
 ```bash
 docker/gen-selfsigned-cert.sh
 docker compose -f compose.yaml -f compose.dev.yaml -f compose.tls-local.yaml --profile core --profile platform up -d --build
-curl -kI https://localhost/     # 200 with HSTS and every security header
+curl -kI https://localhost/     # 200 with HSTS (max-age=300) and every security header
 curl -I http://localhost/       # 301 to https://localhost/
 ```
 
 What to expect:
-- Browsers warn about the certificate. They never store HSTS from a certificate they do not trust, so other local sites are not affected.
+- Browsers warn about the certificate.
+- A browser stores no HSTS from a certificate it does not trust. If you make it trust this one (mkcert, a keychain entry), it pins `https://localhost`, on every port, for the overlay's short `max-age` of 300 seconds, not a year.
 - The smoke and load tests talk plain HTTP to `web:8080`, which now only redirects. Run them without this overlay.
