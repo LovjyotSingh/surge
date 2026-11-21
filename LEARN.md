@@ -333,7 +333,7 @@ MySQL was not touched in steps 9 to 16. (The first request for an event loads it
     3. renders an A6 PDF with a signed QR code ([section 5.25](#525-pdf-tickets-and-qr-codes)) and stores it in S3 as `tickets/<orderId>.pdf` ([section 5.24](#524-s3-and-s3mock));
     4. saves the `ticket` row, emails the PDF ([section 5.26](#526-email)), marks the row emailed and commits.
 
-    Any failure rolls it all back and the message is retried, three attempts in all with growing waits; after that it is dead-lettered to `tickets.dlq`, where an admin can see the reason and replay it. Other tickets keep flowing.
+    Any failure rolls it all back and the message is retried, five attempts in all with growing waits (1, 2, 4 and 8 s: about 15 s, enough to outlast the startup discovery gap); after that it is dead-lettered to `tickets.dlq`, where an admin can see the reason and replay it. Other tickets keep flowing.
 30. **The ticket link.** On the event page, [TicketLink](web/src/components/TicketLink.tsx) checks every 2 seconds (for up to a minute) whether `GET /api/notifications/tickets/<orderId>.pdf` exists, then shows **Download ticket (PDF)**. notification-service serves it only to the buyer (anyone else gets 404), with `Cache-Control: no-store`.
 31. **If the user never pays.** After 5 minutes Redis deletes the seat keys, the hold hash and the `userhold` key by itself. Every second, [HoldExpirySweeper](booking-service/src/main/java/dev/surge/booking/stream/HoldExpirySweeper.java) reads the `holds:expiry` members whose time has passed and runs [sweep.lua](booking-service/src/main/resources/redis/sweep.lua) for each. The script removes the member first (`ZREM`); if it was already gone, another instance or a checkout handled it, so it stops. Otherwise it returns the seats that are really free (key gone, not sold), and the sweeper publishes them as `AVAILABLE` and increments the `holds_expired_total` metric.
 
@@ -1101,7 +1101,7 @@ The tests worth showing an interviewer:
 | [DecoderDenylistTest](gateway/src/test/java/dev/surge/gateway/security/DecoderDenylistTest.java), [TokenLifecycleTest](gateway/src/test/java/dev/surge/gateway/TokenLifecycleTest.java) | A revoked token is refused within a second; a hanging Redis fails closed; the request continues off the Redis reply thread |
 | [HttpPaymentGatewayTest](booking-service/src/test/java/dev/surge/booking/payment/HttpPaymentGatewayTest.java) `slowPaymentTimesOutWithin2s`, `declineIsNotAFailure`, `circuitClosesAfterRecovery` | The payment client's timeout, retry and circuit breaker |
 | [EventScheduledHandlerTest](booking-service/src/test/java/dev/surge/booking/messaging/EventScheduledHandlerTest.java), [SalesHandlerTest](catalog-service/src/test/java/dev/surge/catalog/SalesHandlerTest.java) `duplicateMessageIsIgnored` | A message delivered twice has exactly one effect |
-| [TicketWorkflowTest](notification-service/src/test/java/dev/surge/notification/messaging/TicketWorkflowTest.java) `poisonMessageGoesToDlqAfterThreeAttempts`, `replayFromDlqDeliversTicket` | Three attempts, then the dead-letter queue; replay delivers the ticket |
+| [TicketWorkflowTest](notification-service/src/test/java/dev/surge/notification/messaging/TicketWorkflowTest.java) `poisonMessageGoesToDlqAfterFiveAttempts`, `replayFromDlqDeliversTicket` | Five attempts, then the dead-letter queue; replay delivers the ticket |
 | [SearchTest](catalog-service/src/test/java/dev/surge/catalog/SearchTest.java) `typoStillFindsEvent`, `geoRadiusFilter` | "coldply" finds "Coldplay Tribute Live"; only Dubai events near Dubai |
 | [AccountProtectionTest](auth-service/src/test/java/dev/surge/auth/AccountProtectionTest.java) | Six failures from rotating IPs lock that email; an unknown email gets the same answer; five wrong codes lock the code |
 | [LoadTestMainTest](tools/loadtest/src/test/java/dev/surge/loadtest/LoadTestMainTest.java) | Exit code 1 if anything is oversold, nothing is sold, errors pass 1%, or the 201 count differs from the seats sold |
@@ -1440,17 +1440,17 @@ SASL/SCRAM-SHA-512 users per service, and ACLs per topic and group: booking may 
 | Exchange `surge.tickets` (direct), queue `tickets` bound with `ticket.requested`, DLX `surge.tickets.dlx` (fanout) to `tickets.dlq` | [TicketQueueConfig](notification-service/src/main/java/dev/surge/notification/messaging/TicketQueueConfig.java); also predeclared, with the users, vhost `surge` and permissions, in [definitions.json.template](docker/rabbitmq/definitions.json.template) |
 | Publishing with confirms and `mandatory` (an unroutable message is a failure) | [RabbitOutboxSender](outbox/src/main/java/dev/surge/outbox/routing/RabbitOutboxSender.java) |
 | The worker | [TicketRequestedListener](notification-service/src/main/java/dev/surge/notification/messaging/TicketRequestedListener.java), [TicketWorkflow](notification-service/src/main/java/dev/surge/notification/messaging/TicketWorkflow.java) |
-| Retries: 3 attempts, waiting 1 s then 2 s; what is not worth retrying | `spring.rabbitmq.listener.simple.retry` in [application.yml](notification-service/src/main/resources/application.yml), [RetryConfig](notification-service/src/main/java/dev/surge/notification/messaging/RetryConfig.java) |
+| Retries: 5 attempts, waiting 1, 2, 4 then 8 s; what is not worth retrying | `spring.rabbitmq.listener.simple.retry` in [application.yml](notification-service/src/main/resources/application.yml), [RetryConfig](notification-service/src/main/java/dev/surge/notification/messaging/RetryConfig.java) |
 | Listing and replaying the dead-letter queue (admin) | [DlqController](notification-service/src/main/java/dev/surge/notification/messaging/DlqController.java), [DlqOperations](notification-service/src/main/java/dev/surge/notification/messaging/DlqOperations.java) |
 
-The life of a ticket message: booking's outbox publishes it to `surge.tickets` with routing key `ticket.requested` and waits for the broker's confirm. The broker puts it in `tickets`. notification takes it and runs `TicketWorkflow`. On an exception the listener retries in place (1 s, then 2 s). After the third failure, or at once for a message that can never succeed (bad JSON, an invalid user id), it rejects the message without requeueing, and the broker moves it through `surge.tickets.dlx` into `tickets.dlq`. An admin lists it with the failure reason and replays it once the cause is fixed.
+The life of a ticket message: booking's outbox publishes it to `surge.tickets` with routing key `ticket.requested` and waits for the broker's confirm. The broker puts it in `tickets`. notification takes it and runs `TicketWorkflow`. On an exception the listener retries in place (1, 2, 4, then 8 s). After the fifth failure, or at once for a message that can never succeed (bad JSON, an invalid user id), it rejects the message without requeueing, and the broker moves it through `surge.tickets.dlx` into `tickets.dlq`. An admin lists it with the failure reason and replays it once the cause is fixed.
 
 **How to see it.** Open the RabbitMQ UI at http://localhost:15672 (`surge-admin` / `RABBIT_ADMIN_PASSWORD`) and look at the queues `tickets` and `tickets.dlq`. To watch the dead-letter path, take S3 away, buy a ticket, and bring it back:
 
 ```bash
 dc stop s3mock                              # the ticket's PDF cannot be stored now
 # ... hold and pay for a seat in the browser ...
-dc logs notification-service | tail -20     # three attempts, then the message is dead-lettered
+dc logs notification-service | tail -20     # five attempts, then the message is dead-lettered
 curl -s -H "Authorization: Bearer $ADMIN" "localhost:8080/api/notifications/admin/dlq?limit=5"
 dc start s3mock
 curl -s -X POST -H "Authorization: Bearer $ADMIN" "localhost:8080/api/notifications/admin/dlq/replay?limit=5"   # {"replayed":1}
@@ -1464,7 +1464,7 @@ The ticket email arrives in Mailpit after the replay. The Ops page has the same 
 They separate who sends from who receives. booking only knows the exchange and a routing key; which queues receive the message is decided by bindings in the broker. Today one queue is bound; tomorrow an SMS worker could bind its own queue to the same key without any change to booking.
 
 **Q2. What happens when ticket generation keeps failing?**
-Three attempts with growing waits, then the broker dead-letters the message to `tickets.dlq` with the failure reason. The other tickets keep flowing: one broken message never blocks the queue. Once the cause is fixed, an admin replays the dead-lettered messages (`TicketWorkflowTest.poisonMessageGoesToDlqAfterThreeAttempts`, `replayFromDlqDeliversTicket`).
+Five attempts with growing waits, then the broker dead-letters the message to `tickets.dlq` with the failure reason. The other tickets keep flowing: one broken message never blocks the queue. Once the cause is fixed, an admin replays the dead-lettered messages (`TicketWorkflowTest.poisonMessageGoesToDlqAfterFiveAttempts`, `replayFromDlqDeliversTicket`).
 
 **Q3. Why not just requeue a failed message until it works?**
 A message that can never succeed (a bad payload) would loop forever, burning CPU and filling the logs, and with some settings it would block the messages behind it. Bounded retries plus a dead-letter queue turn an endless loop into a visible, fixable item.
