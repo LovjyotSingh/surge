@@ -164,7 +164,7 @@ Only nginx publishes a port (`127.0.0.1:8080`). The development overlay [compose
 | `mailpit`, `s3mock` (dev overlay only) | `axllent/mailpit`, `adobe/s3mock` | 8025, 9090 | Fake email and fake S3 |
 | `loadtest`, `smoke` (run on demand) | [tools/loadtest/Dockerfile](tools/loadtest/Dockerfile), [tools/smoke/Dockerfile](tools/smoke/Dockerfile) | none | The 10,000-buyer test; the end-to-end checks |
 
-All of them are defined in [compose.yaml](compose.yaml); every image is pinned by digest. Profiles: `core` is MySQL, Redis and booking-service; `platform` is everything else; `smoke` and the load-test overlay [compose.loadtest.yaml](compose.loadtest.yaml) add the two test tools.
+All of them are defined in [compose.yaml](compose.yaml); base and third-party images are pinned by digest (the images built from this repository are tagged `surge/<name>:local`). Profiles: `core` is MySQL, Redis and booking-service; `platform` is everything else; `smoke` and the load-test overlay [compose.loadtest.yaml](compose.loadtest.yaml) add the two test tools.
 
 ### What lives in Redis
 
@@ -947,7 +947,7 @@ In a cluster, all keys used by one script must live in the same hash slot. Surge
 
 **What it is.** Docker packages an application and everything it needs into an image that runs the same way everywhere. Compose describes several containers (and how they connect) in one file and starts them with one command.
 
-**Why Surge needs it.** Phase 2 runs 17 containers: seven Spring services, nginx, MySQL, two Redis instances, Kafka, RabbitMQ, Elasticsearch, Mailpit, S3Mock and two one-shot set-up jobs. With Compose, anyone with Docker Desktop can start all of them, in the right order and with the right credentials, with one command. Testcontainers also uses Docker to give the tests real databases and brokers.
+**Why Surge needs it.** With the development overlay, phase 2 starts 19 containers: eight Spring services (auth, catalog, booking, payment, notification, the gateway, discovery and the config server), nginx, MySQL, two Redis instances, Kafka, RabbitMQ, Elasticsearch, Mailpit, S3Mock and two one-shot set-up jobs; 17 of them stay running. With Compose, anyone with Docker Desktop can start all of them, in the right order and with the right credentials, with one command. Testcontainers also uses Docker to give the tests real databases and brokers.
 
 **Where it is in the code.**
 
@@ -962,9 +962,9 @@ In a cluster, all keys used by one script must live in the same hash slot. Surge
 | Store set-up: databases and users, Redis ACLs, RabbitMQ definitions, Kafka users and ACLs, Elasticsearch users | [docker/](docker/) |
 | Keep the build context small | [.dockerignore](.dockerignore), [web/.dockerignore](web/.dockerignore) |
 
-How a service image is built (one Dockerfile for all seven, `docker build --build-arg MODULE=auth-service --build-arg PORT=8082 ...`):
+How a service image is built (one Dockerfile for all eight, `docker build --build-arg MODULE=auth-service --build-arg PORT=8082 ...`):
 
-1. **Build stage** on `eclipse-temurin:25-jdk` (pinned by digest): runs `./mvnw -pl $MODULE -am package -DskipTests`. A BuildKit cache mount keeps the Maven repository between builds, shared by all seven builds.
+1. **Build stage** on `eclipse-temurin:25-jdk` (pinned by digest): runs `./mvnw -pl $MODULE -am package -DskipTests`. A BuildKit cache mount keeps the Maven repository between builds, shared by all eight builds.
 2. It splits the jar into layers with `java -Djarmode=tools -jar app.jar extract --layers --launcher`: `dependencies`, `spring-boot-loader`, `snapshot-dependencies`, `application`.
 3. **Run stage** on `eclipse-temurin:25-jre` (no compiler, smaller): copies the layers in that order, runs as user `surge` (uid 10001), and starts `JarLauncher`. The health check opens a TCP connection with bash's `/dev/tcp` (the JRE image has no `curl`) and expects `"status":"UP"` from `/actuator/health`.
 
@@ -990,11 +990,11 @@ The build needs a JDK and Maven; running needs only a JRE and the app. The first
 **Q2. What are layered jars, and why bother?**
 A Spring Boot jar holds your code plus many library jars. Copied as one file, any code change makes Docker rebuild and push that whole layer. Extracted into layers ordered from "changes rarely" (dependencies) to "changes often" (your classes), a code change only rebuilds the small last layer; the big dependency layer comes from cache. In phase 1, `docker image history` showed booking's dependencies layer at 78.4 MB and the application layer at 659 kB.
 
-**Q3. Why one Dockerfile for seven services?**
-They are all Spring Boot jars built the same way; only the Maven module and the port differ. Two build arguments keep one tested recipe instead of seven copies that drift apart. CI builds each service with the same file and scans each image.
+**Q3. Why one Dockerfile for eight services?**
+They are all Spring Boot jars built the same way; only the Maven module and the port differ. Two build arguments keep one tested recipe instead of eight copies that drift apart. CI builds each service with the same file and scans each image.
 
 **Q4. How do containers find each other, and who can reach whom?**
-Compose gives each service a hostname on the networks it joins. Surge uses several networks on purpose: `edge` (nginx and the gateway) and `app` (the services) are internal, so they have no route to the internet, and each store has its own internal network that only its users join (`data-mysql`, `data-redis`, `data-kafka`, ...). So the web container cannot reach booking directly, and booking cannot reach Elasticsearch. Only nginx publishes a port. Services find each other through Eureka, which hands out their addresses on the `app` network (`10.30.251.0/24`, a fixed subnet).
+Compose gives each service a hostname on the networks it joins. Surge uses several networks on purpose: `edge` (nginx and the gateway) and `app` (the services) are internal, and each store has its own internal network that only its users join (`data-mysql`, `data-redis`, `data-kafka`, ...). So the web container cannot reach booking or MySQL, and booking cannot reach Elasticsearch. Only nginx publishes a port, through `public`, a non-internal network that only web joins; besides web, only auth and notification have a route out, through `egress` (SMTP and S3). The development overlay changes this: every container with a debug port also joins its own non-internal `devhost-*` network, so the dev stack is not cut off from the internet. Services find each other through Eureka, which hands out their addresses on the `app` network (`10.30.251.0/24`, a fixed subnet).
 
 **Q5. Why are the ports written as `"127.0.0.1:8080:8080"`?**
 A plain `"8080:8080"` publishes on every network interface (`0.0.0.0`), so anyone on the same Wi-Fi could reach it. Prefixing `127.0.0.1` binds the port to the loopback interface only: your browser and tools on this machine still work, and the rest of the network sees nothing. The dev overlay's debug ports (MySQL, Redis, Eureka, ...) use the same prefix. A production server publishes 80 and 443 through its own overlay instead.
@@ -1003,7 +1003,7 @@ A plain `"8080:8080"` publishes on every network interface (`0.0.0.0`), so anyon
 Arguments given to `docker compose run loadtest ...` replace the service's `command`. Surge first put `--base-url http://web` in `command`, so `--users 10000` wiped it out and the tester called the wrong address. The fix (see the comment in [compose.loadtest.yaml](compose.loadtest.yaml)) puts the fixed arguments in `entrypoint`, so your arguments are added after them.
 
 **Q7. Where do the passwords come from?**
-Not from the repository: `docker/gen-secrets.sh` generates a random value for every credential into `.env` (mode 600, git-ignored), and Compose refuses to start while any is missing (`${VAR:?run docker/gen-secrets.sh first}`). The services run with `SURGE_ENV=prod`, so a missing credential or a development key stops them at start-up instead of running insecurely.
+Not from the repository: `docker/gen-secrets.sh` generates a random value for every credential into `.env` (mode 600, git-ignored), and Compose refuses to start while any is missing (`${VAR:?run docker/gen-secrets.sh first}`). The services run with `SURGE_ENV=prod`, so a missing credential or a development key stops them at start-up instead of running insecurely. The one exception is auth under the load-test overlay: auth refuses to mint test tokens in prod, so that overlay runs it with `SURGE_ENV=dev`, which also skips its production start-up guards (it still gets the real credentials and keys). That is why the overlay is for a private machine only.
 
 ### 5.13 Nginx
 
@@ -1066,7 +1066,7 @@ They protect different things. nginx's limits are cheap, per IP and coarse: they
 
 **Where it is in the code.**
 
-Test counts at the end of phase 2. This table is the one place the counts are kept; the rest of the repo refers here. They are counted from the test sources (`@Test` methods; Vitest `it`/`test` calls, with each row of an `it.each` table counted once) and match the last full runs of each suite.
+Test counts at the end of phase 2. This table is the one place the counts are kept; the rest of the repo refers here. They are counted from the test sources (`@Test` methods; Vitest `it`/`test` calls, with each row of an `it.each` table counted once).
 
 | Module | Tests | What kind |
 |---|---|---|
@@ -1080,10 +1080,10 @@ Test counts at the end of phase 2. This table is the one place the counts are ke
 | `payment-service` | 34 | Charges, refunds, chaos settings, who may call |
 | `notification-service` | 95 | The ticket workflow (MySQL, RabbitMQ, Kafka, S3Mock, Mailpit containers), dead-letter queue, audit log, PDF and QR |
 | `gateway` | 99 | Routing, JWT rules, identity tokens, rate limits, bulkheads, denylist (Redis container, downstreams as `MockWebServer`s) |
-| `tools/loadtest` | 66 | Unit, plus a small stub HTTP server ([StubServer](tools/loadtest/src/test/java/dev/surge/loadtest/StubServer.java)) |
-| `tools/smoke` | 58 | Unit, plus a stub server for every check |
+| `tools/loadtest` | 70 | Unit, plus a small stub HTTP server ([StubServer](tools/loadtest/src/test/java/dev/surge/loadtest/StubServer.java)), including the wait for the gateway to route |
+| `tools/smoke` | 61 | Unit, plus a stub server for every check and for the wait for the gateway to route |
 | `web` | 146 | Vitest and Testing Library in jsdom |
-| **Total** | **1,022** | 876 backend (`./mvnw -B verify`, 12 modules) + 146 web (`npx vitest run`) |
+| **Total** | **1,029** | 883 backend (`./mvnw -B verify`, 12 modules) + 146 web (`npx vitest run`) |
 
 **One shared Spring context per service.** Every integration test class in a service carries that service's `@IntegrationTest` meta-annotation (for example booking's [IntegrationTest](booking-service/src/test/java/dev/surge/booking/support/IntegrationTest.java)), which bundles `@SpringBootTest`, the Testcontainers configuration ([booking's TestcontainersConfig](booking-service/src/test/java/dev/surge/booking/support/TestcontainersConfig.java)), type-level Mockito spies and test data helpers. Because every class uses exactly the same configuration, Spring's test-context cache builds the application context **once** and reuses it, with one set of containers for the whole run. `@ServiceConnection` points Spring at the containers automatically. Eureka and the config client are switched off in tests, and identity tokens are signed with committed test keys (`IdentityTokens` in common's test jar). Background jobs (the outbox relay, the sweeper) are slowed down so they never race the tests; tests trigger them themselves.
 
@@ -1702,7 +1702,7 @@ Surge uses Resilience4j for all four.
 
 1. A test that sends far more than 25 concurrent holds and expects all of them to reach booking (`CircuitBreakerBulkheadTest.manyMoreThanTwentyFiveConcurrentHoldsAllReachBooking`), then a limit set on purpose. The first choice, 20,000, was as big as booking's whole connection pool, so it protected nothing.
 2. A share per service: booking 5,000, catalog 300, everything else 100. A refused call never waits (the bulkhead takes its permit on a Netty thread; waiting there would stall every request on that thread). And a refusal is not a failure of the service: the breaker ignores `BulkheadFullException`. Otherwise one burst past the bulkhead would open the breaker and turn away every hold for 10 seconds, including the ones there was room for.
-3. Ruling P2-R26: **overload is an honest, retryable answer.** A full bulkhead now answers `503 service-busy` with `Retry-After: 1` at once, distinct from `service-unavailable`. The limit is never raised for the load test. Instead the clients behave like good clients: a load-test buyer waits `Retry-After` plus up to a second of random jitter and resends the same step (same seat, same `Idempotency-Key`), at most 30 times; the report counts these as `busyRetries`. The web page retries a busy hold or checkout up to 3 times, showing "Busy, retrying…".
+3. A ruling from the code review: **overload is an honest, retryable answer.** A full bulkhead now answers `503 service-busy` with `Retry-After: 1` at once, distinct from `service-unavailable`. The limit is never raised for the load test. Instead the clients behave like good clients: a load-test buyer waits `Retry-After` plus up to a second of random jitter and resends the same step (same seat, same `Idempotency-Key`), at most 30 times; the report counts these as `busyRetries`. The web page retries a busy hold or checkout up to 3 times, showing "Busy, retrying…".
 
 One consequence is kept on purpose: the gateway's rate limiters run before the breaker, so every retry spends a rate-limit token, and a client that retries too eagerly gets `429`. The limiters protect the bulkhead too.
 
@@ -1913,11 +1913,11 @@ Every service verifies it with the shared [InternalTokenVerifier](common/src/mai
 
 **Containers and networks.**
 
-- **Networks.** Only nginx publishes a port. `edge` (nginx and the gateway) and `app` (the services) are internal, with no route to the internet; the gateway, which holds the identity signing key, cannot reach the internet at all. Each store has its own internal network (`data-mysql`, `data-redis`, `data-redis-edge`, `data-kafka`, `data-rabbit`, `data-search`) joined only by its users, so booking cannot even resolve Elasticsearch. Only auth and notification join `egress`, for SMTP and S3.
+- **Networks.** Only nginx publishes a port. `edge` (nginx and the gateway) and `app` (the services) are internal networks. Each store has its own internal network (`data-mysql`, `data-redis`, `data-redis-edge`, `data-kafka`, `data-rabbit`, `data-search`) joined only by its users, so booking cannot reach Elasticsearch. In the base Compose file only three containers have a route out: web, through `public` (the non-internal network that carries its published port), and auth and notification, through `egress` (SMTP and S3). Checked live: the gateway (which holds the identity signing key), booking, catalog and payment cannot reach the internet, while auth and web can; web cannot reach booking or MySQL; the gateway cannot reach booking's Redis. The development overlay is different: it puts every container with a debug port on its own non-internal `devhost-*` network, so the dev stack is not egress-isolated. One more reason to keep it off servers.
 - **Per-store users.** MySQL: one user per database, granted only its own; root only from inside its container. Redis: the default user is off; booking's ACL user may run exactly the commands, keys and channels booking uses (no `KEYS`, `FLUSHALL`, `CONFIG`, `MONITOR`), and the gateway's user only its rate-limit and denylist keys. Kafka: SASL/SCRAM-SHA-512 users and ACLs per topic and consumer group, no topic auto-creation. RabbitMQ: no guest, vhost `surge`, per-service permissions. Elasticsearch: security on, and the `catalog` user may read and write the `events` index but not delete it or create others. Eureka and the config server need HTTP Basic.
-- **Hardened containers.** Every container drops all Linux capabilities, sets `no-new-privileges`, runs as a non-root user on a read-only root file system (writes go to a small `tmpfs` or a volume), and has pid and memory limits. Images are pinned by digest.
+- **Hardened containers.** Every container drops all Linux capabilities, sets `no-new-privileges`, runs as a non-root user on a read-only root file system (writes go to a small `tmpfs` or a volume), and has pid and memory limits. Base and third-party images are pinned by digest.
 
-**Secrets.** [docker/gen-secrets.sh](docker/gen-secrets.sh) generates every password and key per installation; nothing is committed and nothing has a default. Each key file is mounted read-only into only the container that uses it. With `SURGE_ENV=prod` (set for every service in Compose) a service refuses to start with a development key or credential, or with internal identity checks switched off. Nothing logs passwords, tokens, keys or codes: a check of every container log during the Task 16 run found none of the generated secrets. How production stores and rotates secrets is in [docs/DEPLOY.md](docs/DEPLOY.md). <!-- S10 -->
+**Secrets.** [docker/gen-secrets.sh](docker/gen-secrets.sh) generates every password and key per installation; nothing is committed and nothing has a default. Each key file is mounted read-only into only the container that uses it. With `SURGE_ENV=prod` (set for every service in Compose, except auth under the load-test overlay) a service refuses to start with a development key or credential, or with internal identity checks switched off. Nothing logs passwords, tokens, keys or codes: a check of every container log during the load-test run found none of the generated secrets. How production stores and rotates secrets is in [docs/DEPLOY.md](docs/DEPLOY.md). <!-- S10 -->
 
 **Edge.** nginx sends `Content-Security-Policy` (no inline or third-party script; the image build fails if Vite ever emits inline code), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`, a Permissions-Policy and COOP; API answers get `no-store`. Bodies are capped (64 KB, 16 KB on auth, 6 MB only for the CSV import), slow clients are timed out, and per-IP request and connection limits apply. TLS, HSTS and the production server block come with the production overlay ([docs/DEPLOY.md](docs/DEPLOY.md)). <!-- S10 -->
 
@@ -2206,9 +2206,9 @@ The admin signs in, mints one 15-minute JWT per synthetic buyer (`lt-<run>-<n>`)
 | Hold p50 / p95 / p99 (ms) | 3,024 / 9,274 / 16,775 | 3,174 / 6,441 / 9,026 <!-- LIVE-NUMBER --> |
 | Checkout p50 / p95 / p99 (ms) | 4,659 / 15,663 / 16,788 | 2,637 / 5,977 / 8,489 <!-- LIVE-NUMBER --> |
 
-**Where it ran.** One laptop: Docker Desktop on WSL2 with about 11.5 GB for Docker and 24 CPU threads. The load generator and all 17 containers shared it. The stack idled at 6.4 GiB and peaked at 9.0 GiB during the run; the CPU was close to saturated (the containers together used about 20 to 22 of the 24 threads, the gateway up to 12.5 cores). <!-- LIVE-NUMBER -->
+**Where it ran.** One laptop: Docker Desktop on WSL2 with about 11.5 GB for Docker and 24 CPU threads. The load generator and the stack's 17 running containers shared it. The stack idled at 6.4 GiB and peaked at 9.0 GiB during the run; the CPU was close to saturated (the containers together used about 20 to 22 of the 24 threads, the gateway up to 12.5 cores). <!-- LIVE-NUMBER -->
 
-**How to read it.** The counts are the result: every seat sold exactly once, every `201` a distinct seat, no errors. The times are mostly queueing on a saturated laptop: every request now crosses nginx, the gateway (JWT check, denylist, two rate limits, a signed identity token) and booking, all competing for the same CPU as the 10,000 buyers. Compared with phase 1's run (booking alone, below), the run took about twice as long for the same work. <!-- LIVE-NUMBER --> Say "correctness under extreme contention", never "production latency".
+**How to read it.** The counts are the result: every seat sold exactly once, the count of `201`s matches the seats sold, no errors. The times are mostly queueing on a saturated laptop: every request now crosses nginx, the gateway (JWT check, denylist, two rate limits, a signed identity token) and booking, all competing for the same CPU as the 10,000 buyers. Compared with phase 1's run (booking alone, below), the run took about twice as long for the same work. <!-- LIVE-NUMBER --> Say "correctness under extreme contention", never "production latency".
 
 **What the report adds in phase 2.** `busyRetries` (how many times buyers got `503 service-busy` and retried; above 0 means booking's bulkhead of 5,000 was really reached) and `rateLimited`, which must be read next to it, because each retry spends a rate-limit token. The run fails if nothing is sold or if errors pass 1% of buyers, as well as on any oversell or inconsistency.
 
@@ -2227,7 +2227,7 @@ The first 10,000-buyer run through the gateway **sold nothing**, and the load te
 
 Ruled out on the way, each with evidence: the per-IP limits (the load tester's address is exempted in nginx and its hold bucket is keyed per buyer; rate-limited was 0), unverified emails (test tokens carry `ev: true`), the 3-event hold cap (never hit), and a stale second booking instance in Eureka (only one was registered).
 
-After the runs above, the code review changed two things: the 20,000-call bulkhead became per-service limits (booking 5,000), and a full bulkhead now answers `503 service-busy`, which the load tester and the web app retry (ruling P2-R26: never raise the limit for the test). The next run measures that configuration. <!-- LIVE-NUMBER -->
+After the runs above, the code review changed two things: the 20,000-call bulkhead became per-service limits (booking 5,000), and a full bulkhead now answers `503 service-busy`, which the load tester and the web app retry (the review's ruling: never raise the limit for the test). The next run measures that configuration. <!-- LIVE-NUMBER -->
 
 **Interview questions.**
 
@@ -2293,11 +2293,11 @@ The first run of the pair, started about a minute after the service, sold 500 wi
 
 **Run-to-run variation.** The very first recorded run of phase 1, earlier the same day, took 11.2 s (96,002 requests, hold p50 718 ms). The runs above took 28.1 s and 20.6 s. To check whether the price-lock change made holds slower, the code from before this change was rebuilt and run on the same laptop right afterwards: 27.0 s cold and 19.6 s warm, the same as the new code. So the difference comes from the laptop's state at the time, not from the code. This is one more reason to quote the counts, not the times.
 
-**Isn't "oversold" always 0 by construction?** Yes, and it is worth saying so before an interviewer does. `oversold` is `orderItems - distinctSeatsSold`, the number of extra order lines for a seat that already has one. `order_item.seat_id` is `UNIQUE`, so MySQL can never store such a line, and that number cannot be anything but 0. It is still reported, because it proves the constraint exists in the running database. The checks that can actually fail are the other two. `consistent` compares the seats whose status is `SOLD` with the distinct seats in order lines, so it would catch a seat marked sold without an order, or an order line on a seat still marked available. The load tester also counts, on the client side, the buyers who got `201` for their one seat and requires that number to equal the seats sold: every `201` the users saw must be a distinct seat in the database. The run fails (exit code 1) if any of the three checks fails.
+**Isn't "oversold" always 0 by construction?** Yes, and it is worth saying so before an interviewer does. `oversold` is `orderItems - distinctSeatsSold`, the number of extra order lines for a seat that already has one. `order_item.seat_id` is `UNIQUE`, so MySQL can never store such a line, and that number cannot be anything but 0. It is still reported, because it proves the constraint exists in the running database. The checks that can actually fail are the other two. `consistent` compares the seats whose status is `SOLD` with the distinct seats in order lines, so it would catch a seat marked sold without an order, or an order line on a seat still marked available. The load tester also counts, on the client side, the buyers who got `201` for their one seat and requires that number to equal the seats sold. This is a count match, not a per-seat proof of who owns which seat: the guarantee that no seat is sold twice comes from the database's unique constraint, and the counts show that what the buyers were told agrees with what the database holds. The run fails (exit code 1) if any of the three checks fails.
 
 **Running it again.** Each run creates a fresh run id and sends `Idempotency-Key: <runId>-<userId>`, so a second run within 24 hours never reuses the first run's keys (whose orders the reset deleted). The service also copes if a client does reuse such a key: it treats a key that points at a deleted order as new.
 
-**How to say it on a resume or in an interview.** "In a local load test, 10,000 concurrent buyers raced for 500 seats through the API gateway, each with its own JWT: exactly 500 sold, 0 oversold, 0 errors, and every successful checkout was a distinct seat." <!-- LIVE-NUMBER --> Say "10,000 concurrent buyers", not "10,000 checkouts": only 500 buyers could ever reach checkout. If asked about latency, explain the laptop setup and that the test was about correctness.
+**How to say it on a resume or in an interview.** "In a local load test, 10,000 concurrent buyers raced for 500 seats through the API gateway, each with its own JWT: exactly 500 sold, 0 oversold, 0 errors, and 500 successful checkouts for 500 sold seats." <!-- LIVE-NUMBER --> Say "10,000 concurrent buyers", not "10,000 checkouts": only 500 buyers could ever reach checkout. If asked about latency, explain the laptop setup and that the test was about correctness.
 
 ### The concurrency test in CI
 
@@ -2322,7 +2322,7 @@ docker/gen-secrets.sh    # once: every credential and key, into .env (mode 600) 
 docker compose -f compose.yaml -f compose.dev.yaml --profile core --profile platform up -d --build
 ```
 
-The first build takes a while (Maven and npm download everything once). Wait until every container is healthy, then about a minute more for the services to register with Eureka. Secrets for a real server are handled differently; see [docs/DEPLOY.md](docs/DEPLOY.md). <!-- S10 -->
+The first build takes a while (Maven and npm download everything once). Secrets for a real server are handled differently; see [docs/DEPLOY.md](docs/DEPLOY.md). <!-- S10 -->
 
 **The helpers this guide uses.** Paste them into your Git Bash session, from the repository root:
 
@@ -2368,13 +2368,13 @@ Things to try:
 6. **Payment chaos and the circuit breaker.** On the Ops page set the payment error rate to 1, then try to pay: `503`, seats still held; soon the answer is instant (the circuit is open). Set it back to 0 and pay again after about 10 seconds ([section 5.27](#527-circuit-breaker-retry-timeout-and-bulkhead)).
 7. **The dead-letter queue.** Stop S3Mock, buy a ticket, watch it land in the dead-letter queue, start S3Mock and replay it ([section 5.21](#521-rabbitmq)).
 8. **Hold expiry.** Hold seats and do not pay. After 5 minutes the countdown ends and the seats turn available again everywhere.
-9. **The smoke test** (about a minute; resets event 1 at the start and the end):
+9. **The smoke test** (about a minute; resets event 1 at the start and the end). It first prints `Waiting for the gateway to route to booking and catalog… ready after N s` (it waits up to 120 s), then runs its ten checks:
 
    ```bash
    docker compose -f compose.yaml -f compose.dev.yaml --profile core --profile platform --profile smoke run --rm --build smoke
    ```
 
-10. **The load test.** It needs the load-test overlay, which turns on test-token minting; switch it off again afterwards:
+10. **The load test.** It needs the load-test overlay, which turns on test-token minting. auth refuses test tokens with `SURGE_ENV=prod`, so under this overlay auth runs with `SURGE_ENV=dev`, which also skips its production start-up guards: use it on a private machine and switch it off again afterwards:
 
     ```bash
     docker compose -f compose.yaml -f compose.dev.yaml -f compose.loadtest.yaml --profile core --profile platform up -d --build
@@ -2383,7 +2383,7 @@ Things to try:
     dc up -d    # back to the normal stack: auth, the gateway and nginx are recreated without the overlay
     ```
 
-    It resets event 1 first, prints the report, stores it for the Ops page, then saves it in `reports/`. It exits with code 1 if any check fails, and 2 if it cannot set up (for example, the overlay is off and minting tokens is refused). Other options: `--users`, `--event`, `--hot-share` (0 to 1), `--max-attempts`, `--no-reset` ([LoadTestConfig](tools/loadtest/src/main/java/dev/surge/loadtest/LoadTestConfig.java)). On native Linux, run `export UID` first (or `chmod o+w reports`) so the container may write `reports/`.
+    Like the smoke test, it first waits for the gateway to route to booking and catalog (the "Waiting for the gateway…" line). It resets event 1 first, prints the report, stores it for the Ops page, then saves it in `reports/`. It exits with code 1 if any check fails, and 2 if it cannot set up (for example, the overlay is off and minting tokens is refused). Other options: `--users`, `--event`, `--hot-share` (0 to 1), `--max-attempts`, `--no-reset` ([LoadTestConfig](tools/loadtest/src/main/java/dev/surge/loadtest/LoadTestConfig.java)). On native Linux, run `export UID` first (or `chmod o+w reports`) so the container may write `reports/`.
 11. **Reset after the load test** (it leaves event 1 sold out): use the Ops page, or
 
     ```bash
@@ -2433,7 +2433,7 @@ On Windows PowerShell, use `.\mvnw.cmd` instead of `./mvnw`.
 | `port is already allocated` for 8080, 8025, 8081, 8085, 8761, 3307, 6379, 9090, 9200 or 15672 | Another program (or another stack) uses the port | Find it (`netstat -ano \| findstr :8080` in PowerShell) and stop it, or change the host port in [compose.yaml](compose.yaml) or [compose.dev.yaml](compose.dev.yaml) |
 | Containers exit or restart, builds crawl, the load test errors | Docker does not have enough memory | Give Docker more memory. With WSL2, set `memory=` under `[wsl2]` in `%UserProfile%\.wslconfig`, run `wsl --shutdown`, restart Docker Desktop. The stack idles at about 6.4 GB |
 | First `up --build` is slow | Maven and npm download everything once | Wait; later builds use the cache |
-| `503 service-unavailable` right after start | The services are healthy but not yet registered with Eureka | Wait about a minute |
+| `503 service-unavailable` right after start | The services are healthy, but the gateway has not yet fetched them from Eureka | Wait a few seconds; the gateway routes within about 5 to 10 s of `up --wait` (the smoke and load tests wait for it themselves) |
 | Everything answers `401` after a while | The token expired (30 minutes) or was logged out | Sign in again (`login` in [section 10](#10-how-to-run-everything)) |
 | Hold returns `403 email-unverified` | The email is not verified yet | Enter the code from Mailpit on the verify page, then use the new token |
 | `the input device is not a TTY` from `docker compose exec` in Git Bash | Git Bash's terminal and Docker's TTY mode disagree | Add `-T` after `exec` (for example `dc exec -T redis redis-cli PING`), or use PowerShell |

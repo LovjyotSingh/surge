@@ -7,7 +7,7 @@ Surge is a flash-sale ticket booking platform. When a big sale opens, thousands 
 - **Phase 1** built the booking core: one Spring Boot service on Java 25 that keeps the rush in Redis (atomic seat holds written in Lua), writes orders to MySQL with optimistic locking, and pushes live seat updates to the browser.
 - **Phase 2** (this code) turns it into a Spring Cloud microservices platform: sign-up and login with JWTs through an API gateway, typo-tolerant event search in Elasticsearch, a separate payment service behind a circuit breaker, Kafka order events, and a RabbitMQ ticket queue that emails a PDF ticket (with a signed QR code) stored in S3. Every service verifies a gateway-signed identity token, every store and broker has its own credentials, and the whole stack runs hardened in Docker Compose.
 
-A load tester fires 10,000 concurrent buyers at it, through nginx and the gateway like real browsers, to prove that no seat is ever sold twice.
+A load tester fires 10,000 concurrent buyers at it, through nginx and the gateway like real browsers, to check that no seat is sold twice (the database's unique constraint is what guarantees it; the test shows the guarantee holds under a real sale's contention).
 
 **New here?** Read [LEARN.md](LEARN.md). It walks through every part of the code, explains why each piece exists, and ends each topic with interview questions and answers. [SECURITY.md](SECURITY.md) describes the security design and how to report a vulnerability.
 
@@ -29,7 +29,7 @@ A load tester fires 10,000 concurrent buyers at it, through nginx and the gatewa
 | Hold latency p50 / p95 (ms) | 3,024 / 9,274 | 3,174 / 6,441 <!-- LIVE-NUMBER --> |
 | Checkout latency p50 / p95 (ms) | 4,659 / 15,663 | 2,637 / 5,977 <!-- LIVE-NUMBER --> |
 
-This ran on one laptop: Docker Desktop on WSL2 with about 11.5 GB of memory for Docker and 24 CPU threads, shared by the load generator and all 17 containers of the stack (peak memory 9.0 GiB). <!-- LIVE-NUMBER --> It is a correctness test under heavy contention, not a production benchmark: the laptop's CPU was saturated, so the latencies are mostly queueing. Getting the first run through the gateway to pass took several fixes, each found after the one before (a verdict that said PASS for nothing sold, full accept queues, a hidden 25-call bulkhead, memory limits and Redis reply threads); [LEARN.md section 9](LEARN.md#9-the-numbers-and-how-to-explain-them) tells that debugging story and explains what each check proves.
+This ran on one laptop: Docker Desktop on WSL2 with about 11.5 GB of memory for Docker and 24 CPU threads, shared by the load generator and the stack's 17 running containers (peak memory 9.0 GiB). <!-- LIVE-NUMBER --> It is a correctness test under heavy contention, not a production benchmark: the laptop's CPU was saturated, so the latencies are mostly queueing. Getting the first run through the gateway to pass took several fixes, each found after the one before (a verdict that said PASS for nothing sold, full accept queues, a hidden 25-call bulkhead, memory limits and Redis reply threads); [LEARN.md section 9](LEARN.md#9-the-numbers-and-how-to-explain-them) tells that debugging story and explains what each check proves.
 
 The test suite also runs a smaller version on every CI build: [ConcurrentBookingTest](booking-service/src/test/java/dev/surge/booking/order/ConcurrentBookingTest.java) starts 2,000 buyers on virtual threads against 100 seats and checks that exactly 100 are sold.
 
@@ -117,10 +117,10 @@ docker compose -f compose.yaml -f compose.dev.yaml --profile core --profile plat
 ```
 
 - `docker/gen-secrets.sh` writes a random value for every credential (MySQL users, Redis ACL users, RabbitMQ and Kafka users, Elasticsearch, Eureka, config server, the admin password, the ticket QR key), plus the JWT signing key and the internal identity keys. Nothing has a default: Compose refuses to start until the script has run. It refuses to overwrite an existing `.env` unless you pass `--force` (read the notes at the top of the script first). How a production server stores secrets is in [docs/DEPLOY.md](docs/DEPLOY.md). <!-- S10 -->
-- `compose.yaml` is the platform: the `core` profile is MySQL, Redis and booking-service; `platform` is everything else (Kafka, RabbitMQ, Elasticsearch, the other services, the gateway and nginx). Every Spring service runs with `SURGE_ENV=prod`, so it refuses to start with a development key or a missing credential.
+- `compose.yaml` is the platform: the `core` profile is MySQL, Redis and booking-service; `platform` is everything else (Kafka, RabbitMQ, Elasticsearch, the other services, the gateway and nginx). Every Spring service runs with `SURGE_ENV=prod`, so it refuses to start with a development key or a missing credential (the one exception: auth under the load-test overlay, see below).
 - `compose.dev.yaml` adds **Mailpit** (catches every email) and **S3Mock** (fake S3), and debug ports bound to `127.0.0.1`. Never use it on a server. Without it, set real `MAIL_*` and `S3_*` values in `.env`.
 
-The first build downloads Maven and npm dependencies, so it takes a while. When `docker compose ... ps` shows every service healthy, give it about a minute more for the services to register with Eureka.
+The first build downloads Maven and npm dependencies, so it takes a while.
 
 Open **http://localhost:8080**. Everything below is bound to `127.0.0.1` only:
 
@@ -144,7 +144,7 @@ Then try the flow: search for "coldply" (the typo still finds "Coldplay Tribute 
 
 ## Smoke test and load test
 
-**Smoke test** ([tools/smoke](tools/smoke/)): ten end-to-end checks through nginx, like a browser. It signs up a fresh user and reads the code from Mailpit, searches with a typo, buys two seats, waits for the ticket email and PDF, checks catalog's seats-left and the audit log, drives the payment circuit breaker open with chaos and waits for it to close, hits the hold rate limit, tries forged headers and an anonymous admin call, checks the security headers and logout. It resets event 1 at the start and the end and takes about a minute.
+**Smoke test** ([tools/smoke](tools/smoke/)): ten end-to-end checks through nginx, like a browser. It signs up a fresh user and reads the code from Mailpit, searches with a typo, buys two seats, waits for the ticket email and PDF, checks catalog's seats-left and the audit log, drives the payment circuit breaker open with chaos and waits for it to close, hits the hold rate limit, tries forged headers and an anonymous admin call, checks the security headers and logout. It resets event 1 at the start and the end and takes about a minute. Before the checks it waits (up to 120 s) until the gateway routes to booking and catalog, and prints `Waiting for the gateway to route to booking and catalog… ready after N s`; the load test does the same.
 
 ```bash
 docker compose -f compose.yaml -f compose.dev.yaml --profile core --profile platform --profile smoke run --rm --build smoke
@@ -152,7 +152,7 @@ docker compose -f compose.yaml -f compose.dev.yaml --profile core --profile plat
 
 It exits with code 0 only if all ten checks pass. Run it without the load-test overlay: one check confirms that test tokens are off.
 
-**Load test** ([tools/loadtest](tools/loadtest/)): 10,000 buyers through nginx and the gateway. The admin mints one JWT per synthetic buyer (`lt-*` users), so the run needs the load-test overlay, which turns on what a public deployment must keep off: test-token minting, load-test subjects in the gateway, and an nginx exemption for the load tester's address. Use it on your own machine only.
+**Load test** ([tools/loadtest](tools/loadtest/)): 10,000 buyers through nginx and the gateway. The admin mints one JWT per synthetic buyer (`lt-*` users), so the run needs the load-test overlay, which turns on what a public deployment must keep off: test-token minting, load-test subjects in the gateway, and an nginx exemption for the load tester's address. auth refuses to mint test tokens with `SURGE_ENV=prod`, so under this overlay auth alone runs with `SURGE_ENV=dev`, which also skips its production start-up guards (it still gets every real credential and key). Use it on your own machine only.
 
 ```bash
 docker compose -f compose.yaml -f compose.dev.yaml -f compose.loadtest.yaml --profile core --profile platform up -d --build
@@ -204,7 +204,7 @@ Every error, from any service or the gateway, uses the Problem Details JSON form
 - **Zero-trust identity.** Only the gateway reads the user's JWT. For every request it routes, it signs a 60-second ES256 token (`X-Surge-Identity`) for exactly the target service, and every service verifies it and trusts nothing else: a forged `X-User-*` header gets `401`, even from inside the network. Service-to-service calls are signed with the caller's own key, and each service accepts only the callers it needs. Everything is denied by default.
 - **Accounts.** Tokens live 30 minutes; logout revokes a token at once through a Redis denylist that fails closed (`503`) if Redis cannot answer. Email verification codes, a common-password list and a per-account login throttle on top of the gateway's per-IP limits.
 - **Edge.** nginx is the only published port: security headers and a strict CSP, body-size limits, timeouts, connection and request limits. The gateway meters every public route in Redis token buckets.
-- **Platform.** Internal networks with one network per store, every store and broker with its own users and least-privilege ACLs, non-root read-only containers with all capabilities dropped, images pinned by digest.
+- **Platform.** Internal networks with one network per store, every store and broker with its own users and least-privilege ACLs, non-root read-only containers with all capabilities dropped, base and third-party images pinned by digest.
 - **Supply chain.** Actions pinned to commit SHAs, Dependabot, CodeQL, OSV and npm audit, Trivy on every image.
 
 [SECURITY.md](SECURITY.md) has the full design, with links to the code, and how to report a vulnerability. [LEARN.md section 5.31](LEARN.md#531-security) explains it with interview questions.
