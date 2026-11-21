@@ -64,7 +64,9 @@ export interface IntegrityReport {
   orderItems: number
   distinctSeatsSold: number
   oversold: number
-  /** soldSeats === distinctSeatsSold: every SOLD seat has exactly one order line. */
+  /** Per seat: SOLD seats without an order line plus order lines on seats that are not SOLD. Missing on older servers. */
+  seatMismatches?: number
+  /** seatMismatches === 0: every SOLD seat has an order line and every order line is on a SOLD seat. */
   consistent: boolean
 }
 
@@ -90,6 +92,12 @@ export interface LoadTestReport {
   rateLimited: number
   /** 503 service-busy answers the buyers waited on and retried (P2-R26). Missing in reports stored before it existed. */
   busyRetries?: number
+  /** The load tester's own verdict. Missing in reports stored before it existed. */
+  passed?: boolean
+  /** Seats sold by this run (sold minus soldBefore). Missing in reports stored before it existed. */
+  soldInRun?: number
+  /** Checkouts sent again with the same Idempotency-Key. Missing in reports stored before it existed. */
+  checkoutRetries?: number
   errors: number
   durationMs: number
   hold: LatencyStats
