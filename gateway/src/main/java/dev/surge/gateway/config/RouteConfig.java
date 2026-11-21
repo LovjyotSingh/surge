@@ -30,13 +30,23 @@ import org.springframework.http.HttpMethod;
 @Configuration
 class RouteConfig {
 
-    /** The circuit breaker (and its bulkhead, {@link BulkheadConfig}) on the hold and order routes. */
+    /** The circuit breaker (and its bulkhead, {@link BulkheadConfig}) on the hold route. */
     static final String BOOKING_BREAKER = "booking";
+    /**
+     * The circuit breaker (and its own bulkhead) on checkout. Apart from {@link #BOOKING_BREAKER} so that slow holds at
+     * the peak of a sale (or a full hold bulkhead) cannot open the breaker for buyers who already hold seats and are
+     * paying, and a slow payment cannot turn away new holds.
+     */
+    static final String ORDERS_BREAKER = "booking-orders";
     /** The circuit breaker (and its bulkhead) on catalog's public reads. */
     static final String CATALOG_BREAKER = "catalog";
 
     /** auth-service's public key set: public key material, the one auth path reachable without a metered route. */
     static final String JWKS_PATH = "/api/auth/.well-known/jwks.json";
+
+    /** The breakers' time-based sliding window, in seconds, and the calls it needs before a failure rate counts. */
+    static final int BREAKER_WINDOW_SECONDS = 10;
+    static final int BREAKER_MINIMUM_CALLS = 100;
 
     private static final String RESPONSE_TIMEOUT = "response-timeout";
     private static final String AUDIENCE = RouteAudiences.METADATA_KEY;
@@ -178,7 +188,7 @@ class RouteConfig {
                         .metadata(AUDIENCE, RouteAudiences.BOOKING).uri(booking))
                 .route("booking-orders", r -> r.path("/api/bookings/orders/**")
                         .filters(f -> f.filter(ordersLimit)
-                                .circuitBreaker(c -> c.setName(BOOKING_BREAKER)
+                                .circuitBreaker(c -> c.setName(ORDERS_BREAKER)
                                         .setFallbackUri("forward:/fallback/booking")))
                         .metadata(AUDIENCE, RouteAudiences.BOOKING).uri(booking))
                 // --- notification ---
@@ -196,15 +206,21 @@ class RouteConfig {
      *
      * <p>A call its bulkhead refused ({@link BulkheadConfig}) is ignored, neither a failure nor a success: it never
      * reached the service. Counted as a failure, one burst past the bulkhead would open the breaker and turn away every
-     * hold and checkout for 10 s, including the calls the bulkhead had room for.
+     * hold (or checkout) for 10 s, including the calls the bulkhead had room for.
+     *
+     * <p>The window is TIME based, the last 10 s, with at least 100 calls before the failure rate counts (50 %): at a
+     * sale's peak 100 calls take well under a second, so the breaker judges the last few seconds of traffic, where a
+     * count-based window of 20 calls could be opened by a handful of unlucky timeouts in a burst. A quiet service
+     * (under 100 calls in 10 s) never opens, whatever its failure rate. Applies to every breaker (holds, orders, catalog).
      */
     @Bean
     Customizer<ReactiveResilience4JCircuitBreakerFactory> breakerDefaults(
             @Value("${surge.gateway.breaker-timeout:10s}") Duration timeout) {
         return factory -> factory.configureDefault(id -> new Resilience4JConfigBuilder(id)
                 .circuitBreakerConfig(CircuitBreakerConfig.custom()
-                        .slidingWindowSize(20)
-                        .minimumNumberOfCalls(10)
+                        .slidingWindowType(CircuitBreakerConfig.SlidingWindowType.TIME_BASED)
+                        .slidingWindowSize(BREAKER_WINDOW_SECONDS)
+                        .minimumNumberOfCalls(BREAKER_MINIMUM_CALLS)
                         .failureRateThreshold(50)
                         .waitDurationInOpenState(Duration.ofSeconds(10))
                         .permittedNumberOfCallsInHalfOpenState(3)

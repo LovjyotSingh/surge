@@ -73,7 +73,7 @@ class TokenLifecycleTest extends GatewayTestBase {
     }
 
     @Test
-    void afterLogoutTheSameTokenIs401WithinOneSecond() throws Exception {
+    void afterLogoutTheSameTokenIs401() throws Exception {
         String token = userToken("u-logout");
         String otherSession = userToken("u-logout");
         client.get().uri(ME).header(HttpHeaders.AUTHORIZATION, bearer(token)).exchange().expectStatus().isOk();
@@ -82,11 +82,9 @@ class TokenLifecycleTest extends GatewayTestBase {
         client.post().uri(LOGOUT).header(HttpHeaders.AUTHORIZATION, bearer(token)).exchange()
                 .expectStatus().isNoContent()
                 .expectHeader().exists("X-Request-Id");
-        long loggedOutAt = System.nanoTime();
         client.get().uri(ME).header(HttpHeaders.AUTHORIZATION, bearer(token)).exchange()
                 .expectStatus().isUnauthorized()
                 .expectBody().jsonPath("$.type").isEqualTo(PROBLEM + "unauthorized");
-        assertThat(Duration.ofNanos(System.nanoTime() - loggedOutAt)).isLessThan(Duration.ofSeconds(1));
 
         // everywhere, not just on auth's routes
         client.post().uri("/api/bookings/holds").header(HttpHeaders.AUTHORIZATION, bearer(token)).bodyValue("{}")

@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import io.github.resilience4j.bulkhead.BulkheadFullException;
 import io.github.resilience4j.bulkhead.BulkheadRegistry;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import io.github.resilience4j.timelimiter.TimeLimiterRegistry;
 import java.net.ConnectException;
@@ -30,6 +31,7 @@ import reactor.core.publisher.Mono;
 class BulkheadConfigTest {
 
     private static final String BOOKING = RouteConfig.BOOKING_BREAKER;
+    private static final String ORDERS = RouteConfig.ORDERS_BREAKER;
     private static final String CATALOG = RouteConfig.CATALOG_BREAKER;
 
     @Test
@@ -55,8 +57,8 @@ class BulkheadConfigTest {
         ReactiveCircuitBreaker breaker = bookingBreaker(registry, 1);
         Disposable inFlight = breaker.run(Mono.never(), t -> Mono.just("fallback")).subscribe();
 
-        // Far past the breaker's minimum of 10 calls and 50 % failure rate, had refusals counted as failures.
-        for (int i = 0; i < 30; i++) {
+        // Far past the breaker's minimum of 100 calls and 50 % failure rate, had refusals counted as failures.
+        for (int i = 0; i < 3 * RouteConfig.BREAKER_MINIMUM_CALLS; i++) {
             assertThat(breaker.run(Mono.just("booked"), t -> Mono.just("fallback")).block()).isEqualTo("fallback");
         }
 
@@ -70,11 +72,51 @@ class BulkheadConfigTest {
         CircuitBreakerRegistry registry = CircuitBreakerRegistry.ofDefaults();
         ReactiveCircuitBreaker breaker = bookingBreaker(registry, 5000);
 
-        for (int i = 0; i < 10; i++) {
+        // Below the window's minimum of 100 calls the breaker does not judge yet, whatever the failure rate.
+        for (int i = 0; i < RouteConfig.BREAKER_MINIMUM_CALLS - 1; i++) {
             breaker.run(Mono.error(new ConnectException("refused")), t -> Mono.just("fallback")).block();
         }
+        assertThat(registry.circuitBreaker(BOOKING).getState()).isEqualTo(CircuitBreaker.State.CLOSED);
 
+        breaker.run(Mono.error(new ConnectException("refused")), t -> Mono.just("fallback")).block();
         assertThat(registry.circuitBreaker(BOOKING).getState()).isEqualTo(CircuitBreaker.State.OPEN);
+    }
+
+    @Test
+    void theBreakersAreTimeBasedOverTenSecondsAndNeedAHundredCalls() {
+        CircuitBreakerRegistry registry = CircuitBreakerRegistry.ofDefaults();
+        bookingBreaker(registry, 5000).run(Mono.just("ok"), t -> Mono.just("fallback")).block();
+
+        var config = registry.circuitBreaker(BOOKING).getCircuitBreakerConfig();
+        assertThat(config.getSlidingWindowType()).isEqualTo(CircuitBreakerConfig.SlidingWindowType.TIME_BASED);
+        assertThat(config.getSlidingWindowSize()).isEqualTo(10);
+        assertThat(config.getMinimumNumberOfCalls()).isEqualTo(100);
+        assertThat(config.getFailureRateThreshold()).isEqualTo(50f);
+    }
+
+    /** Slow holds opening the holds breaker must not stop checkouts: each route has its own breaker and bulkhead. */
+    @Test
+    void anOpenHoldsBreakerAndAFullHoldsBulkheadLeaveCheckoutsAlone() {
+        CircuitBreakerRegistry registry = CircuitBreakerRegistry.ofDefaults();
+        ReactiveResilience4JCircuitBreakerFactory factory = new ReactiveResilience4JCircuitBreakerFactory(registry,
+                TimeLimiterRegistry.ofDefaults(), bulkheads(Map.of(BOOKING, 1, ORDERS, 1), 1),
+                new Resilience4JConfigurationProperties());
+        new RouteConfig().breakerDefaults(Duration.ofSeconds(10)).customize(factory);
+        ReactiveCircuitBreaker holds = factory.create(BOOKING);
+        ReactiveCircuitBreaker orders = factory.create(ORDERS);
+
+        for (int i = 0; i < RouteConfig.BREAKER_MINIMUM_CALLS; i++) {
+            holds.run(Mono.error(new ConnectException("refused")), t -> Mono.just("fallback")).block();
+        }
+        assertThat(registry.circuitBreaker(BOOKING).getState()).isEqualTo(CircuitBreaker.State.OPEN);
+        Disposable inFlight = orders.run(Mono.never(), t -> Mono.just("fallback")).subscribe();
+
+        // checkouts are not turned away by the holds breaker; only their own full bulkhead refuses (fast, fallback)
+        assertThat(registry.circuitBreaker(ORDERS).getState()).isEqualTo(CircuitBreaker.State.CLOSED);
+        assertThat(orders.run(Mono.just("paid"), t -> Mono.just("fallback")).block()).isEqualTo("fallback");
+        inFlight.dispose();
+        assertThat(orders.run(Mono.just("paid"), t -> Mono.just("fallback")).block()).isEqualTo("paid");
+        assertThat(registry.circuitBreaker(ORDERS).getState()).isEqualTo(CircuitBreaker.State.CLOSED);
     }
 
     private static ReactiveResilience4jBulkheadProvider bulkheads(Map<String, Integer> limits, int others) {

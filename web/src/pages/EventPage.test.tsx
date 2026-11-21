@@ -321,6 +321,36 @@ describe('EventPage', () => {
     expect(screen.queryByText('Busy, retrying…')).not.toBeInTheDocument()
   })
 
+  it('says it is busy and retries a hold the gateway refused as auth-unavailable', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    let release: (value: typeof hold) => void = () => {}
+    mocked.hold
+      .mockRejectedValueOnce(new ApiError(problem('auth-unavailable', 503), 1))
+      .mockReturnValueOnce(new Promise((resolve) => (release = resolve)))
+    renderPage()
+    await pickSeatAndHold(user)
+    expect(await screen.findByText('Busy, retrying…')).toBeInTheDocument()
+    act(() => release(hold))
+    expect(await screen.findByText('Seats held for you')).toBeInTheDocument()
+    expect(mocked.hold).toHaveBeenCalledTimes(2)
+  })
+
+  it('retries an auth-unavailable checkout with the same idempotency key', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    mocked.hold.mockResolvedValue(hold)
+    mocked.checkout
+      .mockRejectedValueOnce(new ApiError(problem('auth-unavailable', 503), 0))
+      .mockResolvedValueOnce({ orderId: 43, eventId: 1, status: 'CONFIRMED', totalInr: 1800, lines: [], createdAt: '' })
+    renderPage()
+    await pickSeatAndHold(user)
+    await user.click(await screen.findByRole('button', { name: 'Pay ₹1800' }))
+    expect(await screen.findByText('Booked! Order #43 — ₹1800')).toBeInTheDocument()
+    const [first, second] = mocked.checkout.mock.calls
+    expect(second[1]).toBe(first[1])
+  })
+
   it('retries a service-busy checkout with the same idempotency key', async () => {
     const user = userEvent.setup()
     vi.spyOn(Math, 'random').mockReturnValue(0)

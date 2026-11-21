@@ -10,7 +10,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * The bulkhead inside each circuit breaker ({@link RouteConfig#BOOKING_BREAKER}, {@link RouteConfig#CATALOG_BREAKER}):
+ * The bulkhead inside each circuit breaker ({@link RouteConfig#BOOKING_BREAKER} for holds, {@link RouteConfig#ORDERS_BREAKER}
+ * for checkout, {@link RouteConfig#CATALOG_BREAKER}):
  * how many calls the gateway lets wait on that service at once. Each breaker has its own limit,
  * {@code surge.gateway.bulkhead.*} in application.yml (env {@code SURGE_GATEWAY_BULKHEAD_BOOKING} and so on), where
  * the numbers are explained. One call more is refused at once and gets 503 {@code service-busy} with
@@ -33,9 +34,11 @@ public class BulkheadConfig {
     @Bean
     Customizer<ReactiveResilience4jBulkheadProvider> bulkheads(
             @Value("${surge.gateway.bulkhead.booking:5000}") int booking,
+            @Value("${surge.gateway.bulkhead.orders:${surge.gateway.bulkhead.booking:5000}}") int orders,
             @Value("${surge.gateway.bulkhead.catalog:300}") int catalog,
             @Value("${surge.gateway.bulkhead.others:100}") int others) {
-        return bulkheads(Map.of(RouteConfig.BOOKING_BREAKER, booking, RouteConfig.CATALOG_BREAKER, catalog), others);
+        return bulkheads(Map.of(RouteConfig.BOOKING_BREAKER, booking, RouteConfig.ORDERS_BREAKER, orders,
+                RouteConfig.CATALOG_BREAKER, catalog), others);
     }
 
     /** {@code limits} by breaker name; any breaker not named there gets {@code others}. */

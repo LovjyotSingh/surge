@@ -39,7 +39,7 @@ function describe(err: unknown, eventId?: number): Notice {
     if (err.status === 429) {
       return { kind: 'error', text: `Slow down — try again in ${err.retryAfterSeconds ?? 1}s.` }
     }
-    if (slug === 'service-busy') {
+    if (slug === 'service-busy' || slug === 'auth-unavailable') {
       // Only after retryWhileBusy has already retried a few times.
       return { kind: 'error', text: 'Surge is very busy right now — try again in a moment.' }
     }

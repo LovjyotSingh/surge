@@ -14,8 +14,17 @@ export const BUSY_RETRIES = 3
 /** Random extra wait on top of Retry-After, so the refused buyers do not all come back at the same moment. */
 const JITTER_MS = 1000
 
+/**
+ * 503 `service-busy` (a gateway bulkhead was full) and 503 `auth-unavailable` (the gateway could not check the token
+ * against its denylist or the key set, and refused the request before routing it): both mean nothing was processed and
+ * both carry Retry-After: 1, so both are retried the same way, with the same "Busy, retrying…" and the same limit.
+ */
 export function isServiceBusy(err: unknown): err is ApiError {
-  return err instanceof ApiError && err.status === 503 && err.problem.type.endsWith('/service-busy')
+  return (
+    err instanceof ApiError &&
+    err.status === 503 &&
+    (err.problem.type.endsWith('/service-busy') || err.problem.type.endsWith('/auth-unavailable'))
+  )
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))

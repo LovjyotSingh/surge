@@ -41,7 +41,7 @@ class DecoderDenylistTest {
     private final ReactiveStringRedisTemplate redis = mock(ReactiveStringRedisTemplate.class);
     private final ReactiveJwtDecoder decoder = new SecurityConfig().jwtDecoder(
             new JwksCache(() -> Mono.just(new JWKSet(KEY.toPublicJWK())), Clock.systemUTC()),
-            new TokenDenylist(redis), "surge-auth", false);
+            new TokenDenylist(redis, Duration.ofSeconds(1)), "surge-auth", false);
 
     private static RSAKey generate() {
         try {
@@ -95,7 +95,7 @@ class DecoderDenylistTest {
     @Test
     void theRequestContinuesOffTheRedisReplyThread() throws Exception {
         // Under a burst, request work on the Redis client's reply thread delayed every other request's denylist
-        // reply past its 1 s timeout (503 for thousands of buyers in the 10k load test).
+        // reply past its timeout (503 for thousands of buyers in the 10k load test).
         reactor.core.scheduler.Scheduler redisReplies = reactor.core.scheduler.Schedulers.newSingle("redis-reply");
         try {
             when(redis.hasKey(anyString())).thenReturn(Mono.just(false).publishOn(redisReplies));

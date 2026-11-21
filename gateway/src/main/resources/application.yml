@@ -12,9 +12,11 @@ spring:
   data:
     redis:
       host: ${REDIS_HOST:localhost}
-      # The rate limiter's only store. Lettuce would otherwise wait 60 s per command while Redis is down; login and
-      # signup fail closed (503) once a command fails, the other buckets fail open.
-      timeout: 1s
+      # The rate limiter's and the token denylist's store. Lettuce would otherwise wait 60 s per command while Redis is
+      # down; login and signup fail closed (503) once a command fails, the other buckets fail open. This is THE command
+      # deadline, defined here only: security/TokenDenylist reads it too. 3 s (was 1 s) leaves room for a loaded host's
+      # scheduling delay; a signed-in request whose denylist answer misses it gets 503 auth-unavailable (retryable).
+      timeout: 3s
       connect-timeout: 1s
       # SEC-05: an ACL user (REDIS_USER, blank = Redis' default user) and its password. Blank = no AUTH (local
       # Redis); SURGE_ENV=prod refuses a blank password (common's StoreCredentials).
@@ -57,6 +59,7 @@ surge:
     public-deployment: ${SURGE_PUBLIC_DEPLOYMENT:false}
     issuer: surge-auth
     # Synthetic load-test identities (sub "lt-*" or claim lt=true) are refused unless a loadtest overlay sets this.
+    # With SURGE_PUBLIC_DEPLOYMENT=true the gateway refuses to start (config/LoadtestSubjectsGuard).
     allow-loadtest-subjects: ${SURGE_ALLOW_LOADTEST_SUBJECTS:false}
     # Regex over the socket peer's address (IPv6 in full form, e.g. 2001:db8:0:0:0:0:0:53). Only a matching peer's
     # X-Forwarded-For names the client (per-IP rate limits, ratelimit.ClientAddress). Blank = trust no proxy, key on
@@ -80,6 +83,11 @@ surge:
       # and up to 15,000 of them may be seat streams (surge.stream.max-subscribers-total), which take the stream route
       # without a breaker: 20,000 - 15,000 = 5,000 are left for these calls.
       booking: 5000
+      # Checkouts (the booking-orders breaker), apart from the holds above so that slow holds at a sale's peak cannot
+      # open the breaker, or fill the bulkhead, for buyers who already hold seats. Unset = the same value as `booking`
+      # (so SURGE_GATEWAY_BULKHEAD_BOOKING moves both); SURGE_GATEWAY_BULKHEAD_ORDERS sets it alone. Holds and
+      # checkouts still share booking's one Tomcat pool, but checkouts are a fraction of holds.
+      orders: ${SURGE_GATEWAY_BULKHEAD_ORDERS:${surge.gateway.bulkhead.booking}}
       # Public catalog reads. catalog-service has Tomcat's default 8,192 connections and asks Elasticsearch (5 s
       # socket timeout) on every search: a few hundred calls in flight are already a deep queue for one search node.
       catalog: 300

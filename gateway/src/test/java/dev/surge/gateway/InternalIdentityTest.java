@@ -14,19 +14,27 @@ import dev.surge.gateway.config.RouteAudiences;
 import dev.surge.gateway.security.InternalIdentityFilter;
 import dev.surge.gateway.support.Downstream;
 import dev.surge.gateway.support.GatewayTestBase;
+import io.github.resilience4j.bulkhead.Bulkhead;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import mockwebserver3.RecordedRequest;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cloud.circuitbreaker.resilience4j.ReactiveResilience4jBulkheadProvider;
+import org.springframework.cloud.gateway.filter.ReactiveLoadBalancerClientFilter;
+import org.springframework.cloud.gateway.filter.RouteToRequestUrlFilter;
 import org.springframework.cloud.gateway.route.Route;
 import org.springframework.cloud.gateway.route.RouteLocator;
 import org.springframework.cloud.gateway.support.ServerWebExchangeUtils;
+import org.springframework.core.Ordered;
 import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
+import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -42,6 +50,13 @@ class InternalIdentityTest extends GatewayTestBase {
 
     @Autowired
     private RouteLocator routeLocator;
+
+    /** The type-level spy from @IntegrationTest: counts the signatures the gateway mints. */
+    @Autowired
+    private InternalTokenSigner signer;
+
+    @Autowired
+    private ReactiveResilience4jBulkheadProvider bulkheads;
 
     private static InternalTokenSigner devSigner(String issuer) {
         return new InternalTokenSigner(InternalKeys.loadSigningKey(null, issuer, SurgeEnv.DEV,
@@ -222,6 +237,108 @@ class InternalIdentityTest extends GatewayTestBase {
         client.get().uri("/api/catalog/events").header(HttpHeaders.AUTHORIZATION, bearer(expired)).exchange()
                 .expectStatus().isUnauthorized();
         assertThat(CATALOG.sawNothing()).isTrue();
+    }
+
+    // ---- the filter runs after the refusals (rate limits, bulkhead), before the request is sent --------------------
+
+    @Test
+    void theFilterRunsJustBeforeTheLoadBalancerAndAfterEveryRouteFilter() {
+        assertThat(InternalIdentityFilter.ORDER)
+                .isEqualTo(ReactiveLoadBalancerClientFilter.LOAD_BALANCER_CLIENT_FILTER_ORDER - 1)
+                .isEqualTo(10149);
+        // route filters (rate limiters, circuit breaker) are numbered 1, 2, ... and Spring's request-URL filter is
+        // 10,000: the signature comes after them all
+        assertThat(InternalIdentityFilter.ORDER).isGreaterThan(RouteToRequestUrlFilter.ROUTE_TO_URL_FILTER_ORDER);
+        assertThat(InternalIdentityFilter.ORDER).isLessThan(Ordered.LOWEST_PRECEDENCE);
+    }
+
+    /**
+     * A request the rate limiter refuses is never signed (it used to cost an ES256 signature before the limiter ran),
+     * and every request that did reach booking carries a valid token for it: signatures == requests served.
+     */
+    @Test
+    void rateLimitedRequestsCostNoSignatureAndEveryServedRequestIsSigned() throws Exception {
+        Mockito.clearInvocations(signer);
+        WebClient web = WebClient.create("http://localhost:" + port);
+        String ip = freshClientIp();
+        String token = bearer(userToken("u-sign-429"));
+
+        // one user, 40 holds at once: the per-user bucket (2/s, burst 10) serves about 10 and refuses the rest
+        List<Integer> statuses = Flux.range(0, 40)
+                .flatMap(i -> web.post().uri("/api/bookings/holds").header("X-Forwarded-For", ip)
+                        .header(HttpHeaders.AUTHORIZATION, token).bodyValue("{}")
+                        .exchangeToMono(response -> response.releaseBody().thenReturn(response.statusCode().value())),
+                        40)
+                .collectList().block(java.time.Duration.ofSeconds(30));
+
+        long served = statuses.stream().filter(status -> status == 200).count();
+        long limited = statuses.stream().filter(status -> status == 429).count();
+        assertThat(limited).as("refused by the rate limiter").isGreaterThan(0);
+        assertThat(served + limited).isEqualTo(40);
+        assertThat(signatures()).as("signatures minted").isEqualTo(served);
+        for (long i = 0; i < served; i++) {
+            RecordedRequest seen = BOOKING.next();
+            assertThat(seen).as("request %d reaching booking", i + 1).isNotNull();
+            assertThat(identityFor(seen, "booking-service").subject()).isEqualTo("u-sign-429");
+        }
+        assertThat(BOOKING.sawNothing()).isTrue();
+    }
+
+    @Test
+    void aBusyBulkheadRefusalCostsNoSignature() throws Exception {
+        client.post().uri("/api/bookings/holds").header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-sign-busy-0")))
+                .bodyValue("{}").exchange().expectStatus().isOk();
+        assertThat(BOOKING.next()).isNotNull();
+        Bulkhead holds = bulkheads.getBulkheadRegistry().bulkhead("booking");
+        int taken = 0;
+        while (holds.tryAcquirePermission()) {
+            taken++;
+        }
+        try {
+            Mockito.clearInvocations(signer);
+            client.post().uri("/api/bookings/holds")
+                    .header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-sign-busy-1"))).bodyValue("{}").exchange()
+                    .expectStatus().isEqualTo(HttpStatus.SERVICE_UNAVAILABLE)
+                    .expectBody().jsonPath("$.type").isEqualTo("https://surge.dev/problems/service-busy");
+            assertThat(signatures()).isZero();
+            assertThat(BOOKING.sawNothing()).isTrue();
+        } finally {
+            for (int i = 0; i < taken; i++) {
+                holds.onComplete();
+            }
+        }
+    }
+
+    /** No unsigned request reaches a service: the downstream's own record of a request has the header, whichever path. */
+    @Test
+    void noRequestReachesAServiceUnsigned() throws Exception {
+        record Case(String method, String path, Downstream target, String audience, boolean signedIn) {
+        }
+        String user = bearer(userToken("u-sign-all"));
+        for (Case c : List.of(
+                new Case("GET", "/api/auth/.well-known/jwks.json", AUTH, "auth-service", false),
+                new Case("POST", "/api/auth/login", AUTH, "auth-service", false),
+                new Case("GET", "/api/catalog/events", CATALOG, "catalog-service", false),
+                new Case("GET", "/api/bookings/events/7", BOOKING, "booking-service", false),
+                new Case("GET", "/api/bookings/events/7/stream", BOOKING, "booking-service", false),
+                new Case("POST", "/api/bookings/holds", BOOKING, "booking-service", true),
+                new Case("POST", "/api/bookings/orders", BOOKING, "booking-service", true),
+                new Case("GET", "/api/notifications/tickets/5", NOTIFICATION, "notification-service", true))) {
+            var request = client.method(org.springframework.http.HttpMethod.valueOf(c.method())).uri(c.path());
+            if (c.signedIn()) {
+                request.header(HttpHeaders.AUTHORIZATION, user);
+            }
+            request.exchange().expectStatus().isOk();
+            RecordedRequest seen = c.target().next();
+            assertThat(seen.getHeaders().get(HEADER)).as(c.path()).isNotBlank();
+            assertThat(identityFor(seen, c.audience()).audience()).as(c.path()).isEqualTo(c.audience());
+        }
+    }
+
+    /** Signatures minted since the last {@code clearInvocations}. */
+    private long signatures() {
+        return Mockito.mockingDetails(signer).getInvocations().stream()
+                .filter(invocation -> invocation.getMethod().getName().equals("sign")).count();
     }
 
     private static Route route(String id, String uri, String audience) {

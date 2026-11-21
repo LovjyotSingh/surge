@@ -95,6 +95,45 @@ class CircuitBreakerBulkheadTest extends GatewayTestBase {
         hold("u-busy-2").expectStatus().isOk();
     }
 
+    /**
+     * Checkout has its own breaker and bulkhead ("booking-orders"): holds using up their whole bulkhead (a sale's peak)
+     * turn away holds only, and a buyer who already holds seats can still pay. Its limit follows
+     * {@code surge.gateway.bulkhead.booking} (5000) unless {@code ...orders} says otherwise.
+     */
+    @Test
+    void checkoutHasItsOwnBulkheadSoAFullHoldBulkheadDoesNotStopIt() throws Exception {
+        hold("u-split-0").expectStatus().isOk();
+        assertThat(BOOKING.next()).isNotNull();
+        client.post().uri("/api/bookings/orders").header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-split-1")))
+                .contentType(MediaType.APPLICATION_JSON).bodyValue("{}").exchange().expectStatus().isOk();
+        assertThat(BOOKING.next()).isNotNull();
+
+        Bulkhead holds = bulkheads.getBulkheadRegistry().bulkhead("booking");
+        Bulkhead orders = bulkheads.getBulkheadRegistry().bulkhead("booking-orders");
+        assertThat(orders).isNotSameAs(holds);
+        assertThat(orders.getBulkheadConfig().getMaxConcurrentCalls()).isEqualTo(5000);
+        assertThat(orders.getBulkheadConfig().getMaxWaitDuration()).isZero();
+
+        int taken = 0;
+        while (holds.tryAcquirePermission()) {
+            taken++;
+        }
+        try {
+            hold("u-split-2").expectStatus().isEqualTo(HttpStatus.SERVICE_UNAVAILABLE)
+                    .expectHeader().valueEquals(HttpHeaders.RETRY_AFTER, "1")
+                    .expectBody().jsonPath("$.type").isEqualTo(ProblemWriter.TYPE_BASE + "service-busy");
+            assertThat(BOOKING.sawNothing()).isTrue();
+
+            client.post().uri("/api/bookings/orders").header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-split-3")))
+                    .contentType(MediaType.APPLICATION_JSON).bodyValue("{}").exchange().expectStatus().isOk();
+            assertThat(BOOKING.next()).isNotNull();
+        } finally {
+            for (int i = 0; i < taken; i++) {
+                holds.onComplete();
+            }
+        }
+    }
+
     private WebTestClient.ResponseSpec hold(String user) {
         return client.post().uri("/api/bookings/holds").header(HttpHeaders.AUTHORIZATION, bearer(userToken(user)))
                 .contentType(MediaType.APPLICATION_JSON).bodyValue("{\"eventId\":1,\"seatIds\":[1]}").exchange();

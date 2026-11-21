@@ -7,6 +7,7 @@ import dev.surge.gateway.config.RouteAudiences;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
+import org.springframework.cloud.gateway.filter.ReactiveLoadBalancerClientFilter;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.cloud.gateway.route.Route;
 import org.springframework.cloud.gateway.support.ServerWebExchangeUtils;
@@ -26,13 +27,21 @@ import reactor.core.publisher.Mono;
  * says exactly {@code true}) from the verified user JWT, or an anonymous token
  * (no {@code sub}, no roles) on public routes. Whatever the client sent in that header is removed first (as
  * {@link IdentityHeadersFilter} also does). A route without an audience fails the request rather than forwarding it
- * unsigned. Runs right after {@link IdentityHeadersFilter}; tokens are minted per request and nothing is cached.
+ * unsigned. Runs late, after the route filters (rate limits, circuit breaker and bulkhead) and just before the
+ * load-balancer filter, so a refused request is never signed; {@link IdentityHeadersFilter}, which runs first, has
+ * already removed anything the client sent. Tokens are minted per request and nothing is cached.
  */
 @Component
 public class InternalIdentityFilter implements GlobalFilter, Ordered {
 
     public static final String HEADER = InternalTokens.HEADER;
-    public static final int ORDER = IdentityHeadersFilter.ORDER + 1;
+    /**
+     * Just before the load-balancer filter (10,149): after the rate limiters and the circuit breaker's bulkhead, which
+     * are route filters (orders 1, 2, ...) and refuse a request without it costing an ES256 signature, and still before
+     * the filter that sends the request on ({@code NettyRoutingFilter}, last), so every request that reaches a service
+     * is signed.
+     */
+    public static final int ORDER = ReactiveLoadBalancerClientFilter.LOAD_BALANCER_CLIENT_FILTER_ORDER - 1;
 
     private final InternalTokenSigner signer;
 

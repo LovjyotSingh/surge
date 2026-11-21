@@ -1,5 +1,6 @@
 package dev.surge.gateway.support;
 
+import dev.surge.common.security.InternalTokenSigner;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -34,7 +35,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
         "spring.cloud.gateway.server.webflux.httpclient.response-timeout=1500ms",
         "surge.security.trusted-proxies=127[.]0[.]0[.]1|0:0:0:0:0:0:0:1"})
 @AutoConfigureWebTestClient
-@MockitoSpyBean(types = ReactiveStringRedisTemplate.class)
+@MockitoSpyBean(types = {ReactiveStringRedisTemplate.class, InternalTokenSigner.class})
 @Import({TestcontainersConfig.class, TestClocks.class})
 public @interface IntegrationTest {
 }

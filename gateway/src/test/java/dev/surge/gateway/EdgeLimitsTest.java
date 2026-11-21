@@ -9,8 +9,15 @@ import static org.mockito.Mockito.doReturn;
 import dev.surge.gateway.support.GatewayTestBase;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 import mockwebserver3.MockResponse;
 import org.junit.jupiter.api.Test;
@@ -292,7 +299,8 @@ class EdgeLimitsTest extends GatewayTestBase {
         client.post().uri("/api/bookings/holds").header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-redis-down")))
                 .bodyValue("{}").exchange()
                 .expectStatus().isEqualTo(HttpStatus.SERVICE_UNAVAILABLE)
-                .expectBody().jsonPath("$.type").isEqualTo(PROBLEM + "service-unavailable");
+                .expectHeader().valueEquals(HttpHeaders.RETRY_AFTER, "1")
+                .expectBody().jsonPath("$.type").isEqualTo(PROBLEM + "auth-unavailable");
         client.get().uri("/api/auth/me").header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-redis-down")))
                 .exchange().expectStatus().isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
         assertThat(BOOKING.sawNothing()).isTrue();
@@ -302,8 +310,8 @@ class EdgeLimitsTest extends GatewayTestBase {
     // ---- helpers ---------------------------------------------------------------------------------------------
 
     /**
-     * Sends {@code burst + 1} requests from one fresh client and asserts the first {@code burst} are served and the
-     * next one is a 429 {@code rate-limited} problem. Gateway's limiter refills whole seconds' worth of tokens at
+     * Sends {@code burst + 1} requests at once from one fresh client and asserts {@code burst} are served and the
+     * other is a 429 {@code rate-limited} problem. Gateway's limiter refills whole seconds' worth of tokens at
      * once (Redis {@code TIME} seconds), so a burst that straddles a second boundary gets extra tokens; the
      * {@code X-RateLimit-Remaining} countdown shows when that happened, and the burst is then retried with a new
      * client. {@code request} gets the client address and the attempt number (for per-user buckets).
@@ -324,15 +332,13 @@ class EdgeLimitsTest extends GatewayTestBase {
             throws InterruptedException {
         for (int attempt = 0; attempt < 4; attempt++) {
             String ip = freshClientIp();
-            List<EntityExchangeResult<byte[]>> results = new ArrayList<>();
-            for (int i = 0; i <= burst; i++) {
-                results.add(request.build(ip, attempt, i).exchange().expectBody().returnResult());
-            }
+            List<EntityExchangeResult<byte[]>> results = sendConcurrently(burst + 1, attempt, ip, request);
             if (refilledDuring(results, burst, shown)) {
                 TimeUnit.MILLISECONDS.sleep(50);
                 continue;
             }
-            EntityExchangeResult<byte[]> denied = results.get(burst);
+            EntityExchangeResult<byte[]> denied = results.stream()
+                    .filter(r -> r.getStatus() == HttpStatus.TOO_MANY_REQUESTS).findFirst().orElseThrow();
             assertThat(denied.getStatus()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
             assertThat(denied.getResponseHeaders().getContentType().isCompatibleWith(
                     MediaType.APPLICATION_PROBLEM_JSON)).isTrue();
@@ -345,17 +351,64 @@ class EdgeLimitsTest extends GatewayTestBase {
                 + " limited as expected");
     }
 
-    /** True unless the first {@code burst} answers are 200 with remaining tokens counting straight down. */
+    /**
+     * All {@code burst + 1} requests at once, each on its own thread behind one latch: the whole burst lands within a
+     * few milliseconds, so a sequential run's slowness (a loaded machine) can no longer span a token refill. Results
+     * are in request order; which request is the refused one is up to the limiter.
+     */
+    private List<EntityExchangeResult<byte[]>> sendConcurrently(int requests, int attempt, String ip,
+            Attempt request) {
+        CountDownLatch start = new CountDownLatch(1);
+        try (ExecutorService pool = Executors.newFixedThreadPool(requests)) {
+            List<Future<EntityExchangeResult<byte[]>>> futures = new ArrayList<>();
+            for (int i = 0; i < requests; i++) {
+                int number = i;
+                futures.add(pool.submit(() -> {
+                    start.await();
+                    return request.build(ip, attempt, number).exchange().expectBody().returnResult();
+                }));
+            }
+            start.countDown();
+            List<EntityExchangeResult<byte[]>> results = new ArrayList<>();
+            for (Future<EntityExchangeResult<byte[]>> future : futures) {
+                results.add(future.get(30, TimeUnit.SECONDS));
+            }
+            return results;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+        } catch (ExecutionException | TimeoutException e) {
+            throw new IllegalStateException("a burst request failed", e);
+        }
+    }
+
+    /**
+     * True unless exactly {@code burst} requests were served and one refused, and the served ones' remaining tokens
+     * are exactly the straight countdown (each {@code shown.cost()} below the one before, from the full bucket). The
+     * limiter is atomic, so the countdown holds whatever order the concurrent requests arrived in; a refill during
+     * the burst adds tokens and breaks it, and the burst is retried with a new client.
+     */
     private static boolean refilledDuring(List<EntityExchangeResult<byte[]>> results, int burst, Countdown shown) {
-        for (int i = 0; i < burst; i++) {
-            EntityExchangeResult<byte[]> r = results.get(i);
-            assertThat(r.getStatus()).as("request %d of the burst", i + 1).isEqualTo(HttpStatus.OK);
+        List<Integer> remainingOfServed = new ArrayList<>();
+        int refused = 0;
+        for (EntityExchangeResult<byte[]> r : results) {
+            if (r.getStatus() == HttpStatus.TOO_MANY_REQUESTS) {
+                refused++;
+                continue;
+            }
+            assertThat(r.getStatus()).as("a request of the burst").isEqualTo(HttpStatus.OK);
             String remaining = r.getResponseHeaders().getFirst(REMAINING);
-            if (remaining == null || Integer.parseInt(remaining) != shown.capacity() - shown.cost() * (i + 1)) {
+            if (remaining == null) {
                 return true;
             }
+            remainingOfServed.add(Integer.parseInt(remaining));
         }
-        return results.get(burst).getStatus() != HttpStatus.TOO_MANY_REQUESTS;
+        List<Integer> countdown = new ArrayList<>();
+        for (int k = 1; k <= burst; k++) {
+            countdown.add(shown.capacity() - shown.cost() * k);
+        }
+        remainingOfServed.sort(Comparator.reverseOrder());
+        return refused != 1 || !remainingOfServed.equals(countdown);
     }
 
     /** The bucket whose {@code X-RateLimit-Remaining} the responses show: its size in tokens and a request's cost. */

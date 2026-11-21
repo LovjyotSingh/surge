@@ -2,11 +2,13 @@ package dev.surge.gateway.error;
 
 import java.net.ConnectException;
 import java.net.UnknownHostException;
+import java.util.Map;
 import java.util.concurrent.TimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.webflux.error.ErrorWebExceptionHandler;
 import org.springframework.core.annotation.Order;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.stereotype.Component;
@@ -23,6 +25,11 @@ import reactor.core.publisher.Mono;
 public class ProblemErrorHandler implements ErrorWebExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ProblemErrorHandler.class);
+
+    /** Problem type of a refusal because the denylist or the JWKS is unavailable: {@code https://surge.dev/problems/auth-unavailable}. */
+    public static final String AUTH_UNAVAILABLE_SLUG = "auth-unavailable";
+    /** Seconds a client should wait before retrying {@code auth-unavailable}. */
+    static final String AUTH_RETRY_AFTER_SECONDS = "1";
 
     private final ProblemWriter problems;
 
@@ -41,16 +48,32 @@ public class ProblemErrorHandler implements ErrorWebExceptionHandler {
             log.warn("Gateway error {} {}: {}", exchange.getRequest().getMethod(), exchange.getRequest().getPath(),
                     ex.toString());
         }
+        if (authUnavailable(ex)) {
+            return problems.write(exchange, status, AUTH_UNAVAILABLE_SLUG, "Authentication unavailable",
+                    "The sign-in check could not be completed right now; retry after " + AUTH_RETRY_AFTER_SECONDS
+                            + " s", Map.of(HttpHeaders.RETRY_AFTER, AUTH_RETRY_AFTER_SECONDS));
+        }
         return problems.write(exchange, status, slug(code), title(code), detail(ex, code));
     }
 
-    private static HttpStatusCode statusOf(Throwable ex) {
-        // Key set unreachable or too slow while verifying a token: fail closed with 503 (not 500, not 504).
+    /**
+     * The token denylist (Redis) or the key set (JWKS) could not answer while verifying a token: the request is
+     * refused (fail closed) with 503 (not 500, not 504), and unlike a plain {@code service-unavailable} this one says
+     * so, with {@code Retry-After}, so a client can tell it apart and retry it.
+     */
+    private static boolean authUnavailable(Throwable ex) {
         for (Throwable c = ex; c != null; c = c.getCause() == c ? null : c.getCause()) {
             if (c instanceof org.springframework.security.authentication.AuthenticationServiceException
                     || c instanceof org.springframework.security.oauth2.jwt.JwtException) {
-                return HttpStatus.SERVICE_UNAVAILABLE;
+                return true;
             }
+        }
+        return false;
+    }
+
+    private static HttpStatusCode statusOf(Throwable ex) {
+        if (authUnavailable(ex)) {
+            return HttpStatus.SERVICE_UNAVAILABLE;
         }
         Throwable t = ex;
         for (int depth = 0; t != null && depth < 10; depth++, t = t.getCause()) {
