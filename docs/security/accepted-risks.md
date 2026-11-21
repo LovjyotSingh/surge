@@ -26,5 +26,4 @@ BOM is the single source of truth again.
 
 - `netty-transport-native-epoll`: Boot already ships 4.2.19, so the earlier note was likely a false match on the
   linux classifier.
-- Base images `nginx:1.27-alpine` and `redis:7-alpine` should move to current stable versions (SEC-28 note).
 - The original scan did not cover `booking-service` or test scope; the first CI osv-scanner run is the real check.

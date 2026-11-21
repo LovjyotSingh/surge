@@ -6,8 +6,8 @@
 #       --profile core --profile platform run --rm loadtest --users 10000 --event 1
 #
 # Leave the loadtest profile out of `up`: with it, `up` would also start a run with the default arguments. `run`
-# names the service, which is enough to start it. Give a freshly recreated stack a minute (Eureka registrations)
-# before the run.
+# names the service, which is enough to start it. The tool waits for the gateway to route to booking and catalog
+# before it starts.
 #
 # It turns ON what a public deployment must keep OFF (security audit SEC-07), so use it on a private machine only
 # and drop it (docker compose … up -d without this file) when the run is done:

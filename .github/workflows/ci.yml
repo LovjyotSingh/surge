@@ -30,8 +30,9 @@ jobs:
           java-version: '25'
           cache: maven
 
-      # Unit tests + integration tests. Testcontainers starts MySQL and Redis
-      # in Docker, which GitHub's Ubuntu runners provide.
+      # Unit tests + integration tests of all 12 modules in the root pom. Testcontainers starts
+      # MySQL, Redis, Kafka, RabbitMQ, Elasticsearch, S3Mock and Mailpit in Docker, which GitHub's
+      # Ubuntu runners provide.
       - name: Build and test
         run: ./mvnw -B verify
 
