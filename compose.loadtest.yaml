@@ -39,9 +39,11 @@ services:
     # entrypoint (not command), so `run loadtest --users N` appends arguments instead of replacing the base URL.
     entrypoint: ["java", "-jar", "/app/loadtest.jar", "--base-url", "http://web:8080", "--out", "/app/reports"]
     environment:
-      # Read by the tool from the environment, never from a flag (a flag would show in `ps`).
-      SURGE_ADMIN_PASSWORD: ${SURGE_ADMIN_PASSWORD:?run docker/gen-secrets.sh first}
+      # Read by the tool from a secret file, never from a flag (`ps`) or a variable (docker inspect).
+      SURGE_ADMIN_PASSWORD_FILE: /run/secrets/env/SURGE_ADMIN_PASSWORD
       JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError"
+    secrets:
+      - { source: surge_admin_password, target: /run/secrets/env/SURGE_ADMIN_PASSWORD }
     # Runs as the image's uid 10001 unless UID is exported. On Linux, `export UID` first (or `chmod o+w reports`) so
     # the container may write the bind-mounted ./reports. A failed write is only a warning: the report is printed
     # and stored for the Ops page first.

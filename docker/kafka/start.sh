@@ -15,6 +15,13 @@
 set -euo pipefail
 
 : "${KAFKA_CLUSTER_ID:?KAFKA_CLUSTER_ID is required}"
+# S10: the password comes from its compose secret file (a variable of the same name, if set, wins). It is read into a
+# shell variable that is never exported, so the broker's environment does not hold it.
+secret_file=/run/secrets/env/KAFKA_ADMIN_PASSWORD
+if [[ -z ${KAFKA_ADMIN_PASSWORD:-} && -r $secret_file ]]; then
+    KAFKA_ADMIN_PASSWORD=$(< "$secret_file")
+    KAFKA_ADMIN_PASSWORD=${KAFKA_ADMIN_PASSWORD%$'\r'}
+fi
 if [[ ! ${KAFKA_ADMIN_PASSWORD:-} =~ ^[A-Za-z0-9._~-]{16,}$ ]]; then
     echo "KAFKA_ADMIN_PASSWORD must be at least 16 URL-safe characters (run docker/gen-secrets.sh)" >&2
     exit 1

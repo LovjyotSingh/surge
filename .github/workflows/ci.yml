@@ -129,12 +129,12 @@ jobs:
       - name: Validate and check published ports
         shell: bash
         run: |
-          # Placeholder values and empty secret files: enough for `config`, never for a real start.
+          # Placeholder values and an empty file for every secret any compose file names: enough for `config`, never
+          # for a real start.
           sed -E 's/^([A-Z_0-9]+)=$/\1=ci-placeholder-0123456789/' .env.example > .env
           mkdir -p docker/secrets
-          for f in jwt.jwk gateway.jwk booking.jwk notification.jwk internal-jwks.json redis-users.acl \
-                   redis-edge-users.acl rabbitmq-definitions.json; do
-            : > "docker/secrets/$f"
+          for f in $(grep -ohE '\./docker/secrets/[A-Za-z0-9._-]+' compose*.yaml | sort -u); do
+            : > "$f"
           done
           docker compose -f compose.yaml -f compose.dev.yaml -f compose.loadtest.yaml \
             --profile core --profile platform --profile loadtest --profile smoke config -q
