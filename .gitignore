@@ -16,8 +16,8 @@ internal-jwks.json
 !common/src/main/resources/surge-dev-keys/*.jwk
 !common/src/main/resources/surge-dev-keys/internal-jwks.json
 
-# Claude Code worktrees for parallel tasks (local only)
-.claude/worktrees/
+# Claude Code's local state: worktrees for parallel tasks, settings, scratch files (local only)
+.claude/
 # docker/gen-secrets.sh output: credentials, JWT and internal identity keys, Redis ACL, RabbitMQ definitions.
 docker/secrets/
 # docker/gen-selfsigned-cert.sh output (compose.tls-local.yaml): a certificate and its private key. Production
