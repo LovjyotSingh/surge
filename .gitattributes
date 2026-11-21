@@ -6,3 +6,4 @@ docker/** text eol=lf
 web/nginx.conf text eol=lf
 web/nginx/** text eol=lf
 web/nginx-*.conf text eol=lf
+web/nginx-templates/** text eol=lf
