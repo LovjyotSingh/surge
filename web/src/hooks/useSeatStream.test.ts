@@ -120,6 +120,18 @@ describe('useSeatStream', () => {
     expect(FakeEventSource.instances).toHaveLength(3)
   })
 
+  it('reloads the seats when the stream opens for the first time after being refused at once', () => {
+    // the usual case when a sale opens: the very first attempt gets 429 or 503
+    const onResync = vi.fn()
+    renderHook(() => useSeatStream(1, vi.fn(), onResync))
+
+    latest().refuse()
+    vi.advanceTimersByTime(5_000)
+    latest().emit('open', 1)
+
+    expect(onResync).toHaveBeenCalledTimes(1)
+  })
+
   it('stops for good when the page goes away', () => {
     const { unmount } = renderHook(() => useSeatStream(1, vi.fn()))
     latest().refuse()

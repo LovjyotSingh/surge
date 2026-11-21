@@ -11,8 +11,8 @@ const MAX_RETRY_MS = 60_000
  * with an error status, the browser gives up for good: nginx answers 429 past 4 streams per address, and booking
  * answers 503 stream-capacity when a sale has filled its stream slots. Then this hook opens a new stream after a pause
  * of 5 s, doubling up to a minute, with jitter so a crowd that was refused together does not come back together.
- * Whenever a stream opens again (after either kind of failure) it calls {@code onResync}, so the page can reload the
- * seat states it missed meanwhile.
+ * Whenever a stream opens after a failure of either kind (even when the very first attempt was refused) it calls
+ * {@code onResync}, so the page can reload the seat states it missed meanwhile.
  */
 export default function useSeatStream(
   eventId: number,
@@ -46,7 +46,9 @@ export default function useSeatStream(
       source = current
       current.addEventListener('seats', handle as EventListener)
       current.addEventListener('open', () => {
-        if (opened) onResyncRef.current?.()
+        // Seats may have changed while no stream was open: after a drop, and after any refusal, even when the
+        // very first attempt was refused (the usual case when a sale opens).
+        if (opened || refusals > 0) onResyncRef.current?.()
         opened = true
         refusals = 0
       })
