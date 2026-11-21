@@ -133,4 +133,25 @@ class StartupGuardsTest {
             throw new IllegalStateException(e);
         }
     }
+
+    @Test
+    void aPublicProdDeploymentRefusesTheDefaultAdminEmail() {
+        runner.withPropertyValues("surge.env=prod", pw(STRONG), "surge.security.public-deployment=true",
+                "surge.auth.admin-email=Admin@Surge.Local").run(ctx -> {
+                    assertThat(ctx).hasFailed();
+                    assertThat(ctx.getStartupFailure()).hasRootCauseMessage(
+                            "SURGE_ADMIN_EMAIL must not be an @surge.local address when SURGE_ENV=prod and "
+                                    + "SURGE_PUBLIC_DEPLOYMENT=true: that is the public default");
+                });
+        runner.withPropertyValues("surge.env=prod", pw(STRONG), "surge.security.public-deployment=true",
+                "surge.auth.admin-email=ops@example.test").run(ctx -> assertThat(ctx).hasNotFailed());
+    }
+
+    @Test
+    void aLocalProdStackMayKeepTheDefaultAdminEmail() {
+        runner.withPropertyValues("surge.env=prod", pw(STRONG), "surge.auth.admin-email=admin@surge.local")
+                .run(ctx -> assertThat(ctx).hasNotFailed());
+        runner.withPropertyValues("surge.env=prod", pw(STRONG), "surge.security.public-deployment=false",
+                "surge.auth.admin-email=admin@surge.local").run(ctx -> assertThat(ctx).hasNotFailed());
+    }
 }

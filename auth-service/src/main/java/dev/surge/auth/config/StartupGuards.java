@@ -12,7 +12,9 @@ import org.springframework.stereotype.Component;
  * {@code surge.env} (env SURGE_ENV) must be exactly {@code dev} (local default) or {@code prod}. In prod the admin
  * password must be set explicitly, must not be the public local default, and must have at least 16 characters;
  * test-token minting must be off. {@code surge.security.public-deployment=true} (set by the prod overlay as a
- * belt-and-braces check) refuses to start with {@code dev}. Messages never contain the password or an email.
+ * belt-and-braces check) refuses to start with {@code dev}, and with an admin email in the public {@code @surge.local}
+ * domain (compose's default): anyone could sign up as that address first and lock the admin out. A local prod-mode
+ * stack, which does not set the public flag, keeps working with it. Messages never contain the password or an email.
  */
 @Component
 public class StartupGuards {
@@ -20,6 +22,8 @@ public class StartupGuards {
 
     static final String DEV_PASSWORD = "surge-admin";
     static final int MIN_PROD_PASSWORD_LENGTH = 16;
+    /** The domain of compose's default admin email, which anyone can guess. */
+    static final String DEFAULT_EMAIL_DOMAIN = "@surge.local";
     /** BCrypt cannot hash more than 72 bytes. */
     static final int MAX_PASSWORD_BYTES = 72;
 
@@ -41,6 +45,10 @@ public class StartupGuards {
         }
         if (adminEmail == null || adminEmail.isBlank() || !Emails.looksLikeEmail(Emails.normalize(adminEmail))) {
             throw new IllegalStateException("SURGE_ADMIN_EMAIL must be a valid email address");
+        }
+        if (!dev && publicDeployment && Emails.normalize(adminEmail).endsWith(DEFAULT_EMAIL_DOMAIN)) {
+            throw new IllegalStateException("SURGE_ADMIN_EMAIL must not be an @surge.local address when "
+                    + "SURGE_ENV=prod and SURGE_PUBLIC_DEPLOYMENT=true: that is the public default");
         }
         if (configuredPassword.getBytes(StandardCharsets.UTF_8).length > MAX_PASSWORD_BYTES) {
             throw new IllegalStateException("SURGE_ADMIN_PASSWORD must be at most 72 bytes in UTF-8");
