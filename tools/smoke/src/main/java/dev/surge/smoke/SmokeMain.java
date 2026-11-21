@@ -32,6 +32,7 @@ public final class SmokeMain {
         out.println("Surge smoke test against " + cfg.baseUrl() + " (mail API " + cfg.mailUrl() + ", event "
             + cfg.eventId() + ")");
         try (SmokeContext ctx = SmokeContext.of(cfg)) {
+            RouteWait.await(ctx, out);
             return CheckRunner.exitCode(new CheckRunner(out).runAll(checks, ctx));
         }
     }

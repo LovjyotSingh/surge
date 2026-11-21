@@ -72,6 +72,7 @@ public final class LoadTestMain {
     private static int execute(LoadTestConfig cfg, PrintStream out, PrintStream err) throws Exception {
         String runId = UUID.randomUUID().toString();
         try (BookingApi api = new BookingApi(cfg.baseUrl())) {
+            RouteWait.await(api, cfg.eventId(), out);
             api.login(cfg.adminEmail(), cfg.adminPassword());
             // One synthetic user per buyer. Minted BEFORE the reset so that a deployment without test tokens, or an
             // account that is not an admin, stops the run before anything destructive happens. Load-test tokens live
