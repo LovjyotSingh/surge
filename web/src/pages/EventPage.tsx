@@ -146,7 +146,8 @@ function EventView({ eventId }: { eventId: number }) {
     },
     [eventId, hold],
   )
-  useSeatStream(eventId, onStream)
+  // A stream that opens again after a failure reloads the seat states it may have missed.
+  useSeatStream(eventId, onStream, load)
 
   const toggle = (id: number) => {
     if (hold || order) return
