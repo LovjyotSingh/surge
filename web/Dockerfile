@@ -22,9 +22,11 @@ USER root
 RUN apk upgrade --no-cache && rm -f /etc/nginx/conf.d/default.conf \
     && chown -R 101:101 /var/cache/nginx
 COPY --chown=root:root nginx.conf /etc/nginx/nginx.conf
-# TLS (S10): compose.prod.yaml and compose.tls-local.yaml run `nginx -c /etc/nginx/nginx-tls.conf` and mount the
-# certificate at /etc/nginx/tls/.
+# TLS (S10): compose.prod.yaml and compose.tls-local.yaml run `nginx -c /etc/nginx/nginx-tls.conf`, mount the
+# certificate at /etc/nginx/tls/, and point the entrypoint's envsubst step at /etc/nginx/surge-templates (rendered
+# into /tmp). Not the default /etc/nginx/templates: the plain configuration renders nothing.
 COPY --chown=root:root nginx-tls.conf /etc/nginx/nginx-tls.conf
+COPY --chown=root:root nginx-templates/ /etc/nginx/surge-templates/
 COPY --chown=root:root nginx/ /etc/nginx/surge/
 COPY --chown=root:root --from=build /app/dist /usr/share/nginx/html
 USER 101

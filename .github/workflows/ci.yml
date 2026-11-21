@@ -156,6 +156,7 @@ jobs:
           MAIL_USERNAME: ci
           MAIL_FROM: Surge <no-reply@example.com>
           PUBLIC_BASE_URL: https://surge.example.com
+          SURGE_SERVER_NAME: surge.example.com
         run: |
           docker compose -f compose.yaml -f compose.dev.yaml -f compose.tls-local.yaml \
             --profile core --profile platform config -q
