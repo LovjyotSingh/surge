@@ -12,9 +12,11 @@ spring:
   data:
     redis:
       host: ${REDIS_HOST:localhost}
-      # The rate limiter's only store. Lettuce would otherwise wait 60 s per command while Redis is down; login and
-      # signup fail closed (503) once a command fails, the other buckets fail open.
-      timeout: 1s
+      # The rate limiter's and the token denylist's store. Lettuce would otherwise wait 60 s per command while Redis is
+      # down; login and signup fail closed (503) once a command fails, the other buckets fail open. This is THE command
+      # deadline, defined here only: security/TokenDenylist reads it too. 3 s (was 1 s) leaves room for a loaded host's
+      # scheduling delay; a signed-in request whose denylist answer misses it gets 503 auth-unavailable (retryable).
+      timeout: 3s
       connect-timeout: 1s
       # SEC-05: an ACL user (REDIS_USER, blank = Redis' default user) and its password. Blank = no AUTH (local
       # Redis); SURGE_ENV=prod refuses a blank password (common's StoreCredentials).

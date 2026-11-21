@@ -294,7 +294,8 @@ class GatewaySecurityTest extends GatewayTestBase {
                     .bodyValue("{}").exchange()
                     .expectStatus().isEqualTo(HttpStatus.SERVICE_UNAVAILABLE)
                     .expectHeader().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON)
-                    .expectBody().jsonPath("$.type").isEqualTo(PROBLEM + "service-unavailable");
+                    .expectHeader().valueEquals(HttpHeaders.RETRY_AFTER, "1")
+                    .expectBody().jsonPath("$.type").isEqualTo(PROBLEM + "auth-unavailable");
             assertThat(java.time.Duration.ofNanos(System.nanoTime() - start)).isLessThan(java.time.Duration.ofSeconds(3));
             assertThat(BOOKING.sawNothing()).isTrue();
         } finally {

@@ -292,7 +292,8 @@ class EdgeLimitsTest extends GatewayTestBase {
         client.post().uri("/api/bookings/holds").header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-redis-down")))
                 .bodyValue("{}").exchange()
                 .expectStatus().isEqualTo(HttpStatus.SERVICE_UNAVAILABLE)
-                .expectBody().jsonPath("$.type").isEqualTo(PROBLEM + "service-unavailable");
+                .expectHeader().valueEquals(HttpHeaders.RETRY_AFTER, "1")
+                .expectBody().jsonPath("$.type").isEqualTo(PROBLEM + "auth-unavailable");
         client.get().uri("/api/auth/me").header(HttpHeaders.AUTHORIZATION, bearer(userToken("u-redis-down")))
                 .exchange().expectStatus().isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
         assertThat(BOOKING.sawNothing()).isTrue();

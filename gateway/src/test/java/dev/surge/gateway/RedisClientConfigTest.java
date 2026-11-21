@@ -2,6 +2,7 @@ package dev.surge.gateway;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import dev.surge.gateway.security.TokenDenylist;
 import dev.surge.gateway.support.GatewayTestBase;
 import io.lettuce.core.ClientOptions;
 import io.lettuce.core.TimeoutOptions;
@@ -26,6 +27,9 @@ class RedisClientConfigTest extends GatewayTestBase {
     @Autowired
     ReactiveStringRedisTemplate redis;
 
+    @Autowired
+    TokenDenylist denylist;
+
     @Test
     void repliesArePublishedOnLettucesSchedulerAndTimeoutsAreKept() {
         ClientOptions options = connectionFactory.getClientConfiguration().getClientOptions().orElseThrow();
@@ -33,7 +37,9 @@ class RedisClientConfigTest extends GatewayTestBase {
         assertThat(options.isPublishOnScheduler()).isTrue();
         TimeoutOptions timeouts = options.getTimeoutOptions();
         assertThat(timeouts.isTimeoutCommands()).isTrue();
-        assertThat(connectionFactory.getClientConfiguration().getCommandTimeout()).isEqualTo(Duration.ofSeconds(1));
+        assertThat(connectionFactory.getClientConfiguration().getCommandTimeout()).isEqualTo(Duration.ofSeconds(3));
+        // one definition: the denylist's deadline is the same spring.data.redis.timeout, never a second constant
+        assertThat(denylist.timeout()).isEqualTo(connectionFactory.getClientConfiguration().getCommandTimeout());
         assertThat(options.getSocketOptions().getConnectTimeout()).isEqualTo(Duration.ofSeconds(1));
     }
 
