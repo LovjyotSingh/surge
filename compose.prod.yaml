@@ -1,0 +1,77 @@
+# Production overlay (S10): the platform of compose.yaml on one internet-facing VM, behind TLS. Read docs/DEPLOY.md
+# first (firewall, SSH, certificate, secrets, mail, S3, backups, checks).
+#
+#   docker compose -f compose.yaml -f compose.prod.yaml --profile core --profile platform up -d --build
+#
+# NEVER together with compose.dev.yaml (Mailpit shows every email; S3Mock accepts any key; debug ports),
+# compose.loadtest.yaml (test tokens) or compose.tls-local.yaml. Do not start the smoke or loadtest profiles.
+#
+# On top of compose.yaml (whose services already run with SURGE_ENV=prod, file secrets and no default credential):
+#   - web runs web/nginx-tls.conf and publishes 80 and 443: the only published ports (its 127.0.0.1:8080 is dropped).
+#     443 serves the site with TLS 1.2/1.3 and HSTS; 80 serves only Let's Encrypt's HTTP-01 challenge and 301s the
+#     rest to https://. The certificate comes from SURGE_TLS_DIR (default /etc/surge/tls: fullchain.pem, privkey.pem,
+#     copied there by certbot's deploy hook), challenge files from SURGE_ACME_DIR (default /var/www/surge-acme).
+#   - Every Spring service gets SURGE_PUBLIC_DEPLOYMENT=true. It then refuses to start with SURGE_ENV=dev; the gateway
+#     refuses a blank SURGE_TRUSTED_PROXIES or one that trusts any address; auth and notification refuse mail without
+#     SMTP AUTH, required STARTTLS and a From address of your own; notification refuses the surge-local S3 keys and
+#     a plain-HTTP S3 endpoint.
+#   - Mail: your provider (MAIL_HOST, MAIL_PORT, MAIL_USERNAME, MAIL_FROM in .env; the password in
+#     docker/secrets/mail_password), SMTP AUTH and STARTTLS required.
+#   - S3: a private bucket (S3_BUCKET, S3_REGION, S3_ENDPOINT blank for AWS or https://...), with real keys written
+#     over docker/secrets/s3_access_key and s3_secret_key.
+#   - PUBLIC_BASE_URL (https://<domain>) is required: the ticket email links to it.
+#
+# Check the result without starting anything (only 80 and 443 published, no dev service):
+#   docker compose -f compose.yaml -f compose.prod.yaml --profile core --profile platform config
+
+x-public: &public
+  SURGE_PUBLIC_DEPLOYMENT: "true"
+
+x-mail: &mail
+  SURGE_PUBLIC_DEPLOYMENT: "true"
+  MAIL_HOST: ${MAIL_HOST:?set MAIL_HOST (your SMTP provider) in .env; see docs/DEPLOY.md}
+  MAIL_PORT: ${MAIL_PORT:-587}
+  MAIL_USERNAME: ${MAIL_USERNAME:?set MAIL_USERNAME in .env; the password goes in docker/secrets/mail_password}
+  MAIL_FROM: ${MAIL_FROM:?set MAIL_FROM in .env, e.g. Surge <no-reply@your-domain>}
+  MAIL_SMTP_AUTH: "true"
+  MAIL_STARTTLS: "true"
+
+services:
+  web:
+    command: ["nginx", "-c", "/etc/nginx/nginx-tls.conf", "-g", "daemon off;"]
+    ports: !override
+      - "80:8080"
+      - "443:8443"
+    volumes:
+      - ${SURGE_TLS_DIR:-/etc/surge/tls}:/etc/nginx/tls:ro
+      - ${SURGE_ACME_DIR:-/var/www/surge-acme}:/var/www/acme:ro
+
+  config-server:
+    environment: *public
+  discovery:
+    environment: *public
+  payment-service:
+    environment: *public
+  catalog-service:
+    environment: *public
+  booking-service:
+    environment: *public
+  gateway:
+    environment: *public
+
+  auth-service:
+    environment: *mail
+    secrets:
+      - { source: mail_password, target: /run/secrets/env/MAIL_PASSWORD }
+
+  notification-service:
+    environment:
+      <<: *mail
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL=https://<your domain> in .env}
+    secrets:
+      - { source: mail_password, target: /run/secrets/env/MAIL_PASSWORD }
+
+secrets:
+  # Your SMTP provider's password (or API key used as one): not generated, write it yourself (docs/DEPLOY.md).
+  mail_password:
+    file: ./docker/secrets/mail_password

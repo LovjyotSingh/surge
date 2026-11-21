@@ -1,0 +1,27 @@
+# Local TLS try-out (S10): the production edge (web/nginx-tls.conf: TLS on 443, HSTS, 80 only redirects) with a
+# self-signed certificate, on 127.0.0.1 only, on top of the local development stack.
+#
+#   docker/gen-selfsigned-cert.sh                       # once: docker/tls/fullchain.pem and privkey.pem (localhost)
+#   docker compose -f compose.yaml -f compose.dev.yaml -f compose.tls-local.yaml \
+#       --profile core --profile platform up -d --build
+#   curl -kI https://localhost/                         # 200 with HSTS and every security header
+#   curl -I http://localhost/                           # 301 to https://localhost/
+#
+# Open https://localhost/ and accept the browser's warning (a browser never stores HSTS from a certificate it does
+# not trust). Ports 80 and 443 on 127.0.0.1 must be free. Mail and S3 stay Mailpit and S3Mock (compose.dev.yaml),
+# so this is not compose.prod.yaml: it does not set SURGE_PUBLIC_DEPLOYMENT. The smoke and load tests talk plain HTTP
+# to web:8080, which now only redirects: run them without this file.
+
+services:
+  web:
+    command: ["nginx", "-c", "/etc/nginx/nginx-tls.conf", "-g", "daemon off;"]
+    ports: !override
+      - "127.0.0.1:80:8080"
+      - "127.0.0.1:443:8443"
+    volumes:
+      - ./docker/tls:/etc/nginx/tls:ro
+
+  notification-service:
+    environment:
+      # The ticket email's download link.
+      PUBLIC_BASE_URL: https://localhost

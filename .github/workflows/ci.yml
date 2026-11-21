@@ -147,6 +147,47 @@ jobs:
             exit 1
           fi
 
+      # S10: the production overlay publishes 80 and 443 only, starts no development service, and puts every Spring
+      # service in public-deployment mode with mail over required STARTTLS. The local TLS overlay is valid.
+      - name: Check the production overlay
+        shell: bash
+        env:
+          MAIL_HOST: smtp.example.com
+          MAIL_USERNAME: ci
+          MAIL_FROM: Surge <no-reply@example.com>
+          PUBLIC_BASE_URL: https://surge.example.com
+        run: |
+          docker compose -f compose.yaml -f compose.dev.yaml -f compose.tls-local.yaml \
+            --profile core --profile platform config -q
+          prod=$(docker compose -f compose.yaml -f compose.prod.yaml --profile core --profile platform \
+            config --format json)
+          published=$(jq -r '.services | to_entries[] | select(.value.ports != null) | .key as $s
+                             | .value.ports[] | "\($s) \(.host_ip // "0.0.0.0"):\(.published)->\(.target)"' <<< "$prod")
+          echo "$published"
+          if [ "$published" != $'web 0.0.0.0:80->8080\nweb 0.0.0.0:443->8443' ]; then
+            echo "::error::compose.prod.yaml must publish only web on 80 and 443"
+            exit 1
+          fi
+          dev=$(jq -r '.services | keys[] | select(test("^(mailpit|s3mock|loadtest|smoke)$"))' <<< "$prod")
+          if [ -n "$dev" ]; then
+            echo "::error::compose.prod.yaml must not start development services: $dev"
+            exit 1
+          fi
+          not_public=$(jq -r '.services | to_entries[] | select(.value.environment.SURGE_ENV != null)
+                              | select(.value.environment.SURGE_ENV != "prod"
+                                       or .value.environment.SURGE_PUBLIC_DEPLOYMENT != "true") | .key' <<< "$prod")
+          if [ -n "$not_public" ]; then
+            echo "::error::every Spring service needs SURGE_ENV=prod and SURGE_PUBLIC_DEPLOYMENT=true: $not_public"
+            exit 1
+          fi
+          plain_mail=$(jq -r '.services | to_entries[] | select(.value.environment.MAIL_HOST != null)
+                              | select(.value.environment.MAIL_STARTTLS != "true"
+                                       or .value.environment.MAIL_SMTP_AUTH != "true") | .key' <<< "$prod")
+          if [ -n "$plain_mail" ]; then
+            echo "::error::mail must use SMTP AUTH and required STARTTLS in production: $plain_mail"
+            exit 1
+          fi
+
   config-repo-secrets:
     name: config-repo holds no secrets
     runs-on: ubuntu-latest
