@@ -4,6 +4,7 @@ import jakarta.mail.MessagingException;
 import jakarta.mail.internet.MimeMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.mail.MailException;
 import org.springframework.mail.MailPreparationException;
 import org.springframework.mail.javamail.JavaMailSender;
@@ -21,13 +22,15 @@ public class VerificationMailer {
 
     private static final Logger log = LoggerFactory.getLogger(VerificationMailer.class);
 
-    static final String FROM = "no-reply@surge.local";
     static final String SUBJECT = "Your Surge verification code";
 
     private final JavaMailSender mail;
+    private final String from;
 
-    public VerificationMailer(JavaMailSender mail) {
+    /** @param from {@code surge.mail.from} (env MAIL_FROM), e.g. {@code Surge <no-reply@example.com>} */
+    public VerificationMailer(JavaMailSender mail, @Value("${surge.mail.from:no-reply@surge.local}") String from) {
         this.mail = mail;
+        this.from = from;
     }
 
     /** Sends the code; throws a {@link MailException} when the mail server does not take it. */
@@ -35,7 +38,7 @@ public class VerificationMailer {
         try {
             MimeMessage message = mail.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
-            helper.setFrom(FROM);
+            helper.setFrom(from);
             helper.setTo(to);
             helper.setSubject(SUBJECT);
             helper.setText(text(displayName, code), html(displayName, code));

@@ -20,3 +20,6 @@ internal-jwks.json
 .claude/worktrees/
 # docker/gen-secrets.sh output: credentials, JWT and internal identity keys, Redis ACL, RabbitMQ definitions.
 docker/secrets/
+# docker/gen-selfsigned-cert.sh output (compose.tls-local.yaml): a certificate and its private key. Production
+# certificates live outside the checkout (/etc/letsencrypt, /etc/surge/tls).
+docker/tls/

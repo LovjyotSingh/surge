@@ -53,10 +53,19 @@ spring:
       # Only used to dead-letter poison audit records (orders.v1.audit.DLT).
       acks: all
   mail:
+    # Mailpit locally: no auth, no TLS. compose.prod.yaml sets a real provider (MAIL_PASSWORD from a secret file) with
+    # SMTP AUTH and STARTTLS required; a public deployment refuses to start without them (common's MailSettings).
     host: ${MAIL_HOST:localhost}
     port: ${MAIL_PORT:1025}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
     properties:
-      # Mailpit locally; no auth, no TLS. The send happens inside the ticket transaction, so it must not hang.
+      mail.smtp.auth: ${MAIL_SMTP_AUTH:false}
+      mail.smtp.starttls.enable: ${MAIL_STARTTLS:false}
+      mail.smtp.starttls.required: ${MAIL_STARTTLS:false}
+      mail.smtp.ssl.checkserveridentity: true
+      mail.smtp.ssl.protocols: TLSv1.2 TLSv1.3
+      # The send happens inside the ticket transaction, so it must not hang.
       mail.smtp.connectiontimeout: 5000
       mail.smtp.timeout: 10000
       mail.smtp.writetimeout: 10000
@@ -76,6 +85,10 @@ surge:
     password: ${KAFKA_PASSWORD:}
   # dev (default, local) or prod; SURGE_PUBLIC_DEPLOYMENT=true (prod overlay) refuses dev. Checked by common (SurgeEnv).
   env: ${SURGE_ENV:dev}
+  mail:
+    # The ticket email's sender, e.g. "Surge <tickets@example.com>": an address on a domain whose SPF, DKIM and DMARC
+    # the mail provider has verified. A public deployment refuses surge.local (common's MailSettings).
+    from: ${MAIL_FROM:tickets@surge.local}
   security:
     public-deployment: ${SURGE_PUBLIC_DEPLOYMENT:false}
   internal-identity:

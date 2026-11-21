@@ -4,6 +4,11 @@ server:
 spring:
   application:
     name: config-server
+  config:
+    # S10: compose mounts CONFIG_PASSWORD as a file, /run/secrets/env/CONFIG_PASSWORD, never as an environment variable
+    # (docker inspect and /proc/1/environ would show it). Each file in this directory becomes the property of its name.
+    # The services read the same directory through common's SecretFiles.
+    import: optional:configtree:${SURGE_SECRETS_DIR:/run/secrets/env}/
   profiles:
     active: native
   cloud:

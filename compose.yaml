@@ -1,6 +1,6 @@
 # Surge platform (plan Task 16; security audit Tasks B and C).
 #
-#   docker/gen-secrets.sh                                    # once: writes .env (mode 600) and docker/secrets/
+#   docker/gen-secrets.sh                                    # once: writes docker/secrets/ and .env (no passwords)
 #   docker compose -f compose.yaml -f compose.dev.yaml --profile core --profile platform up -d --build
 #   open http://localhost:8080
 #
@@ -14,8 +14,12 @@
 #     gateway, services, discovery, config-server); one internal data network per store, joined only by the services
 #     that use that store; egress (auth and notification only, for SMTP and S3). Only public and egress reach the
 #     internet, so the gateway (which holds gateway.jwk) cannot.
-#   - No credential has a default: every one comes from .env (docker/gen-secrets.sh), and every Spring service runs
-#     with SURGE_ENV=prod, so it refuses to start with a development key or a missing credential.
+#   - No credential has a default: every one comes from docker/gen-secrets.sh, and every Spring service runs with
+#     SURGE_ENV=prod, so it refuses to start with a development key or a missing credential.
+#   - No password is an environment variable (S10): docker inspect and /proc/<pid>/environ would show it. Each one is
+#     a file in docker/secrets/, mounted read-only only where it is used, at /run/secrets/env/<VARIABLE>: the Spring
+#     services read that directory as variables (common's SecretFiles; a configtree import in config-server and
+#     discovery), the init scripts read the file of the variable they need. .env holds only user names and settings.
 #   - Every container: all capabilities dropped, no-new-privileges, read-only root file system (writes go to tmpfs
 #     or a named volume), pid and memory limits, rotated logs, a health check. Images are pinned by digest.
 #   - Start order follows health: stores, then the one-shot kafka-init/es-init, then config-server and discovery,
@@ -55,10 +59,9 @@ x-spring-env: &spring-env
   JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError"
   CONFIG_URL: http://config-server:8888
   CONFIG_USER: ${CONFIG_USER:?run docker/gen-secrets.sh first}
-  CONFIG_PASSWORD: ${CONFIG_PASSWORD:?run docker/gen-secrets.sh first}
   EUREKA_HOST: discovery:8761
   EUREKA_USER: ${EUREKA_USER:?run docker/gen-secrets.sh first}
-  EUREKA_PASSWORD: ${EUREKA_PASSWORD:?run docker/gen-secrets.sh first}
+  # CONFIG_PASSWORD and EUREKA_PASSWORD: secret files, listed in every Spring service below.
   # Register the address on the app network with Eureka (a service on several networks would otherwise pick the
   # first interface, possibly a data network the gateway cannot reach).
   SPRING_CLOUD_INETUTILS_PREFERREDNETWORKS: "10.30.251."
@@ -93,13 +96,17 @@ services:
     profiles: [core]
     user: "999:999"
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?run docker/gen-secrets.sh first}
+      # The image's entrypoint reads the root password from this file; docker/mysql-init/02-users.sh reads the four
+      # service passwords from /run/secrets/env.
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/env/MYSQL_ROOT_PASSWORD
       # root may log in only from inside this container.
       MYSQL_ROOT_HOST: localhost
-      MYSQL_AUTH_PASSWORD: ${MYSQL_AUTH_PASSWORD:?run docker/gen-secrets.sh first}
-      MYSQL_BOOKING_PASSWORD: ${MYSQL_BOOKING_PASSWORD:?run docker/gen-secrets.sh first}
-      MYSQL_CATALOG_PASSWORD: ${MYSQL_CATALOG_PASSWORD:?run docker/gen-secrets.sh first}
-      MYSQL_NOTIFICATION_PASSWORD: ${MYSQL_NOTIFICATION_PASSWORD:?run docker/gen-secrets.sh first}
+    secrets:
+      - { source: mysql_root_password, target: /run/secrets/env/MYSQL_ROOT_PASSWORD }
+      - { source: mysql_auth_password, target: /run/secrets/env/MYSQL_AUTH_PASSWORD }
+      - { source: mysql_booking_password, target: /run/secrets/env/MYSQL_BOOKING_PASSWORD }
+      - { source: mysql_catalog_password, target: /run/secrets/env/MYSQL_CATALOG_PASSWORD }
+      - { source: mysql_notification_password, target: /run/secrets/env/MYSQL_NOTIFICATION_PASSWORD }
     volumes:
       - mysql-data:/var/lib/mysql
       - ./docker/mysql-init:/docker-entrypoint-initdb.d:ro
@@ -172,8 +179,9 @@ services:
     entrypoint: ["/bin/bash", "/surge/start.sh"]
     environment:
       KAFKA_CLUSTER_ID: NoOXAfmjJb01oJoreTRC5g
-      KAFKA_ADMIN_PASSWORD: ${KAFKA_ADMIN_PASSWORD:?run docker/gen-secrets.sh first}
       KAFKA_HEAP_OPTS: "-XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError"
+    secrets:
+      - { source: kafka_admin_password, target: /run/secrets/env/KAFKA_ADMIN_PASSWORD }
     volumes:
       - kafka-data:/var/lib/kafka/data
       - ./docker/kafka:/surge:ro
@@ -192,11 +200,11 @@ services:
     image: apache/kafka:4.1.2@sha256:5cc2a2fd93fa2687b44015eee04fb2c3edd9e526bd64bf8bec5ff1e268772e0e
     profiles: [platform]
     entrypoint: ["/bin/bash", "/surge/init.sh"]
-    environment:
-      KAFKA_ADMIN_PASSWORD: ${KAFKA_ADMIN_PASSWORD:?run docker/gen-secrets.sh first}
-      KAFKA_BOOKING_PASSWORD: ${KAFKA_BOOKING_PASSWORD:?run docker/gen-secrets.sh first}
-      KAFKA_CATALOG_PASSWORD: ${KAFKA_CATALOG_PASSWORD:?run docker/gen-secrets.sh first}
-      KAFKA_NOTIFICATION_PASSWORD: ${KAFKA_NOTIFICATION_PASSWORD:?run docker/gen-secrets.sh first}
+    secrets:
+      - { source: kafka_admin_password, target: /run/secrets/env/KAFKA_ADMIN_PASSWORD }
+      - { source: kafka_booking_password, target: /run/secrets/env/KAFKA_BOOKING_PASSWORD }
+      - { source: kafka_catalog_password, target: /run/secrets/env/KAFKA_CATALOG_PASSWORD }
+      - { source: kafka_notification_password, target: /run/secrets/env/KAFKA_NOTIFICATION_PASSWORD }
     volumes:
       - ./docker/kafka:/surge:ro
     networks: [data-kafka]
@@ -232,14 +240,18 @@ services:
     image: docker.elastic.co/elasticsearch/elasticsearch:9.2.8@sha256:f6c331bc14f54c32ce956d0f35cf17a2d302214bdf89b7234e5c9ada09602357
     profiles: [platform]
     # The image's entrypoint writes the keystore into the config directory: copy the image's config to a tmpfs
-    # (fresh on every start) so the root file system can stay read-only.
+    # (fresh on every start) so the root file system can stay read-only. ELASTIC_PASSWORD (it sets the "elastic"
+    # password when the data volume is new) is read from its secret file and handed to the image's entrypoint only, so
+    # tini (pid 1) and docker inspect never show it. Not ELASTIC_PASSWORD_FILE: the image insists on mode 400/600 for
+    # that file, which a Docker Desktop bind mount does not show.
     entrypoint:
       - /bin/bash
       - -c
       - >-
         mkdir -p /tmp/es-config && cp -a /usr/share/elasticsearch/config/. /tmp/es-config/
         && export ES_PATH_CONF=/tmp/es-config
-        && exec /bin/tini -- /usr/local/bin/docker-entrypoint.sh eswrapper
+        && exec /bin/tini -- /bin/bash -c
+        'ELASTIC_PASSWORD="$$(cat /run/secrets/env/ELASTIC_PASSWORD)" exec /usr/local/bin/docker-entrypoint.sh eswrapper'
     environment:
       discovery.type: single-node
       xpack.security.enabled: "true"
@@ -250,8 +262,9 @@ services:
       ingest.geoip.downloader.enabled: "false"
       cluster.routing.allocation.disk.threshold_enabled: "false"
       ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    secrets:
       # Sets the "elastic" password when the data volume is new (docker/elasticsearch/init.sh then creates "catalog").
-      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?run docker/gen-secrets.sh first}
+      - { source: elastic_password, target: /run/secrets/env/ELASTIC_PASSWORD }
     volumes:
       - es-data:/usr/share/elasticsearch/data
     tmpfs:
@@ -274,9 +287,9 @@ services:
     image: docker.elastic.co/elasticsearch/elasticsearch:9.2.8@sha256:f6c331bc14f54c32ce956d0f35cf17a2d302214bdf89b7234e5c9ada09602357
     profiles: [platform]
     entrypoint: ["/bin/bash", "/surge/init.sh"]
-    environment:
-      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?run docker/gen-secrets.sh first}
-      ELASTICSEARCH_CATALOG_PASSWORD: ${ELASTICSEARCH_CATALOG_PASSWORD:?run docker/gen-secrets.sh first}
+    secrets:
+      - { source: elastic_password, target: /run/secrets/env/ELASTIC_PASSWORD }
+      - { source: elasticsearch_catalog_password, target: /run/secrets/env/ELASTICSEARCH_CATALOG_PASSWORD }
     volumes:
       - ./docker/elasticsearch:/surge:ro
     networks: [data-search]
@@ -297,8 +310,9 @@ services:
       SURGE_ENV: prod
       JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError"
       CONFIG_USER: ${CONFIG_USER:?run docker/gen-secrets.sh first}
-      CONFIG_PASSWORD: ${CONFIG_PASSWORD:?run docker/gen-secrets.sh first}
       CONFIG_REPO: file:/config-repo/
+    secrets:
+      - { source: config_password, target: /run/secrets/env/CONFIG_PASSWORD }
     volumes:
       - ./config-repo:/config-repo:ro
     networks: [app]
@@ -315,10 +329,11 @@ services:
       SURGE_ENV: prod
       JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError"
       EUREKA_USER: ${EUREKA_USER:?run docker/gen-secrets.sh first}
-      EUREKA_PASSWORD: ${EUREKA_PASSWORD:?run docker/gen-secrets.sh first}
       # A single, standalone registry: with this hostname it recognises its default peer URL (localhost) as itself
       # and does not replicate to it (which would fail with 401, as that URL carries no credentials).
       EUREKA_INSTANCE_HOSTNAME: localhost
+    secrets:
+      - { source: eureka_password, target: /run/secrets/env/EUREKA_PASSWORD }
     networks: [app]
     mem_limit: 512m
 
@@ -333,14 +348,16 @@ services:
       <<: *spring-env
       MYSQL_URL: jdbc:mysql://mysql:3306/auth
       MYSQL_USER: auth
-      MYSQL_PASSWORD: ${MYSQL_AUTH_PASSWORD:?run docker/gen-secrets.sh first}
       MAIL_HOST: ${MAIL_HOST:-}
       MAIL_PORT: ${MAIL_PORT:-587}
       SURGE_ADMIN_EMAIL: ${SURGE_ADMIN_EMAIL:-admin@surge.local}
-      SURGE_ADMIN_PASSWORD: ${SURGE_ADMIN_PASSWORD:?run docker/gen-secrets.sh first}
       SURGE_JWT_KEY_FILE: /run/secrets/jwt.jwk
       SURGE_INTERNAL_JWKS: /run/secrets/internal-jwks.json
     secrets:
+      - { source: config_password, target: /run/secrets/env/CONFIG_PASSWORD }
+      - { source: eureka_password, target: /run/secrets/env/EUREKA_PASSWORD }
+      - { source: mysql_auth_password, target: /run/secrets/env/MYSQL_PASSWORD }
+      - { source: surge_admin_password, target: /run/secrets/env/SURGE_ADMIN_PASSWORD }
       - source: jwt_key
         target: jwt.jwk
       - source: internal_jwks
@@ -363,6 +380,8 @@ services:
       <<: *spring-env
       SURGE_INTERNAL_JWKS: /run/secrets/internal-jwks.json
     secrets:
+      - { source: config_password, target: /run/secrets/env/CONFIG_PASSWORD }
+      - { source: eureka_password, target: /run/secrets/env/EUREKA_PASSWORD }
       - source: internal_jwks
         target: internal-jwks.json
     networks: [app]
@@ -381,16 +400,18 @@ services:
       <<: *spring-env
       MYSQL_URL: jdbc:mysql://mysql:3306/catalog
       MYSQL_USER: catalog
-      MYSQL_PASSWORD: ${MYSQL_CATALOG_PASSWORD:?run docker/gen-secrets.sh first}
       KAFKA_BOOTSTRAP: kafka:9092
       KAFKA_SECURITY_PROTOCOL: SASL_PLAINTEXT
       KAFKA_USER: catalog
-      KAFKA_PASSWORD: ${KAFKA_CATALOG_PASSWORD:?run docker/gen-secrets.sh first}
       ELASTICSEARCH_URL: http://elasticsearch:9200
       ELASTICSEARCH_USER: catalog
-      ELASTICSEARCH_PASSWORD: ${ELASTICSEARCH_CATALOG_PASSWORD:?run docker/gen-secrets.sh first}
       SURGE_INTERNAL_JWKS: /run/secrets/internal-jwks.json
     secrets:
+      - { source: config_password, target: /run/secrets/env/CONFIG_PASSWORD }
+      - { source: eureka_password, target: /run/secrets/env/EUREKA_PASSWORD }
+      - { source: mysql_catalog_password, target: /run/secrets/env/MYSQL_PASSWORD }
+      - { source: kafka_catalog_password, target: /run/secrets/env/KAFKA_PASSWORD }
+      - { source: elasticsearch_catalog_password, target: /run/secrets/env/ELASTICSEARCH_PASSWORD }
       - source: internal_jwks
         target: internal-jwks.json
     networks: [app, data-mysql, data-kafka, data-search]
@@ -413,18 +434,14 @@ services:
       <<: *spring-env
       MYSQL_URL: jdbc:mysql://mysql:3306/booking
       MYSQL_USER: booking
-      MYSQL_PASSWORD: ${MYSQL_BOOKING_PASSWORD:?run docker/gen-secrets.sh first}
       REDIS_HOST: redis
       REDIS_USER: booking
-      REDIS_PASSWORD: ${REDIS_BOOKING_PASSWORD:?run docker/gen-secrets.sh first}
       KAFKA_BOOTSTRAP: kafka:9092
       KAFKA_SECURITY_PROTOCOL: SASL_PLAINTEXT
       KAFKA_USER: booking
-      KAFKA_PASSWORD: ${KAFKA_BOOKING_PASSWORD:?run docker/gen-secrets.sh first}
       RABBIT_HOST: rabbitmq
       RABBIT_VHOST: surge
       RABBIT_USER: booking
-      RABBIT_PASSWORD: ${RABBIT_BOOKING_PASSWORD:?run docker/gen-secrets.sh first}
       # The real payment-service over HTTP (circuit breaker, retry). config-repo/booking-service.yml says the same.
       SURGE_PAYMENT_MODE: http
       SURGE_INTERNAL_JWKS: /run/secrets/internal-jwks.json
@@ -434,6 +451,12 @@ services:
       # Heap plus direct buffers must stay under mem_limit: see the memory note on the gateway.
       JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=50 -XX:MaxDirectMemorySize=384m -XX:+ExitOnOutOfMemoryError"
     secrets:
+      - { source: config_password, target: /run/secrets/env/CONFIG_PASSWORD }
+      - { source: eureka_password, target: /run/secrets/env/EUREKA_PASSWORD }
+      - { source: mysql_booking_password, target: /run/secrets/env/MYSQL_PASSWORD }
+      - { source: redis_booking_password, target: /run/secrets/env/REDIS_PASSWORD }
+      - { source: kafka_booking_password, target: /run/secrets/env/KAFKA_PASSWORD }
+      - { source: rabbit_booking_password, target: /run/secrets/env/RABBIT_PASSWORD }
       - source: internal_jwks
         target: internal-jwks.json
       - source: booking_key
@@ -460,28 +483,30 @@ services:
       <<: *spring-env
       MYSQL_URL: jdbc:mysql://mysql:3306/notification
       MYSQL_USER: notification
-      MYSQL_PASSWORD: ${MYSQL_NOTIFICATION_PASSWORD:?run docker/gen-secrets.sh first}
       KAFKA_BOOTSTRAP: kafka:9092
       KAFKA_SECURITY_PROTOCOL: SASL_PLAINTEXT
       KAFKA_USER: notification
-      KAFKA_PASSWORD: ${KAFKA_NOTIFICATION_PASSWORD:?run docker/gen-secrets.sh first}
       RABBIT_HOST: rabbitmq
       RABBIT_VHOST: surge
       RABBIT_USER: notification
-      RABBIT_PASSWORD: ${RABBIT_NOTIFICATION_PASSWORD:?run docker/gen-secrets.sh first}
       MAIL_HOST: ${MAIL_HOST:-}
       MAIL_PORT: ${MAIL_PORT:-587}
       S3_ENDPOINT: ${S3_ENDPOINT:-}
       S3_REGION: ${S3_REGION:-ap-south-1}
       S3_BUCKET: ${S3_BUCKET:-surge-tickets}
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?run docker/gen-secrets.sh first}
-      S3_SECRET_KEY: ${S3_SECRET_KEY:?run docker/gen-secrets.sh first}
-      SURGE_TICKET_QR_KEY: ${SURGE_TICKET_QR_KEY:?run docker/gen-secrets.sh first}
       AUDIT_DIR: /var/lib/surge/audit
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
       SURGE_INTERNAL_JWKS: /run/secrets/internal-jwks.json
       SURGE_INTERNAL_SIGNING_KEY: /run/secrets/notification.jwk
     secrets:
+      - { source: config_password, target: /run/secrets/env/CONFIG_PASSWORD }
+      - { source: eureka_password, target: /run/secrets/env/EUREKA_PASSWORD }
+      - { source: mysql_notification_password, target: /run/secrets/env/MYSQL_PASSWORD }
+      - { source: kafka_notification_password, target: /run/secrets/env/KAFKA_PASSWORD }
+      - { source: rabbit_notification_password, target: /run/secrets/env/RABBIT_PASSWORD }
+      - { source: s3_access_key, target: /run/secrets/env/S3_ACCESS_KEY }
+      - { source: s3_secret_key, target: /run/secrets/env/S3_SECRET_KEY }
+      - { source: surge_ticket_qr_key, target: /run/secrets/env/SURGE_TICKET_QR_KEY }
       - source: internal_jwks
         target: internal-jwks.json
       - source: notification_key
@@ -509,7 +534,6 @@ services:
       <<: *spring-env
       REDIS_HOST: redis-edge
       REDIS_USER: gateway
-      REDIS_PASSWORD: ${REDIS_GATEWAY_PASSWORD:?run docker/gen-secrets.sh first}
       # Only nginx (its fixed address on the edge network) may name the client in X-Forwarded-For (SEC-11).
       SURGE_TRUSTED_PROXIES: "10[.]30[.]250[.]10"
       SURGE_INTERNAL_SIGNING_KEY: /run/secrets/gateway.jwk
@@ -518,6 +542,9 @@ services:
       # 1,603 times, the JVM's own code pages were evicted (2,534 major faults) and requests took up to 40 s.
       JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=45 -XX:MaxDirectMemorySize=640m -XX:+ExitOnOutOfMemoryError"
     secrets:
+      - { source: config_password, target: /run/secrets/env/CONFIG_PASSWORD }
+      - { source: eureka_password, target: /run/secrets/env/EUREKA_PASSWORD }
+      - { source: redis_gateway_password, target: /run/secrets/env/REDIS_PASSWORD }
       - source: gateway_key
         target: gateway.jwk
     networks:
@@ -572,12 +599,14 @@ services:
       dockerfile: tools/smoke/Dockerfile
     profiles: [smoke]
     environment:
-      # Read by the tool from the environment, never from a flag (a flag would show in `ps`).
+      # Read by the tool from a secret file, never from a flag (`ps`) or a variable (docker inspect).
       SURGE_ADMIN_EMAIL: ${SURGE_ADMIN_EMAIL:?run docker/gen-secrets.sh first}
-      SURGE_ADMIN_PASSWORD: ${SURGE_ADMIN_PASSWORD:?run docker/gen-secrets.sh first}
+      SURGE_ADMIN_PASSWORD_FILE: /run/secrets/env/SURGE_ADMIN_PASSWORD
       SURGE_BASE_URL: http://web:8080
       SURGE_MAIL_URL: http://mailpit:8025
       JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError"
+    secrets:
+      - { source: surge_admin_password, target: /run/secrets/env/SURGE_ADMIN_PASSWORD }
     mem_limit: 512m
     networks: [edge]
     depends_on:
@@ -622,7 +651,51 @@ volumes:
   audit-data:
 
 # Mounted read-only, each into its owner only, at /run/secrets/<target>. Made by docker/gen-secrets.sh.
+# Passwords (S10): one file each, named after the secret, mounted at /run/secrets/env/<VARIABLE the user reads>.
 secrets:
+  mysql_root_password:
+    file: ./docker/secrets/mysql_root_password
+  mysql_auth_password:
+    file: ./docker/secrets/mysql_auth_password
+  mysql_booking_password:
+    file: ./docker/secrets/mysql_booking_password
+  mysql_catalog_password:
+    file: ./docker/secrets/mysql_catalog_password
+  mysql_notification_password:
+    file: ./docker/secrets/mysql_notification_password
+  redis_booking_password:
+    file: ./docker/secrets/redis_booking_password
+  redis_gateway_password:
+    file: ./docker/secrets/redis_gateway_password
+  rabbit_booking_password:
+    file: ./docker/secrets/rabbit_booking_password
+  rabbit_notification_password:
+    file: ./docker/secrets/rabbit_notification_password
+  kafka_admin_password:
+    file: ./docker/secrets/kafka_admin_password
+  kafka_booking_password:
+    file: ./docker/secrets/kafka_booking_password
+  kafka_catalog_password:
+    file: ./docker/secrets/kafka_catalog_password
+  kafka_notification_password:
+    file: ./docker/secrets/kafka_notification_password
+  elastic_password:
+    file: ./docker/secrets/elastic_password
+  elasticsearch_catalog_password:
+    file: ./docker/secrets/elasticsearch_catalog_password
+  eureka_password:
+    file: ./docker/secrets/eureka_password
+  config_password:
+    file: ./docker/secrets/config_password
+  surge_admin_password:
+    file: ./docker/secrets/surge_admin_password
+  surge_ticket_qr_key:
+    file: ./docker/secrets/surge_ticket_qr_key
+  s3_access_key:
+    file: ./docker/secrets/s3_access_key
+  s3_secret_key:
+    file: ./docker/secrets/s3_secret_key
+  # Keys and rendered broker configuration.
   jwt_key:
     file: ./docker/secrets/jwt.jwk
   gateway_key:

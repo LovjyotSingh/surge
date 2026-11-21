@@ -4,6 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.net.InetSocketAddress;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.cloud.gateway.filter.ratelimit.KeyResolver;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
@@ -12,6 +15,7 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.web.server.ServerWebExchange;
 
+@ExtendWith(OutputCaptureExtension.class)
 class KeyResolversTest {
 
     /** nginx's subnet in these tests; the gateway trusts X-Forwarded-For only from a peer that matches it. */
@@ -48,6 +52,25 @@ class KeyResolversTest {
         assertThat(key("1.1.1.1, not an ip!")).isEqualTo("192.0.2.9");
         assertThat(key("1.1.1.1, example.com")).as("never a DNS lookup").isEqualTo("192.0.2.9");
         assertThat(key("1.1.1.1, 999.1.1.1")).isEqualTo("192.0.2.9");
+    }
+
+    /**
+     * S10: nginx always sends X-Forwarded-For, so a peer that sends it but is not trusted means the trusted-proxies
+     * pattern does not match nginx (every client then shares nginx's bucket). Said once, at WARN, without the header.
+     */
+    @Test
+    void anUntrustedPeerSendingForwardedForIsReportedOnce(CapturedOutput output) {
+        ClientAddress clients = new ClientAddress("192[.]0[.]2[.]9");
+
+        clients.keyOf(exchange("192.0.2.9", "9.9.9.9"));
+        clients.keyOf(exchange("198.51.100.4"));
+        assertThat(output).doesNotContain("X-Forwarded-For");
+
+        clients.keyOf(exchange("198.51.100.4", "7.7.7.7"));
+        clients.keyOf(exchange("198.51.100.5", "8.8.8.8"));
+        assertThat(output.getAll().lines().filter(l -> l.contains("X-Forwarded-For")).toList()).hasSize(1)
+                .allSatisfy(l -> assertThat(l).contains("WARN").contains("198.51.100.4")
+                        .contains("SURGE_TRUSTED_PROXIES").doesNotContain("7.7.7.7"));
     }
 
     /** SEC-11: anyone who reaches the gateway directly could otherwise pick any bucket with X-Forwarded-For. */

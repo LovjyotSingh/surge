@@ -6,6 +6,7 @@ import { ApiError, api } from '../api/client'
 import type { CatalogEvent, EventDetail, Problem } from '../api/types'
 import { AuthProvider } from '../auth/AuthContext'
 import { clearSession } from '../auth/session'
+import useSeatStream from '../hooks/useSeatStream'
 import { signIn } from '../test-utils'
 import EventPage from './EventPage'
 
@@ -113,6 +114,25 @@ afterEach(() => {
 })
 
 describe('EventPage', () => {
+  it('reloads the seat states when the seat stream opens again after a failure', async () => {
+    renderPage()
+    expect(await screen.findByRole('button', { name: /Row A seat 2,/ })).toBeEnabled()
+    const seatStream = vi.mocked(useSeatStream)
+    const onResync = seatStream.mock.calls[seatStream.mock.calls.length - 1][2]
+    expect(onResync).toBeTypeOf('function')
+
+    // seat 2 sold while the stream was down
+    const sold = detail(past())
+    sold.seats[1] = { ...sold.seats[1], state: 'SOLD' }
+    mocked.event.mockResolvedValue(sold)
+    await act(async () => {
+      onResync?.()
+    })
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /Row A seat 2,/ })).toBeDisabled())
+    expect(mocked.event).toHaveBeenCalledTimes(2)
+  })
+
   it('sends an unverified user to verify their email when the hold is refused', async () => {
     const user = userEvent.setup()
     mocked.hold.mockRejectedValueOnce(new ApiError(problem('email-unverified', 403)))

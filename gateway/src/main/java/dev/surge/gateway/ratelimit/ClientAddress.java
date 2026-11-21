@@ -6,7 +6,10 @@ import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.web.server.ServerWebExchange;
 
@@ -30,7 +33,10 @@ public final class ClientAddress {
     private static final String FORWARDED_FOR = "X-Forwarded-For";
     private static final Pattern IP_LITERAL = Pattern.compile("^[0-9A-Fa-f:.]{2,45}$");
 
+    private static final Logger log = LoggerFactory.getLogger(ClientAddress.class);
+
     private final Pattern trustedProxies;
+    private final AtomicBoolean warnedUntrustedForwarder = new AtomicBoolean();
 
     /** @param trustedProxies regex matched against the whole peer address; null or blank trusts no proxy */
     public ClientAddress(String trustedProxies) {
@@ -50,6 +56,12 @@ public final class ClientAddress {
             if (forwarded != null) {
                 client = forwarded;
             }
+        } else if (exchange.getRequest().getHeaders().containsHeader(FORWARDED_FOR)
+                && warnedUntrustedForwarder.compareAndSet(false, true)) {
+            // nginx always sends the header, so this is most likely nginx itself, not matched by the pattern.
+            log.warn("Peer {} sent X-Forwarded-For but is not a trusted proxy, so the header is ignored. If {} is "
+                    + "nginx, SURGE_TRUSTED_PROXIES does not match it and every client shares nginx's rate-limit "
+                    + "bucket. (Logged once.)", peer.getHostString(), peer.getHostString());
         }
         return client == null ? null : key(client);
     }

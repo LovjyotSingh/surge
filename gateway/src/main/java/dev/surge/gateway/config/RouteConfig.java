@@ -35,6 +35,9 @@ class RouteConfig {
     /** The circuit breaker (and its bulkhead) on catalog's public reads. */
     static final String CATALOG_BREAKER = "catalog";
 
+    /** auth-service's public key set: public key material, the one auth path reachable without a metered route. */
+    static final String JWKS_PATH = "/api/auth/.well-known/jwks.json";
+
     private static final String RESPONSE_TIMEOUT = "response-timeout";
     private static final String AUDIENCE = RouteAudiences.METADATA_KEY;
 
@@ -69,9 +72,9 @@ class RouteConfig {
      * tickets      GET notification tickets  per user  1/s, burst 5
      * </pre>
      *
-     * The login, signup and email-verification buckets match their path whatever the method, so nothing on those
-     * paths reaches auth unmetered through {@code auth-public} (auth answers anything but POST with 405; the gateway
-     * denies anything but POST on the verify paths). Where a route has a per-user and a per-IP bucket, the per-user
+     * The login, signup and email-verification buckets match their path whatever the method (auth answers anything
+     * but POST with 405; the gateway denies anything but POST on the verify paths). {@code auth-public} carries only
+     * {@code GET} on the JWKS, so no other auth path is reachable without one of these routes. Where a route has a per-user and a per-IP bucket, the per-user
      * one runs first and the response carries the per-IP bucket's {@code X-RateLimit-*} headers.
      *
      * <p>The buckets marked CLOSED answer 503 when the limiter cannot reach Redis, so an outage cannot lift a limit
@@ -149,8 +152,9 @@ class RouteConfig {
                 .route("auth-verify-resend", r -> r.path("/api/auth/verify/resend")
                         .filters(f -> f.filter(resendLimit).filter(resendIpLimit))
                         .metadata(AUDIENCE, RouteAudiences.AUTH).uri(auth))
-                // everything else under /api/auth (the JWKS); SecurityConfig decides what may get here at all
-                .route("auth-public", r -> r.path("/api/auth/**")
+                // the JWKS, the only unmetered path to auth (S10). Any other /api/auth path that no route above
+                // names is not routed at all (404), whatever SecurityConfig allows.
+                .route("auth-public", r -> r.method(HttpMethod.GET).and().path(JWKS_PATH)
                         .metadata(AUDIENCE, RouteAudiences.AUTH).uri(auth))
                 // --- catalog (public reads) ---
                 .route("catalog", r -> r.method(HttpMethod.GET).and().path("/api/catalog/**")

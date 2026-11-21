@@ -8,7 +8,14 @@
 # other index.
 set -euo pipefail
 
+# S10: each password comes from its compose secret file, /run/secrets/env/<NAME> (a variable of the same name, if set,
+# wins), into a shell variable that is never exported.
 for name in ELASTIC_PASSWORD ELASTICSEARCH_CATALOG_PASSWORD; do
+    secret_file=/run/secrets/env/$name
+    if [[ -z ${!name:-} && -r $secret_file ]]; then
+        value=$(< "$secret_file")
+        printf -v "$name" '%s' "${value%$'\r'}"
+    fi
     if [[ ! ${!name:-} =~ ^[A-Za-z0-9._~-]{16,}$ ]]; then
         echo "$name must be at least 16 URL-safe characters (run docker/gen-secrets.sh)" >&2
         exit 1

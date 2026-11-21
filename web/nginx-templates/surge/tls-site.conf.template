@@ -1,0 +1,20 @@
+# The per-deployment part of nginx-tls.conf. Rendered when the container starts by the image's own
+# /docker-entrypoint.d/20-envsubst-on-templates.sh, which compose.prod.yaml and compose.tls-local.yaml switch on
+# (NGINX_ENVSUBST_TEMPLATE_DIR=/etc/nginx/surge-templates, NGINX_ENVSUBST_OUTPUT_DIR=/tmp,
+# NGINX_ENVSUBST_FILTER=^SURGE_: only SURGE_ variables are substituted, so nginx's own $host and $scheme stay). The
+# result, /tmp/surge/tls-site.conf, is included by nginx-tls.conf. A variable left unset stays "${...}", and nginx
+# then refuses to start ("unknown variable"): a missing value cannot go unnoticed. The plain nginx.conf never uses it.
+
+# SURGE_SERVER_NAME: the one host name the site is served under. Port 80 redirects every request to
+# https://<this name>, never to the Host header a client sent, so the redirect cannot be pointed anywhere else.
+map $host $surge_https_host {
+  default "${SURGE_SERVER_NAME}";
+}
+
+# SURGE_HSTS_MAX_AGE: HSTS on HTTPS responses only (security-headers.conf sends $surge_hsts; nginx drops an empty
+# header). compose.prod.yaml: one year. compose.tls-local.yaml: 300 s, so a browser that does trust the local
+# certificate (mkcert, a keychain entry) does not pin localhost to HTTPS for a year.
+map $scheme $surge_hsts {
+  https "max-age=${SURGE_HSTS_MAX_AGE}; includeSubDomains";
+  default "";
+}
