@@ -34,11 +34,35 @@ class TrustedProxiesGuardTest {
         }
     }
 
+    /** Broad patterns that would trust far more than nginx: a public address, or several private ones. */
+    @Test
+    void aPublicDeploymentThatTrustsMoreThanOneProxyAddressDoesNotStart() {
+        for (String broad : new String[] {".*[.]10", "\\d+\\.\\d+\\.\\d+\\.10", "10[.]30[.]250[.][0-9]+",
+                "8[.]8[.]8[.]8", "1[.]2[.]3[.]4|10[.]30[.]250[.]10", "(192|172|10)[.].*"}) {
+            runner.withPropertyValues("surge.security.public-deployment=true", "surge.security.trusted-proxies=" + broad)
+                    .run(context -> assertThat(context).as(broad).hasFailed().getFailure().rootCause()
+                            .hasMessageContaining("SURGE_TRUSTED_PROXIES"));
+        }
+    }
+
+    /** The value is a regex over one address, not CIDR: "10.30.250.10/32" would never match and trust nobody. */
+    @Test
+    void cidrNotationIsRefused() {
+        for (String cidr : new String[] {"10.30.250.10/32", "10[.]30[.]250[.]0/24"}) {
+            runner.withPropertyValues("surge.security.public-deployment=true", "surge.security.trusted-proxies=" + cidr)
+                    .run(context -> assertThat(context).as(cidr).hasFailed().getFailure().rootCause()
+                            .hasMessageContaining("CIDR"));
+        }
+    }
+
     @Test
     void aPublicDeploymentThatTrustsNginxStarts() {
-        runner.withPropertyValues("surge.security.public-deployment=true",
-                        "surge.security.trusted-proxies=10[.]30[.]250[.]10")
-                .run(context -> assertThat(context).hasNotFailed());
+        for (String exact : new String[] {"10[.]30[.]250[.]10", "10[.]30[.]250[.]11", "172[.]30[.]250[.]10",
+                "10[.]30[.]250[.]10|0:0:0:0:0:ffff:a1e:fa0a"}) {
+            runner.withPropertyValues("surge.security.public-deployment=true",
+                            "surge.security.trusted-proxies=" + exact)
+                    .run(context -> assertThat(context).as(exact).hasNotFailed());
+        }
     }
 
     @Test
