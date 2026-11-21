@@ -21,7 +21,14 @@ final class StubServer implements AutoCloseable {
         static Reply of(int status, String body) {
             return new Reply(status, body, Map.of());
         }
+
+        /** The connection is closed without an answer. */
+        static Reply drop() {
+            return new Reply(DROP, "", Map.of());
+        }
     }
+
+    private static final int DROP = -1;
 
     private final HttpServer server;
     private final Map<String, Deque<Reply>> scripts = new ConcurrentHashMap<>();
@@ -84,6 +91,10 @@ final class StubServer implements AutoCloseable {
             synchronized (q) {
                 reply = q.size() > 1 ? q.poll() : q.peek();
             }
+        }
+        if (reply.status() == DROP) {
+            ex.close(); // no answer at all: the client sees a closed connection (an IOException)
+            return;
         }
         reply.headers().forEach((k, v) -> ex.getResponseHeaders().add(k, v));
         byte[] bytes = reply.body().getBytes(StandardCharsets.UTF_8);

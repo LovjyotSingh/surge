@@ -1,5 +1,6 @@
 package dev.surge.loadtest;
 
+import java.io.UncheckedIOException;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -20,7 +21,14 @@ import tools.jackson.databind.ObjectMapper;
  * {@code Idempotency-Key}) after {@code Retry-After} (default 1 s) plus 0-{@value #BUSY_JITTER_MS} ms of jitter, so
  * the refused buyers do not all come back in the same millisecond. A buyer gives up, which is an error, after
  * {@value #MAX_BUSY_RETRIES} busy retries or when the next one would end after the run's deadline. Any other 503 is
- * an error at once.
+ * an error at once on a HOLD.
+ *
+ * <p>A CHECKOUT is also sent again, unchanged (same {@code Idempotency-Key}, so booking replays the order if the first
+ * try went through), up to {@value #MAX_CHECKOUT_RETRIES} times and within the run's deadline, after a timeout or
+ * connection failure, 502, 504, a 503 that is not service-busy (such as auth-unavailable or payment-unavailable) and a
+ * 409 request-in-progress. It waits {@code Retry-After} when the answer has one, else 1-2 s. A 200 with
+ * {@code Idempotent-Replayed: true} is a success like a 201. A hold is never sent again blindly; a 409 hold-exists whose
+ * problem body carries the existing {@code holdId} is adopted and checked out.
  */
 public final class Buyer implements Callable<BuyerOutcome> {
 
@@ -32,6 +40,14 @@ public final class Buyer implements Callable<BuyerOutcome> {
     static final int MAX_BUSY_RETRIES = 30;
     /** Random extra wait added to {@code Retry-After} on a busy answer, 0 to this many ms. */
     static final int BUSY_JITTER_MS = 1000;
+    /**
+     * Checkout retries per buyer, with the same Idempotency-Key, after a timeout, 502, 504, a 503 that is not
+     * service-busy (e.g. auth-unavailable, payment-unavailable) or a 409 request-in-progress. Separate from the busy
+     * retries; each also stays within the run deadline.
+     */
+    static final int MAX_CHECKOUT_RETRIES = 3;
+    /** Booking's header on a replayed checkout (HTTP 200): the order of this Idempotency-Key already existed. */
+    private static final String REPLAYED_HEADER = "Idempotent-Replayed";
     /**
      * How long after the tokens are minted a buyer may still start a busy retry: their 15-minute lifetime minus a
      * minute, so a retried request never goes out with an expired token (it would be a 401, i.e. a NOT VALID run).
@@ -103,6 +119,7 @@ public final class Buyer implements Callable<BuyerOutcome> {
         int conflicts = 0;
         int rateLimited = 0;
         int busyRetries = 0;
+        int checkoutRetries = 0;
         int errors = 0;
         int unauthorized = 0;
         List<Long> holdLat = new ArrayList<>();
@@ -151,40 +168,60 @@ public final class Buyer implements Callable<BuyerOutcome> {
                     attempts++;
                 } else if (status == 409 && problemType(r).endsWith("/hold-exists")) {
                     conflicts++;
-                    break;
+                    // The problem body carries the buyer's existing hold (e.g. a hold request whose answer was lost):
+                    // adopt it and go on to the checkout. Without it there is nothing to adopt; a hold is never
+                    // sent again blindly.
+                    holdId = existingHoldId(r);
+                    if (holdId == null) {
+                        break;
+                    }
                 } else {
                     errors++;
                     break;
                 }
             }
             if (holdId == null) {
-                return new BuyerOutcome(false, conflicts, rateLimited, busyRetries, errors, unauthorized, holdLat,
+                return new BuyerOutcome(false, conflicts, rateLimited, busyRetries, checkoutRetries, errors, unauthorized, holdLat,
                     checkoutLat);
             }
             HttpResponse<String> order;
             long checkoutStart = clockMillis.getAsLong();
             while (true) {
-                order = api.checkout(bearer, idempotencyKey, holdId);
-                if (!isBusy(order)) {
+                try {
+                    order = api.checkout(bearer, idempotencyKey, holdId);
+                } catch (UncheckedIOException e) {
+                    order = null; // timeout or connection failure: the order may or may not exist, ask again
+                }
+                if (order != null && isBusy(order)) {
+                    long wait = busyWaitMillis(order, busyRetries);
+                    if (wait < 0) {
+                        checkoutLat.add(clockMillis.getAsLong() - checkoutStart);
+                        errors++;
+                        return new BuyerOutcome(false, conflicts, rateLimited, busyRetries, checkoutRetries, errors,
+                            unauthorized, holdLat, checkoutLat);
+                    }
+                    busyRetries++;
+                    sleeper.sleep(wait);
+                    continue;
+                }
+                if (order != null && !retryableCheckout(order)) {
                     break;
                 }
-                long wait = busyWaitMillis(order, busyRetries);
+                // Same Idempotency-Key, so a retry of a checkout that did go through replays the order (200).
+                long wait = checkoutRetryWaitMillis(order, checkoutRetries);
                 if (wait < 0) {
-                    checkoutLat.add(clockMillis.getAsLong() - checkoutStart);
-                    errors++;
-                    return new BuyerOutcome(false, conflicts, rateLimited, busyRetries, errors, unauthorized,
-                        holdLat, checkoutLat);
+                    break;
                 }
-                busyRetries++;
+                checkoutRetries++;
                 sleeper.sleep(wait);
             }
-            // One figure for the checkout, from its first send to its final answer, busy waits included.
+            // One figure for the checkout, from its first send to its final answer, waits and retries included.
             checkoutLat.add(clockMillis.getAsLong() - checkoutStart);
-            if (order.statusCode() == 201) {
-                return new BuyerOutcome(true, conflicts, rateLimited, busyRetries, errors, unauthorized, holdLat,
-                    checkoutLat);
+            if (order != null && (order.statusCode() == 201 || isReplay(order))) {
+                return new BuyerOutcome(true, conflicts, rateLimited, busyRetries, checkoutRetries, errors,
+                    unauthorized, holdLat, checkoutLat);
             }
-            if (order.statusCode() == 401 || order.statusCode() == 403) {
+            if (order != null && (order.statusCode() == 401 || order.statusCode() == 403)) {
                 unauthorized++;
             } else {
                 // Including a 409: P2-R25 excuses only sold-out conflicts, and the seats this buyer holds cannot be
@@ -194,8 +231,48 @@ public final class Buyer implements Callable<BuyerOutcome> {
         } catch (RuntimeException e) {
             errors++;
         }
-        return new BuyerOutcome(false, conflicts, rateLimited, busyRetries, errors, unauthorized, holdLat,
+        return new BuyerOutcome(false, conflicts, rateLimited, busyRetries, checkoutRetries, errors, unauthorized, holdLat,
             checkoutLat);
+    }
+
+    /** 200 with {@code Idempotent-Replayed: true}: booking found the order of this Idempotency-Key and returned it. */
+    private static boolean isReplay(HttpResponse<String> r) {
+        return r.statusCode() == 200 && "true".equalsIgnoreCase(r.headers().firstValue(REPLAYED_HEADER).orElse(""));
+    }
+
+    /**
+     * A checkout answer worth sending again with the same key: 502, 504, any 503 that is not service-busy (that one has
+     * its own retry path), a 503 {@code auth-unavailable} among them, and 409 {@code request-in-progress} (the first
+     * attempt is still running).
+     */
+    private static boolean retryableCheckout(HttpResponse<String> r) {
+        int status = r.statusCode();
+        return status == 502 || status == 504 || (status == 503 && !isBusy(r))
+            || (status == 409 && problemType(r).endsWith("/request-in-progress"));
+    }
+
+    /**
+     * How long before the next checkout retry: {@code Retry-After} if the answer has one, else 1-2 s (1 s plus jitter).
+     * -1 when the buyer must give up: {@link #MAX_CHECKOUT_RETRIES} used, or the retry would end after the deadline.
+     * {@code last} is null after a timeout or connection failure.
+     */
+    private long checkoutRetryWaitMillis(HttpResponse<String> last, int retriesSoFar) {
+        if (retriesSoFar >= MAX_CHECKOUT_RETRIES) {
+            return -1;
+        }
+        boolean hasRetryAfter = last != null && last.headers().firstValue("Retry-After").isPresent();
+        long wait = hasRetryAfter ? retryAfterSeconds(last) * 1000L : 1000L + rnd.nextInt(BUSY_JITTER_MS + 1);
+        return clockMillis.getAsLong() + wait > deadlineMillis ? -1 : wait;
+    }
+
+    /** The {@code holdId} of a 409 hold-exists problem, or null when the body does not carry one. */
+    private static String existingHoldId(HttpResponse<String> r) {
+        try {
+            JsonNode id = JSON.readTree(r.body()).get("holdId");
+            return id == null || id.asString().isBlank() ? null : id.asString();
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     /** 503 with problem type {@code service-busy}: the gateway refused the call before the service saw it. */

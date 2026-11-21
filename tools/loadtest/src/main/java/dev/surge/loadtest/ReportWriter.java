@@ -53,8 +53,8 @@ public final class ReportWriter {
             | Check | Result |
             |---|---|
             | Oversold (a seat in two order lines) | %d %s |
-            | Seats marked SOLD = distinct seats in orders | %s %s |
-            | Buyers who got a 201 = seats sold | %d = %d %s |
+            | Seats marked SOLD match order lines, seat by seat | %s %s |
+            | Buyers who got a 201 (or a replay) = seats sold in this run | %d = %d %s |
             | Seats sold (at least one) | %d %s |
             | Buyers ending in an error (at most %d %%) | %d of %d %s |
 
@@ -67,6 +67,8 @@ public final class ReportWriter {
             | Conflicts | %d |
             | Rate limited | %d |
             | Busy retries (503 service-busy, retried) | %d |
+            | Checkout retries (same Idempotency-Key) | %d |
+            | Seat mismatches (SOLD vs order line) | %d |
             | Errors | %d |
 
             | Latency (ms) | p50 | p95 | p99 | max |
@@ -78,11 +80,11 @@ public final class ReportWriter {
                 r.eventId(), r.users(), r.durationMs(), verdict,
                 r.oversold(), mark(r.oversold() == 0),
                 r.consistent() ? "yes" : "no", mark(r.consistent()),
-                r.buyersSucceeded(), r.sold(), mark(r.buyersSucceeded() == r.sold()),
-                r.sold(), mark(!r.nothingSold()),
+                r.buyersSucceeded(), r.soldInRun(), mark(r.buyersSucceeded() == r.soldInRun()),
+                r.soldInRun(), mark(!r.nothingSold()),
                 LoadTestReport.MAX_ERROR_PERCENT, r.errors(), r.users(), mark(!r.tooManyErrors()),
                 r.totalSeats(), r.sold(), r.buyersSucceeded(), r.requests(), r.conflicts(), r.rateLimited(),
-                r.busyRetries(), r.errors(),
+                r.busyRetries(), r.checkoutRetries(), r.seatMismatches(), r.errors(),
                 r.hold().p50(), r.hold().p95(), r.hold().p99(), r.hold().max(),
                 r.checkout().p50(), r.checkout().p95(), r.checkout().p99(), r.checkout().max());
     }

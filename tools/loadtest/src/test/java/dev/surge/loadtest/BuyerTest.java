@@ -262,6 +262,134 @@ class BuyerTest {
         assertThat(stub.received).containsExactly(HOLDS);
     }
 
+    // ---- checkout retry with the same Idempotency-Key ------------------------------------------------------------
+
+    private static final Reply REPLAY = new Reply(200, "{\"id\":1}", Map.of("Idempotent-Replayed", "true"));
+
+    @Test
+    void a504ThenA201IsASuccessAfterOneRetryWithTheSameKey() throws Exception {
+        stub.on(HOLDS, HOLD_OK).on(ORDERS, Reply.of(504, ""), ORDER_OK);
+        BuyerOutcome o = run();
+        assertThat(o.bought()).isTrue();
+        assertThat(o.checkoutRetries()).isEqualTo(1);
+        assertThat(o.errors()).isZero();
+        assertThat(o.checkoutLatenciesMs()).hasSize(1);
+        assertThat(stub.received).containsExactly(HOLDS, ORDERS, ORDERS);
+        assertThat(stub.receivedIdempotencyKeys.subList(1, 3)).containsOnly("run-1-lt-0");
+        assertThat(sleeps).singleElement().satisfies(ms -> assertThat(ms).isBetween(1000L, 2000L));
+    }
+
+    @Test
+    void anIoExceptionThenA200ReplayIsASuccess() throws Exception {
+        stub.on(HOLDS, HOLD_OK).on(ORDERS, Reply.drop(), REPLAY);
+        BuyerOutcome o = run();
+        assertThat(o.bought()).isTrue();
+        assertThat(o.checkoutRetries()).isEqualTo(1);
+        assertThat(o.errors()).isZero();
+        assertThat(stub.receivedIdempotencyKeys.subList(1, 3)).containsOnly("run-1-lt-0");
+    }
+
+    @Test
+    void a200WithoutTheReplayHeaderIsNotASuccess() throws Exception {
+        stub.on(HOLDS, HOLD_OK).on(ORDERS, Reply.of(200, "{\"id\":1}"));
+        BuyerOutcome o = run();
+        assertThat(o.bought()).isFalse();
+        assertThat(o.errors()).isEqualTo(1);
+        assertThat(o.checkoutRetries()).isZero();
+    }
+
+    @Test
+    void checkoutRetriesAreBoundedAtThreeThenItIsAnError() throws Exception {
+        stub.on(HOLDS, HOLD_OK).on(ORDERS, Reply.of(502, ""));
+        BuyerOutcome o = run();
+        assertThat(o.bought()).isFalse();
+        assertThat(o.checkoutRetries()).isEqualTo(Buyer.MAX_CHECKOUT_RETRIES).isEqualTo(3);
+        assertThat(o.errors()).isEqualTo(1);
+        assertThat(stub.received).containsExactly(HOLDS, ORDERS, ORDERS, ORDERS, ORDERS);
+    }
+
+    @Test
+    void exhaustedRetriesAfterAnIoExceptionAreAnError() throws Exception {
+        stub.on(HOLDS, HOLD_OK).on(ORDERS, Reply.drop());
+        BuyerOutcome o = run();
+        assertThat(o.bought()).isFalse();
+        assertThat(o.checkoutRetries()).isEqualTo(3);
+        assertThat(o.errors()).isEqualTo(1);
+    }
+
+    @Test
+    void aNonRetryable409IsNotRetried() throws Exception {
+        stub.on(HOLDS, HOLD_OK).on(ORDERS, problem(409, "hold-expired"), ORDER_OK);
+        BuyerOutcome o = run();
+        assertThat(o.bought()).isFalse();
+        assertThat(o.errors()).isEqualTo(1);
+        assertThat(o.checkoutRetries()).isZero();
+        assertThat(stub.received).containsExactly(HOLDS, ORDERS);
+    }
+
+    @Test
+    void a409RequestInProgressIsRetriedHonouringRetryAfter() throws Exception {
+        stub.on(HOLDS, HOLD_OK).on(ORDERS,
+            new Reply(409, "{\"type\":\"https://surge.dev/problems/request-in-progress\"}", Map.of("Retry-After", "3")),
+            REPLAY);
+        BuyerOutcome o = run();
+        assertThat(o.bought()).isTrue();
+        assertThat(o.checkoutRetries()).isEqualTo(1);
+        assertThat(sleeps).containsExactly(3000L);
+    }
+
+    @Test
+    void a503AuthUnavailableAndAnyOther503ThatIsNotBusyAreRetried() throws Exception {
+        stub.on(HOLDS, HOLD_OK).on(ORDERS,
+            new Reply(503, "{\"type\":\"https://surge.dev/problems/auth-unavailable\"}", Map.of("Retry-After", "1")),
+            problem(503, "payment-unavailable"), ORDER_OK);
+        BuyerOutcome o = run();
+        assertThat(o.bought()).isTrue();
+        assertThat(o.checkoutRetries()).isEqualTo(2);
+        assertThat(o.busyRetries()).isZero();
+        assertThat(o.errors()).isZero();
+    }
+
+    @Test
+    void aCheckoutRetryThatWouldEndAfterTheDeadlineIsNotMade() throws Exception {
+        stub.on(HOLDS, HOLD_OK).on(ORDERS, Reply.of(504, ""), ORDER_OK);
+        BuyerOutcome o = runWithDeadlineIn(500);
+        assertThat(o.bought()).isFalse();
+        assertThat(o.checkoutRetries()).isZero();
+        assertThat(o.errors()).isEqualTo(1);
+        assertThat(stub.received).containsExactly(HOLDS, ORDERS);
+    }
+
+    @Test
+    void aBusyCheckoutKeepsItsOwnRetryPathAndCounter() throws Exception {
+        stub.on(HOLDS, HOLD_OK).on(ORDERS, BUSY, Reply.of(504, ""), ORDER_OK);
+        BuyerOutcome o = run();
+        assertThat(o.bought()).isTrue();
+        assertThat(o.busyRetries()).isEqualTo(1);
+        assertThat(o.checkoutRetries()).isEqualTo(1);
+    }
+
+    @Test
+    void aHoldIsNeverRetriedBlindlyAfterA502() throws Exception {
+        stub.on(HOLDS, Reply.of(502, ""), HOLD_OK).on(ORDERS, ORDER_OK);
+        BuyerOutcome o = run();
+        assertThat(o.bought()).isFalse();
+        assertThat(o.errors()).isEqualTo(1);
+        assertThat(stub.received).containsExactly(HOLDS);
+    }
+
+    @Test
+    void aHoldExistsConflictWithTheExistingHoldIdIsAdoptedAndCheckedOut() throws Exception {
+        stub.on(HOLDS, Reply.of(409, "{\"type\":\"https://surge.dev/problems/hold-exists\",\"holdId\":\"h-old\"}"))
+            .on(ORDERS, ORDER_OK);
+        BuyerOutcome o = run();
+        assertThat(o.bought()).isTrue();
+        assertThat(o.conflicts()).isEqualTo(1);
+        assertThat(o.errors()).isZero();
+        assertThat(stub.received).containsExactly(HOLDS, ORDERS);
+        assertThat(stub.receivedBodies.get(1)).contains("\"holdId\":\"h-old\"");
+    }
+
     @Test
     void sendsOnlyItsOwnBearerAndNeverXUserId() throws Exception {
         stub.on(HOLDS, HOLD_OK).on(ORDERS, ORDER_OK);

@@ -84,6 +84,9 @@ public final class LoadTestMain {
                 api.reset(cfg.eventId());
             }
             List<Long> seatIds = api.seatIds(cfg.eventId());
+            // Seats already SOLD before the buyers start (0 after a reset; earlier runs' sales with --no-reset). The
+            // run is judged on the seats sold since, not on every SOLD seat of the event.
+            int soldBefore = api.integrity(cfg.eventId()).get("soldSeats").asInt();
             out.println("Run " + runId + ": " + cfg.users() + " buyers, event " + cfg.eventId()
                 + ", Idempotency-Key = " + idempotencyKey(runId, "<userId>"));
             CountDownLatch gate = new CountDownLatch(1);
@@ -94,6 +97,7 @@ public final class LoadTestMain {
             int conflicts = 0;
             int rateLimited = 0;
             int busyRetries = 0;
+            int checkoutRetries = 0;
             int errors = 0;
             int unauthorized = 0;
             List<Long> holdLat = new ArrayList<>();
@@ -114,6 +118,7 @@ public final class LoadTestMain {
                     conflicts += o.conflicts();
                     rateLimited += o.rateLimited();
                     busyRetries += o.busyRetries();
+                    checkoutRetries += o.checkoutRetries();
                     errors += o.errors();
                     unauthorized += o.unauthorized();
                     holdLat.addAll(o.holdLatenciesMs());
@@ -127,8 +132,9 @@ public final class LoadTestMain {
                 integrity.get("totalSeats").asInt(), integrity.get("soldSeats").asInt(),
                 integrity.get("oversold").asInt(), integrity.path("consistent").asBoolean(false), succeeded,
                 // one latency per step; each busy retry is one more request inside its step
-                holdLat.size() + checkoutLat.size() + busyRetries, conflicts, rateLimited, busyRetries, errors,
-                durationMs, LatencyStats.of(holdLat), LatencyStats.of(checkoutLat), unauthorized);
+                holdLat.size() + checkoutLat.size() + busyRetries + checkoutRetries, conflicts, rateLimited,
+                busyRetries, errors, durationMs, LatencyStats.of(holdLat), LatencyStats.of(checkoutLat), unauthorized,
+                soldBefore, integrity.path("seatMismatches").asInt(0), checkoutRetries);
 
             // Show the result and save the local files first: a failing publish must not lose a finished run.
             out.println(ReportWriter.markdown(report));
