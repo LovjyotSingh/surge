@@ -158,6 +158,23 @@ public final class BookingApi implements AutoCloseable {
         requireStatus(r, 204, "reset");
     }
 
+    /**
+     * "GET path: HTTP 503 service-unavailable" while the gateway has no route to the service yet (the problem type ends
+     * in service-unavailable; the bulkhead's service-busy is another type), else null, also when unreachable.
+     */
+    String unavailable(String path) {
+        try {
+            HttpResponse<String> r = send(builder(path).GET());
+            if (r.statusCode() == 503
+                && JSON.readTree(r.body()).path("type").asString("").endsWith("service-unavailable")) {
+                return "GET " + path + ": HTTP 503 service-unavailable";
+            }
+        } catch (RuntimeException e) {
+            // not "no route yet" (unreachable, or not problem+json): the run reports it
+        }
+        return null;
+    }
+
     /** Public read: no credentials needed. */
     public List<Long> seatIds(long eventId) {
         HttpResponse<String> r = send(builder("/api/bookings/events/" + eventId).GET());

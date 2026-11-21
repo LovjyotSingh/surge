@@ -338,7 +338,9 @@ class GatewayAuthTest {
 
             assertThat(r.exit()).isEqualTo(2);
             assertThat(r.stderr()).contains("lacks the ADMIN role").doesNotContain("Exception");
-            assertThat(s.received).doesNotContain(RESET, "GET /api/bookings/events/1");
+            // The only read of the event is the route-wait preamble, before the login; none follows the failed mint.
+            assertThat(s.received).doesNotContain(RESET).containsOnlyOnce("GET /api/bookings/events/1");
+            assertThat(s.received.indexOf("GET /api/bookings/events/1")).isLessThan(s.received.indexOf(LOGIN));
         }
     }
 
