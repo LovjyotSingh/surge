@@ -115,15 +115,22 @@ public class HoldStore {
     /**
      * Removes the hold WITHOUT selling it: seat keys and the userhold key are deleted only while they still point at
      * this hold, the hold hash is deleted and its holds:expiry member removed. Used when checkout lost the seats.
+     * {@code soldSeatIds} are the hold's seats that MySQL says are SOLD: they are added to the Redis sold set in the
+     * same script, so Redis stops offering them (otherwise each next buyer would be charged and then refunded).
      */
-    public void release(ActiveHold hold) {
+    public void release(ActiveHold hold, List<Long> soldSeatIds) {
         List<String> keys = new ArrayList<>();
+        keys.add(RedisKeys.sold(hold.eventId()));
         keys.add(RedisKeys.hold(hold.holdId()));
         keys.add(RedisKeys.userHold(hold.eventId(), hold.userId()));
         keys.add(RedisKeys.HOLD_EXPIRY);
         keys.add(RedisKeys.userHolds(hold.userId()));
         hold.seatIds().forEach(s -> keys.add(RedisKeys.seat(hold.eventId(), s)));
-        redis.execute(releaseScript, keys, hold.holdId(), hold.member());
+        List<String> args = new ArrayList<>();
+        args.add(hold.holdId());
+        args.add(hold.member());
+        soldSeatIds.forEach(s -> args.add(String.valueOf(s)));
+        redis.execute(releaseScript, keys, args.toArray());
     }
 
     /** Locked prices by seat; empty when the hash has none (a hold written before prices were stored). */

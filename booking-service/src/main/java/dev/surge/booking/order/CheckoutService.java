@@ -213,17 +213,18 @@ public class CheckoutService {
     }
 
     /**
-     * Removes a hold whose seats were lost to another order (Redis had lost track of a sale). Nothing is added to the
-     * sold set; open seat maps are told the MySQL truth: sold seats SOLD, the rest AVAILABLE again. Best effort.
+     * Removes a hold whose seats were lost to another order (Redis had lost track of a sale). The seats MySQL says are
+     * SOLD are added to the Redis sold set by the release script itself, so Redis stops offering them; open seat maps
+     * are told the MySQL truth: sold seats SOLD, the rest AVAILABLE again. Best effort.
      */
     private void releaseAfterConflict(ActiveHold hold) {
         try {
-            holds.release(hold);
             List<Long> sold = new ArrayList<>();
             List<Long> free = new ArrayList<>();
             for (Seat seat : seats.findAllById(hold.seatIds())) {
                 (seat.getStatus() == SeatStatus.SOLD ? sold : free).add(seat.getId());
             }
+            holds.release(hold, sold);
             if (!sold.isEmpty()) {
                 publisher.publish(hold.eventId(), sold, SeatState.SOLD);
             }
