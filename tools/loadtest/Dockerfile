@@ -3,6 +3,9 @@
 FROM eclipse-temurin:25.0.5_8-jdk-noble@sha256:80f67fb3d6f76e2d817d98a4cc2a9cf05f054d4e6adc5e2144bde671d722e63f AS build
 WORKDIR /src
 ENV MAVEN_USER_HOME=/opt/maven-wrapper
+# unzip: without it the wrapper silently fetches the .tar.gz, which fails the zip SHA-256 pinned in
+# .mvn/wrapper/maven-wrapper.properties. Build stage only; the runtime image does not get it.
+RUN apt-get update && apt-get install -y --no-install-recommends unzip && rm -rf /var/lib/apt/lists/*
 COPY .mvn .mvn
 COPY mvnw ./
 RUN ./mvnw -B -q --version

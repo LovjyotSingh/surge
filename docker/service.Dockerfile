@@ -14,6 +14,9 @@ WORKDIR /src
 # The Maven distribution the wrapper downloads lives in this layer (not in the cache mount), so the parallel
 # builds of the eight images never race on unpacking it.
 ENV MAVEN_USER_HOME=/opt/maven-wrapper
+# unzip: without it the wrapper silently fetches the .tar.gz, which fails the zip SHA-256 pinned in
+# .mvn/wrapper/maven-wrapper.properties. Build stage only; the runtime image does not get it.
+RUN apt-get update && apt-get install -y --no-install-recommends unzip && rm -rf /var/lib/apt/lists/*
 COPY .mvn .mvn
 COPY mvnw ./
 RUN ./mvnw -B -q --version
