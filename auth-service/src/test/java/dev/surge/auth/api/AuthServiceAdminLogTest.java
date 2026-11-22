@@ -23,6 +23,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /** Admin sign-in logging without a Boot context (locking the shared context's admin would break other tests). */
 @ExtendWith(OutputCaptureExtension.class)
@@ -59,7 +60,7 @@ class AuthServiceAdminLogTest {
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder(4);
     private final UserRepository users = mock(UserRepository.class);
     private final AuthService auth = new AuthService(users, encoder, mock(TokenService.class), clock,
-            LoginThrottle.forTests(clock), new PasswordPolicy(), mock(EmailVerificationService.class), ADMIN);
+            LoginThrottle.forTests(clock), new PasswordPolicy(), mock(EmailVerificationService.class), mock(TransactionTemplate.class), ADMIN);
 
     private void wrong() {
         auth.login(new LoginRequest(ADMIN, "not-the-password"));

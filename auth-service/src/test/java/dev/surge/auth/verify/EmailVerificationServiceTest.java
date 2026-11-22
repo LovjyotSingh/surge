@@ -30,7 +30,8 @@ class EmailVerificationServiceTest {
     private final EmailVerificationRepository codes = mock(EmailVerificationRepository.class);
     private final VerificationMailer mailer = mock(VerificationMailer.class);
     private final EmailVerificationService service = new EmailVerificationService(mock(UserRepository.class), codes,
-            new BCryptPasswordEncoder(4), mock(TransactionTemplate.class), mailer, Clock.systemUTC());
+            new BCryptPasswordEncoder(4), mock(TransactionTemplate.class), mailer, mock(VerificationMailQuota.class),
+            Clock.systemUTC());
 
     private static User user() {
         User user = new User("ada@example.com", "hash", "Ada", Role.USER, Instant.now());
@@ -42,7 +43,7 @@ class EmailVerificationServiceTest {
     void aCodeThatCannotBeStoredIsLoggedNotThrownAndNothingIsEmailed(CapturedOutput output) {
         when(codes.saveAndFlush(any())).thenThrow(new DataAccessResourceFailureException("db down"));
         assertThatCode(() -> service.start(user())).doesNotThrowAnyException();
-        verify(mailer, never()).trySend(anyString(), anyString(), anyString());
+        verify(mailer, never()).trySend(anyString(), anyString());
         assertThat(output.getOut()).contains("Could not store a verification code at signup")
                 .doesNotContain("ada@example.com");
     }
@@ -52,6 +53,6 @@ class EmailVerificationServiceTest {
         service.start(user());
         verify(codes).saveAndFlush(any());
         verify(mailer).trySend(org.mockito.ArgumentMatchers.eq("ada@example.com"),
-                org.mockito.ArgumentMatchers.eq("Ada"), org.mockito.ArgumentMatchers.matches("^[0-9]{6}$"));
+                org.mockito.ArgumentMatchers.matches("^[0-9]{6}$"));
     }
 }

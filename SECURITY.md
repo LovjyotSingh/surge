@@ -66,9 +66,9 @@ nginx is the only container with a published port, and it forwards `/api/` only 
 
 - Passwords: BCrypt, 8 to 72 bytes, not on a common-password list, not containing the email's local part ([PasswordPolicy](auth-service/src/main/java/dev/surge/auth/api/PasswordPolicy.java)). Login gives the same answer and does the same BCrypt work for an unknown email.
 - A per-account login throttle on top of the gateway's per-IP limit: after 5 failures a lock of 30 s that doubles up to 15 minutes ([LoginThrottle](auth-service/src/main/java/dev/surge/auth/api/LoginThrottle.java)).
-- Email verification with a 6-digit code: stored as a hash, single use, 15 minutes, 5 attempts, limited resends. Holding seats needs a verified email ([EmailVerificationService](auth-service/src/main/java/dev/surge/auth/verify/EmailVerificationService.java)).
+- Email verification with a 6-digit code: stored as a hash, single use, 15 minutes, 5 attempts, limited resends, at most 10 emails per address per 24 hours. The code email contains nothing the sender typed, and the display name is plain words (letters, digits, spaces, `.'-`, at most 60). An account that stays unverified for 24 hours gives its address up to the next signup; a verified account is never replaced. Holding seats needs a verified email ([EmailVerificationService](auth-service/src/main/java/dev/surge/auth/verify/EmailVerificationService.java)).
 - User tokens live 30 minutes and are signed with a key loaded from a file, so they survive a restart ([TokenService](auth-service/src/main/java/dev/surge/auth/jwt/TokenService.java), [KeyConfig](auth-service/src/main/java/dev/surge/auth/jwt/KeyConfig.java)).
-- With `SURGE_ENV=prod`, auth refuses to start with a short or default admin password or with test tokens enabled ([StartupGuards](auth-service/src/main/java/dev/surge/auth/config/StartupGuards.java)), and the admin password is re-hashed whenever it changes ([AdminSeeder](auth-service/src/main/java/dev/surge/auth/user/AdminSeeder.java)). Every service runs with `SURGE_ENV=prod` in Compose, with one exception: the load-test overlay ([compose.loadtest.yaml](compose.loadtest.yaml)) runs auth with `SURGE_ENV=dev`, because auth refuses to mint test tokens in prod, so under that overlay these guards are off. It is for private machines only.
+- With `SURGE_ENV=prod`, auth refuses to start with a short or default admin password or with test tokens enabled ([StartupGuards](auth-service/src/main/java/dev/surge/auth/config/StartupGuards.java)), a public deployment refuses the default `@surge.local` admin email, and the admin password is re-hashed whenever it changes ([AdminSeeder](auth-service/src/main/java/dev/surge/auth/user/AdminSeeder.java)). Every service runs with `SURGE_ENV=prod` in Compose, with one exception: the load-test overlay ([compose.loadtest.yaml](compose.loadtest.yaml)) runs auth with `SURGE_ENV=dev`, because auth refuses to mint test tokens in prod, so under that overlay these guards are off. It is for private machines only.
 
 ### Business integrity
 
@@ -94,9 +94,15 @@ nginx is the only container with a published port, and it forwards `/api/` only 
 ## Accepted risks
 
 - **Dependencies:** [docs/security/accepted-risks.md](docs/security/accepted-risks.md) lists dependency advisories that are accepted rather than fixed. Today it has none: the HIGH advisories found so far were fixed by upgrading. When nginx 1.30.6 had six CVEs and no unprivileged 1.30.7 image existed yet, the web image moved to the official 1.30.7 image run unprivileged instead of adding the CVEs to an ignore list.
-- **Design:**
+- **Design** (each one, with why it is accepted, what limits it and what would fix it, is in [docs/security/accepted-risks.md](docs/security/accepted-risks.md#design-and-operational-risks)):
   - A captured internal identity token can be replayed, but only within its 60 seconds and only against the one service it is addressed to.
   - The login throttle and payment-service's store live in memory, so those services run as one instance.
+  - **N2 (Medium):** every Spring service shares one Eureka credential, and any authenticated client may register under any application name. Exploiting it needs a compromised container. The planned fix is static Docker DNS URIs on a single VM, or one Eureka user per service limited to its own name; on Kubernetes, service DNS replaces Eureka.
+  - **N5 (Low):** search, list and detail share the gateway's 300-call bulkhead for catalog, so a flood of searches can make the others answer 503 (booking is unaffected). A bulkhead per operation would fix it.
+  - The TLS private key is mode 640 with group 101 (nginx's gid) so the unprivileged nginx can read it; check that gid 101 is not a host system group.
+  - **SEC-22:** the token is kept in `sessionStorage`; the strict CSP (no inline script) is what protects it. An `HttpOnly` cookie with CSRF protection would be the fix.
+  - **SEC-23:** signup answers 409 for a taken email, so anyone can test whether an address is registered. A uniform "check your email" answer would fix it.
+  - A seat update (`AVAILABLE` or `HELD`) can arrive after `SOLD`. Clicking that seat gets 409 `seat-taken` and the web app reloads the seat map; booking never sells it twice. A per-event sequence number would fix it.
   - Ticket email is at-least-once: a failed commit after sending causes a second, identical email.
   - Trivy's misconfiguration scan is advisory, not a gate.
   - TLS exists only in the production overlay (`compose.prod.yaml`, see [docs/DEPLOY.md](docs/DEPLOY.md)); the local stack is plain HTTP on `127.0.0.1`. <!-- S10 -->

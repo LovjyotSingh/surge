@@ -21,7 +21,10 @@ public record SmokeConfig(URI baseUrl, URI mailUrl, String adminEmail, String ad
           --admin-email <email>  admin account (default $SURGE_ADMIN_EMAIL or admin@surge.local)
           --admin-password <pw>  admin password (default: $SURGE_ADMIN_PASSWORD, or the file that
                                  $SURGE_ADMIN_PASSWORD_FILE names; required. Prefer either: a flag shows up in `ps`)
-          --event <id>           event the checks buy seats for, and reset at the end (default 1)""";
+          --event <id>           event the checks buy seats for, and reset at the end (default 1)
+          --destructive          required when --base-url is not local (localhost, 127.0.0.1, ::1, a single-label
+                                 Docker service name, *.localhost, *.test): the run turns payment chaos off and
+                                 RESETS the event, wiping its bookings""";
 
     public static SmokeConfig parse(String[] args) {
         return parse(args, System::getenv);
@@ -34,6 +37,7 @@ public record SmokeConfig(URI baseUrl, URI mailUrl, String adminEmail, String ad
         String email = orDefault(env.apply("SURGE_ADMIN_EMAIL"), "admin@surge.local");
         String password = null;
         long event = 1;
+        boolean destructive = false;
         try {
             for (int i = 0; i < args.length; i++) {
                 switch (args[i]) {
@@ -41,6 +45,7 @@ public record SmokeConfig(URI baseUrl, URI mailUrl, String adminEmail, String ad
                     case "--mail-url" -> mail = value(args, ++i);
                     case "--admin-email" -> email = value(args, ++i);
                     case "--admin-password" -> password = value(args, ++i);
+                    case "--destructive" -> destructive = true;
                     case "--event" -> event = Long.parseLong(value(args, ++i));
                     default -> throw new IllegalArgumentException("Unknown option: " + args[i]);
                 }
@@ -54,7 +59,37 @@ public record SmokeConfig(URI baseUrl, URI mailUrl, String adminEmail, String ad
         if (password == null || password.isEmpty()) {
             throw new IllegalArgumentException("Set " + PASSWORD_ENV + " or pass --admin-password");
         }
-        return new SmokeConfig(uri(base), uri(mail), email, password, event);
+        URI baseUri = uri(base);
+        if (!destructive && !isLocal(baseUri)) {
+            throw new IllegalArgumentException("Refusing to run against " + baseUri.getHost() + ": it is not a local "
+                + "host, and this smoke test is destructive (it turns payment chaos off and resets event " + event
+                + " with the admin token). Pass --destructive if you really mean it.");
+        }
+        return new SmokeConfig(baseUri, uri(mail), email, password, event);
+    }
+
+    /**
+     * Local means: localhost, 127.0.0.1, ::1, a single-label name (a Docker service such as {@code web}), or a name
+     * ending in {@code .localhost} or {@code .test}. Anything else, including an unparsable host, is not.
+     */
+    static boolean isLocal(URI uri) {
+        String host = uri.getHost();
+        if (host == null) {
+            return false;
+        }
+        host = host.toLowerCase(java.util.Locale.ROOT);
+        if (host.startsWith("[") && host.endsWith("]")) {
+            host = host.substring(1, host.length() - 1);
+        }
+        if (host.endsWith(".")) {
+            host = host.substring(0, host.length() - 1);
+        }
+        if (host.equals("localhost") || host.equals("127.0.0.1") || host.equals("::1")
+            || host.equals("0:0:0:0:0:0:0:1") || host.endsWith(".localhost") || host.endsWith(".test")) {
+            return true;
+        }
+        // a single DNS label that is not a bare number (so "8" or "2130706433" are not "service names")
+        return host.matches("[a-z0-9]([a-z0-9_-]*[a-z0-9])?") && !host.matches("[0-9]+");
     }
 
     /**

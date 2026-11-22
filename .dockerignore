@@ -18,6 +18,7 @@ config-repo
 .env
 .env.*
 docker/secrets
+docker/tls
 docker/mysql-init
 docker/kafka
 docker/redis

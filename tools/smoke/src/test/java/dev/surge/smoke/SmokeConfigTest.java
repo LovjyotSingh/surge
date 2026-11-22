@@ -81,4 +81,44 @@ class SmokeConfigTest {
         SmokeConfig c = SmokeConfig.parse(new String[0], Map.of("SURGE_ADMIN_PASSWORD", "hunter2hunter2")::get);
         assertThat(c.toString()).doesNotContain("hunter2");
     }
+
+    private static SmokeConfig parseWith(String baseUrl, String... extra) {
+        String[] args = new String[extra.length + 2];
+        args[0] = "--base-url";
+        args[1] = baseUrl;
+        System.arraycopy(extra, 0, args, 2, extra.length);
+        return SmokeConfig.parse(args, Map.of("SURGE_ADMIN_PASSWORD", "pw")::get);
+    }
+
+    @Test
+    void localBaseUrlsNeedNoFlag() {
+        for (String url : new String[] {"http://localhost:8080", "http://127.0.0.1:8080", "http://[::1]:8080",
+            "http://web:8080", "http://web", "http://nginx.localhost", "https://shop.test", "http://LOCALHOST"}) {
+            assertThat(parseWith(url).baseUrl().toString()).isEqualTo(url);
+        }
+    }
+
+    @Test
+    void aNonLocalBaseUrlIsRefusedWithoutDestructive() {
+        for (String url : new String[] {"https://surge.example.com", "http://203.0.113.9:8080", "https://example.org",
+            "http://evil.localhost.example.com", "http://web.prod.internal"}) {
+            assertThatThrownBy(() -> parseWith(url)).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("--destructive").hasMessageContaining("Refusing");
+        }
+    }
+
+    @Test
+    void destructiveAllowsANonLocalBaseUrl() {
+        assertThat(parseWith("https://surge.example.com", "--destructive").baseUrl().getHost())
+            .isEqualTo("surge.example.com");
+    }
+
+    @Test
+    void theRefusalExitsWithCode2AndSaysWhy() {
+        java.io.ByteArrayOutputStream err = new java.io.ByteArrayOutputStream();
+        int code = SmokeMain.run(new String[] {"--base-url", "https://surge.example.com"}, Map.of("SURGE_ADMIN_PASSWORD", "pw")::get,
+            new java.io.PrintStream(java.io.OutputStream.nullOutputStream()), new java.io.PrintStream(err));
+        assertThat(code).isEqualTo(2);
+        assertThat(err.toString()).contains("destructive").contains("surge.example.com");
+    }
 }

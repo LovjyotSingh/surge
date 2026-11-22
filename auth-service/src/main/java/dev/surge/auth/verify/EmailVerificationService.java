@@ -23,7 +23,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  * Email verification with a 6-digit code (S5, SEC-13). Signup leaves the account unverified and emails a code; the
  * signed-in user enters it ({@link #verify}) or asks for a new one ({@link #resend}). Codes are random, stored only as
  * a BCrypt hash, and checked under a row lock so parallel guesses are counted one by one. The rules (15 minutes,
- * single use, 5 wrong attempts, 1 resend per 60 s and 5 per hour) are {@link EmailVerification}'s.
+ * single use, 5 wrong attempts, 1 resend per 60 s and 5 per hour) are {@link EmailVerification}'s. On top of them, an
+ * address gets at most 10 emails per 24 hours however many accounts claimed it ({@link VerificationMailQuota}).
  */
 @Service
 public class EmailVerificationService {
@@ -36,16 +37,31 @@ public class EmailVerificationService {
     private final PasswordEncoder encoder;
     private final TransactionTemplate tx;
     private final VerificationMailer mailer;
+    private final VerificationMailQuota quota;
     private final Clock clock;
 
     EmailVerificationService(UserRepository users, EmailVerificationRepository codes, PasswordEncoder encoder,
-                             TransactionTemplate tx, VerificationMailer mailer, Clock clock) {
+                             TransactionTemplate tx, VerificationMailer mailer, VerificationMailQuota quota,
+                             Clock clock) {
         this.users = users;
         this.codes = codes;
         this.encoder = encoder;
         this.tx = tx;
         this.mailer = mailer;
+        this.quota = quota;
         this.clock = clock;
+    }
+
+    /**
+     * Counts one verification email to {@code email} against the address's daily budget (10 per 24 hours across
+     * signups and resends, whichever account they belong to); 429 with {@code Retry-After} when it is used up.
+     * Signup calls this before it creates the account, so a refused signup changes nothing.
+     */
+    public void reserveSend(String email) {
+        Optional<Duration> wait = tx.execute(status -> quota.acquire(email, clock.instant()));
+        if (wait != null && wait.isPresent()) {
+            throw AccountProblem.resendThrottled(wait.get());
+        }
     }
 
     /**
@@ -61,7 +77,7 @@ public class EmailVerificationService {
             log.warn("Could not store a verification code at signup: {}", e.getClass().getSimpleName());
             return;
         }
-        mailer.trySend(user.getEmail(), user.getDisplayName(), code);
+        mailer.trySend(user.getEmail(), code);
     }
 
     private sealed interface Checked {
@@ -123,7 +139,7 @@ public class EmailVerificationService {
     }
 
     private sealed interface Resend {
-        record Send(String email, String displayName, String code) implements Resend {
+        record Send(String email, String code) implements Resend {
         }
 
         record Wait(Duration delay) implements Resend {
@@ -153,6 +169,10 @@ public class EmailVerificationService {
                         return new Resend.Wait(wait.get());
                     }
                 }
+                Optional<Duration> addressWait = quota.acquire(user.getEmail(), now);
+                if (addressWait.isPresent()) {
+                    return new Resend.Wait(addressWait.get());
+                }
                 String code = newCode();
                 String hash = encoder.encode(code);
                 if (found.isPresent()) {
@@ -160,7 +180,7 @@ public class EmailVerificationService {
                 } else {
                     codes.saveAndFlush(EmailVerification.first(userId, hash, now));
                 }
-                return new Resend.Send(user.getEmail(), user.getDisplayName(), code);
+                return new Resend.Send(user.getEmail(), code);
             });
         } catch (DataIntegrityViolationException raced) {
             // two first-ever resends at once (an account from before verification existed): one of them won
@@ -169,7 +189,7 @@ public class EmailVerificationService {
         switch (outcome) {
             case Resend.Send send -> {
                 try {
-                    mailer.send(send.email(), send.displayName(), send.code());
+                    mailer.send(send.email(), send.code());
                 } catch (MailException | IllegalArgumentException e) {
                     throw AccountProblem.mailUnavailable();
                 }
