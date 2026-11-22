@@ -1,6 +1,7 @@
 package dev.surge.gateway.support;
 
 import java.io.IOException;
+import java.net.BindException;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -25,18 +26,40 @@ public final class Downstream {
         return start(0);
     }
 
+    /**
+     * Starts listening, on {@code requestedPort} or (0) any free port. A restart on the old port is retried for up to
+     * 10 s: on Linux the stopped server's socket can still be closing for a moment ("Address already in use", seen in
+     * CI), and a restart that gave up would leave this service down for every later test in the shared context.
+     */
     private Downstream start(int requestedPort) throws IOException {
-        server = new MockWebServer();
-        server.setDispatcher(new Dispatcher() {
-            @Override
-            public MockResponse dispatch(RecordedRequest request) {
-                seen.add(request);
-                return handler.apply(request);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (true) {
+            MockWebServer candidate = new MockWebServer();
+            candidate.setDispatcher(new Dispatcher() {
+                @Override
+                public MockResponse dispatch(RecordedRequest request) {
+                    seen.add(request);
+                    return handler.apply(request);
+                }
+            });
+            try {
+                candidate.start(requestedPort);
+                server = candidate;
+                port = candidate.getPort();
+                return this;
+            } catch (BindException e) {
+                candidate.close();
+                if (requestedPort == 0 || System.nanoTime() > deadline) {
+                    throw e;
+                }
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw e;
+                }
             }
-        });
-        server.start(requestedPort);
-        port = server.getPort();
-        return this;
+        }
     }
 
     public String url() {
