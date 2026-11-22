@@ -105,6 +105,22 @@ describe('OpsPage', () => {
     ).toBeInTheDocument()
   })
 
+  it('counts the seats that disagree when the server reports them', async () => {
+    mocked.latestReport.mockResolvedValue(report)
+    mocked.integrity.mockResolvedValue({
+      eventId: 1,
+      totalSeats: 500,
+      soldSeats: 500,
+      orderItems: 500,
+      distinctSeatsSold: 500,
+      oversold: 0,
+      seatMismatches: 2,
+      consistent: false,
+    })
+    render(<OpsPage />)
+    expect(await screen.findByText('Sold seats match order lines: no (2 mismatches) ❌')).toBeInTheDocument()
+  })
+
   it('fails a run that sold nothing or ended in too many errors', async () => {
     mocked.latestReport.mockResolvedValue({ ...report, sold: 0, buyersSucceeded: 0, errors: 1000 })
     render(<OpsPage />)

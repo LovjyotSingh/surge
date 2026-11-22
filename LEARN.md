@@ -257,11 +257,11 @@ sequenceDiagram
    - [PathGuardFilter](gateway/src/main/java/dev/surge/gateway/security/PathGuardFilter.java) refuses paths with `..`, encoded slashes or `;`, which a servlet container might normalise into a different path than the one the rules saw;
    - the rule table says `/api/bookings/holds/**` needs the `USER` role; no token: **401** `unauthorized`;
    - the JWT must be RS256, signed by a key from auth-service's JWKS ([JwksCache](gateway/src/main/java/dev/surge/gateway/security/JwksCache.java)), with issuer `surge-auth`, audience `surge-api`, an expiry, a `jti` and a safe user id;
-   - the `jti` must not be on the logout denylist in `redis-edge` ([TokenDenylist](gateway/src/main/java/dev/surge/gateway/security/TokenDenylist.java)). If Redis does not answer within 1 s, the answer is **503**: a token that might have been revoked is never let through.
+   - the `jti` must not be on the logout denylist in `redis-edge` ([TokenDenylist](gateway/src/main/java/dev/surge/gateway/security/TokenDenylist.java)). If Redis does not answer within 3 s (or the key set cannot be fetched), the answer is **503** `auth-unavailable` with `Retry-After: 1`: a token that might have been revoked is never let through, and clients may retry.
 8. **The gateway routes the request** ([RouteConfig](gateway/src/main/java/dev/surge/gateway/config/RouteConfig.java)), route `booking-holds`:
    - two token buckets in `redis-edge`: 2 holds per second per user (bursts of 10) and 20 per minute per client IP. Empty: **429** `rate-limited` with `Retry-After`;
-   - the circuit breaker `booking` and its bulkhead (at most 5,000 calls in flight to booking). Bulkhead full: **503** `service-busy` with `Retry-After: 1` at once ([section 5.27](#527-circuit-breaker-retry-timeout-and-bulkhead));
-   - [IdentityHeadersFilter](gateway/src/main/java/dev/surge/gateway/security/IdentityHeadersFilter.java) removes `X-User-*` and `Authorization`, and [InternalIdentityFilter](gateway/src/main/java/dev/surge/gateway/security/InternalIdentityFilter.java) adds `X-Surge-Identity`: an ES256 token signed with the gateway's key, addressed to `booking-service` only, valid 60 seconds, carrying `sub`, `roles` and `ev`;
+   - the circuit breaker `booking` and its bulkhead (at most 5,000 calls in flight to booking; checkout has its own breaker, `booking-orders`, and its own bulkhead, so slow holds at the sale's peak cannot turn away buyers who already hold seats). Bulkhead full: **503** `service-busy` with `Retry-After: 1` at once ([section 5.27](#527-circuit-breaker-retry-timeout-and-bulkhead));
+   - [IdentityHeadersFilter](gateway/src/main/java/dev/surge/gateway/security/IdentityHeadersFilter.java) removes `X-User-*` and `Authorization`, and [InternalIdentityFilter](gateway/src/main/java/dev/surge/gateway/security/InternalIdentityFilter.java) adds `X-Surge-Identity`: an ES256 token signed with the gateway's key, addressed to `booking-service` only, valid 60 seconds, carrying `sub`, `roles` and `ev`. The signature happens just before the load balancer picks an instance, after the rate limits and the bulkhead, so a `429` or a busy refusal costs no signature;
    - `lb://booking-service` is resolved to an address through Eureka ([section 5.18](#518-eureka-and-client-side-load-balancing)).
 9. **booking checks it again.** [RequestIdFilter](common/src/main/java/dev/surge/common/web/RequestIdFilter.java) keeps the request id (if it is well formed), puts it in the logging MDC and echoes it in the response header; any error body will carry it as `requestId`. The shared security chain ([InternalSecurityAutoConfiguration](common/src/main/java/dev/surge/common/security/InternalSecurityAutoConfiguration.java)) verifies the identity token: wrong signature, wrong audience, older than 60 s, or missing: **401**. booking's [AccessRulesConfig](booking-service/src/main/java/dev/surge/booking/config/AccessRulesConfig.java) says holds need a gateway user.
 10. **Controller.** [HoldController](booking-service/src/main/java/dev/surge/booking/hold/HoldController.java) runs.
@@ -311,7 +311,7 @@ MySQL was not touched in steps 9 to 16. (The first request for an event loads it
     3. Insert the `orders` row and one `order_item` per seat. `order_item.seat_id` is unique.
     4. Insert two `outbox` rows: `OrderConfirmed` (destination `kafka:orders.v1`) and `TicketRequested` (`rabbit:surge.tickets/ticket.requested`). The payloads are the records in [common/messaging](common/src/main/java/dev/surge/common/messaging/).
     5. Commit. All of it is saved, or none of it.
-24. **Losing the race.** If the version check or a unique constraint fails, `OrderWriter` turns it into a `SeatConflictException`. `CheckoutService` refunds the payment, releases the hold and returns **409** `seat-taken`. Releasing runs [release.lua](booking-service/src/main/resources/redis/release.lua): the same compare-and-delete clean-up as `finalize.lua`, but nothing is added to the sold set; open seat maps are then told the MySQL truth. So the buyer can pick other seats at once instead of waiting 5 minutes. (If the unique violation was on the idempotency key, the order already exists, so it replays that order instead.) If any other error happens, it first checks whether the commit actually succeeded before refunding.
+24. **Losing the race.** If the version check or a unique constraint fails, `OrderWriter` turns it into a `SeatConflictException`. `CheckoutService` refunds the payment, releases the hold and returns **409** `seat-taken`. Releasing runs [release.lua](booking-service/src/main/resources/redis/release.lua): the same compare-and-delete clean-up as `finalize.lua`, and it also adds to the sold set the seats MySQL already has as SOLD (the ones this checkout lost), so Redis stops offering them; open seat maps are then told the MySQL truth. So the buyer can pick other seats at once instead of waiting 5 minutes. (If the unique violation was on the idempotency key, the order already exists, so it replays that order instead.) If any other error happens, it first checks whether the commit actually succeeded before refunding.
 25. **After the commit.** The database is now the source of truth, so nothing after this point may fail the request:
     - [finalize.lua](booking-service/src/main/resources/redis/finalize.lua) adds the seats to `sold:{eventId}` and deletes the hold's keys that still belong to it;
     - a `SOLD` change is published, so every seat map shows the seats as sold;
@@ -382,7 +382,7 @@ The phase 2 modules, each under `<module>/src/main/java/dev/surge/<name>/`:
 
 ## 5. Technologies
 
-Each section follows the same pattern: what it is, why Surge needs it, where it is in the code, how to see it, and interview questions with answers. Sections 5.1 to 5.15 cover what phase 1 built (mostly inside booking-service), updated where phase 2 changed it; sections 5.16 to 5.31 cover phase 2. The commands use the `dc`, `env_get`, `TOKEN` and `ADMIN` helpers from [section 10](#10-how-to-run-everything).
+Each section follows the same pattern: what it is, why Surge needs it, where it is in the code, how to see it, and interview questions with answers. Sections 5.1 to 5.15 cover what phase 1 built (mostly inside booking-service), updated where phase 2 changed it; sections 5.16 to 5.31 cover phase 2. The commands use the `dc`, `env_get`, `secret_get`, `TOKEN` and `ADMIN` helpers from [section 10](#10-how-to-run-everything).
 
 ### 5.1 Core Java and OOP
 
@@ -582,7 +582,7 @@ The status codes Surge uses:
 | 415 | `unsupported-media-type` | `Content-Type` is not JSON |
 | 429 | `rate-limited` | Too many hold attempts; see `Retry-After` |
 | 500 | `internal-error` | A bug or an infrastructure failure; logged in full, but the body never contains the exception message |
-| 503 | `payment-unavailable`, `stream-capacity` | Payment service down, its circuit open or the outcome unknown (the hold is kept; `Retry-After`); too many open seat streams |
+| 503 | `payment-unavailable`, `service-unavailable`, `stream-capacity` | Payment service down, its circuit open or the outcome unknown (the hold is kept; `Retry-After`); booking's own Redis or database did not answer within its timeout (`Retry-After: 1`; these were `500` before); too many open seat streams. The gateway adds `service-busy` (a full bulkhead) and `auth-unavailable` (the denylist or key set did not answer), both with `Retry-After: 1` |
 
 `ApiExceptionHandler` extends Spring's `ResponseEntityExceptionHandler`. Surge's own exceptions have explicit handlers with the slugs above. Errors that Spring MVC raises by itself (unknown route, wrong method, bad parameter) are built by the base class and pass through one overridden method, `createResponseEntity`, which gives them a Surge `type` derived from the status, the `requestId` and `application/problem+json`. So every error has the same shape, whoever raised it. `ApiErrorsTest` checks the 400, 404, 405 and 500 cases.
 
@@ -831,7 +831,7 @@ Suppose two checkouts both read seat 42 at version 0. MySQL (InnoDB) lets the fi
 
 ```bash
 # booking's own MySQL user, which can read only the booking database
-SQL() { dc exec -T -e MYSQL_PWD="$(env_get MYSQL_BOOKING_PASSWORD)" mysql mysql -ubooking booking -e "$1"; }
+SQL() { dc exec -T -e MYSQL_PWD="$(secret_get mysql_booking_password)" mysql mysql -ubooking booking -e "$1"; }
 
 # Which migrations ran
 SQL "SELECT version, description, success FROM flyway_schema_history;"
@@ -878,7 +878,7 @@ The ids come from MySQL's `AUTO_INCREMENT`, which is simple and fits the schema.
 | Key names | [RedisKeys](booking-service/src/main/java/dev/surge/booking/hold/RedisKeys.java) |
 | Atomic hold of several seats | [hold.lua](booking-service/src/main/resources/redis/hold.lua), called from [HoldStore.tryHold](booking-service/src/main/java/dev/surge/booking/hold/HoldStore.java) |
 | Mark sold and clean up after checkout | [finalize.lua](booking-service/src/main/resources/redis/finalize.lua), called from `HoldStore.finalizeSold` |
-| Give a hold back without selling it (checkout lost the seats) | [release.lua](booking-service/src/main/resources/redis/release.lua), called from `HoldStore.release` |
+| Give a hold back without selling it (checkout lost the seats; adds the seats MySQL already has as SOLD to the sold set) | [release.lua](booking-service/src/main/resources/redis/release.lua), called from `HoldStore.release` |
 | Announce expired holds exactly once | [sweep.lua](booking-service/src/main/resources/redis/sweep.lua), called from [HoldExpirySweeper](booking-service/src/main/java/dev/surge/booking/stream/HoldExpirySweeper.java) |
 | Token-bucket rate limit | [token_bucket.lua](booking-service/src/main/resources/redis/token_bucket.lua), called from [RateLimiter](booking-service/src/main/java/dev/surge/booking/ratelimit/RateLimiter.java) |
 | Idempotency keys (`SET NX`, compare-and-delete, compare-and-set) | [IdempotencyStore](booking-service/src/main/java/dev/surge/booking/order/IdempotencyStore.java) |
@@ -906,7 +906,7 @@ The ids come from MySQL's `AUTO_INCREMENT`, which is simple and fits the schema.
 In phase 2 Redis refuses anonymous clients, and booking's ACL user may run only the commands booking uses (no `KEYS`, `MONITOR`, `FLUSHALL` or `CONFIG`), so these commands sign in as `booking`:
 
 ```bash
-RCLI() { dc exec -T redis redis-cli --no-auth-warning --user booking --pass "$(env_get REDIS_BOOKING_PASSWORD)" "$@"; }
+RCLI() { dc exec -T redis redis-cli --no-auth-warning --user booking --pass "$(secret_get redis_booking_password)" "$@"; }
 RCLI --scan --pattern 'seat:1:*'            # seats held right now
 RCLI ZRANGE holds:expiry 0 -1 WITHSCORES    # holds waiting to expire
 RCLI SCARD sold:1                           # sold seats in event 1
@@ -1003,7 +1003,7 @@ A plain `"8080:8080"` publishes on every network interface (`0.0.0.0`), so anyon
 Arguments given to `docker compose run loadtest ...` replace the service's `command`. Surge first put `--base-url http://web` in `command`, so `--users 10000` wiped it out and the tester called the wrong address. The fix (see the comment in [compose.loadtest.yaml](compose.loadtest.yaml)) puts the fixed arguments in `entrypoint`, so your arguments are added after them.
 
 **Q7. Where do the passwords come from?**
-Not from the repository: `docker/gen-secrets.sh` generates a random value for every credential into `.env` (mode 600, git-ignored), and Compose refuses to start while any is missing (`${VAR:?run docker/gen-secrets.sh first}`). The services run with `SURGE_ENV=prod`, so a missing credential or a development key stops them at start-up instead of running insecurely. The one exception is auth under the load-test overlay: auth refuses to mint test tokens in prod, so that overlay runs it with `SURGE_ENV=dev`, which also skips its production start-up guards (it still gets the real credentials and keys). That is why the overlay is for a private machine only.
+Not from the repository: `docker/gen-secrets.sh` generates a random value for every credential and writes each one to its own file in `docker/secrets/` (directory mode 700, git-ignored). `.env` (mode 600, also git-ignored) holds only user names and settings. Compose mounts each file read-only into only the containers that use it, at `/run/secrets/env/<VARIABLE>`, and a small start-up hook in the shared module ([SecretFiles](common/src/main/java/dev/surge/common/security/SecretFiles.java)) turns each file into the property of that name, so `${MYSQL_PASSWORD}` in a config file resolves as if it were an environment variable while `docker inspect` and `/proc/1/environ` show nothing. Compose refuses to start while `.env` lacks a name (`${EUREKA_USER:?run docker/gen-secrets.sh first}`) or a secret file is missing, and a service refuses to start with a variable set both ways or an empty file, naming the variable and never a value. The services run with `SURGE_ENV=prod`, so a missing credential or a development key stops them at start-up instead of running insecurely. The one exception is auth under the load-test overlay: auth refuses to mint test tokens in prod, so that overlay runs it with `SURGE_ENV=dev`, which also skips its production start-up guards (it still gets the real credentials and keys). That is why the overlay is for a private machine only.
 
 ### 5.13 Nginx
 
@@ -1149,7 +1149,7 @@ A single-page app built with Vite, React 19 and TypeScript, kept deliberately si
 | [App.tsx](web/src/App.tsx) | Routes (`/`, `/search`, `/events/:id`, `/tickets/:orderId`, `/login`, `/signup`, `/verify`, `/ops` for admins) and the header with the user menu |
 | [auth/session.ts](web/src/auth/session.ts), [AuthContext.tsx](web/src/auth/AuthContext.tsx) | The signed-in session (token, expiry, user) in `sessionStorage`; an expired token counts as signed out |
 | [api/client.ts](web/src/api/client.ts) | `fetch` wrapper: adds `Authorization: Bearer`, turns Problem Details into an `ApiError`, sends a `401` to the login page |
-| [api/busyRetry.ts](web/src/api/busyRetry.ts) | Retries a hold or checkout that got `503 service-busy`, at most 3 times, showing "Busy, retrying…" |
+| [api/busyRetry.ts](web/src/api/busyRetry.ts) | Retries a hold or checkout that got `503 service-busy` or `503 auth-unavailable`, at most 3 times, showing "Busy, retrying…" |
 | [LoginPage.tsx](web/src/pages/LoginPage.tsx), [SignupPage.tsx](web/src/pages/SignupPage.tsx), [VerifyPage.tsx](web/src/pages/VerifyPage.tsx) | Sign-in and sign-up; entering the emailed code, with a Resend button and a hint to check Spam |
 | [SearchPage.tsx](web/src/pages/SearchPage.tsx) | Search box (debounced 300 ms), city, category, max price and dates; results as cards |
 | [EventPage.tsx](web/src/pages/EventPage.tsx) | Seat selection, hold, countdown, pay the locked quote; one idempotency key per hold; on `seat-taken` at checkout it drops the hold and reloads the map |
@@ -1235,7 +1235,7 @@ Spring Cloud Gateway's mature server is built on WebFlux and Netty. A gateway do
 Three layers. nginx blanks `X-User-*`. The gateway removes them again and never forwards the user's JWT. And the services do not read headers at all: they only trust `X-Surge-Identity`, which only the gateway's private key can sign, which expires in 60 seconds, and which is addressed to one service. `GatewayRoutingTest.forgedHeadersAreReplaced` checks what the mock service actually receives.
 
 **Q5. What happens when booking is down or overloaded?**
-Down: the circuit breaker counts failures, and after enough of them it opens and answers `503 service-unavailable` at once for 10 seconds instead of waiting on a dead service; then it lets three trial calls through. Overloaded: booking's bulkhead allows 5,000 calls in flight; one more gets `503 service-busy` with `Retry-After: 1` immediately, a signal clients retry ([section 5.27](#527-circuit-breaker-retry-timeout-and-bulkhead)).
+Down: the circuit breaker counts failures, and after enough of them it opens and answers `503 service-unavailable` at once for 10 seconds instead of waiting on a dead service; then it lets three trial calls through. Overloaded: booking's bulkhead allows 5,000 calls in flight for holds (checkout has its own breaker and bulkhead of the same size); one more gets `503 service-busy` with `Retry-After: 1` immediately, a signal clients retry ([section 5.27](#527-circuit-breaker-retry-timeout-and-bulkhead)).
 
 **Q6. Why does the gateway not decide everything, if it already checked the role?**
 Because the network is not trusted. If anything inside could reach a service directly (a compromised container, a misconfigured port), gateway-only checks would be bypassed. So every service checks the identity token and the role again (deny by default), and admin handlers check `ADMIN` once more in code. The gateway's rules are a fast first filter, not the only lock.
@@ -1281,7 +1281,7 @@ HS256 uses one shared secret to sign and to verify, so every verifier could also
 The token header names the key that signed it. To rotate, auth publishes the new key next to the old one in the JWKS and starts signing with the new one. Tokens signed with the old key keep verifying until they expire (30 minutes); then the old key can go. The gateway refetches the JWKS when it sees an unknown `kid`, but at most once per 30 seconds, so a flood of tokens with random `kid`s cannot turn into a flood of requests to auth (`TokenLifecycleTest.aHundredRandomKidTokensFetchTheKeySetAtMostOncePer30Seconds`).
 
 **Q4. JWTs are stateless. How does logout work?**
-A signed token stays valid until it expires, so logout needs a little state: the gateway stores the token's `jti` in Redis until the token's `exp` (plus the clock skew), and every signed-in request checks it. Only the id is stored, never the token, and the list never grows past the tokens still alive. If Redis cannot answer within a second, the request gets `503`: failing open would let a revoked token through.
+A signed token stays valid until it expires, so logout needs a little state: the gateway stores the token's `jti` in Redis until the token's `exp` (plus the clock skew), and every signed-in request checks it. Only the id is stored, never the token, and the list never grows past the tokens still alive. If Redis cannot answer within 3 seconds, the request gets `503 auth-unavailable` with `Retry-After: 1`: failing open would let a revoked token through.
 
 **Q5. What is the `alg` confusion attack, and why is Surge not open to it?**
 A verifier that believes the token's own `alg` header can be tricked: `alg: none` (no signature), or `HS256` using the RSA public key as the HMAC secret (the attacker has the public key). Surge pins the algorithm: the gateway's decoder accepts RS256 only, and the internal tokens ES256 only. `InternalTokenVerifierTest` includes `rejectsAlgNone` and `rejectsHs256SignedWithThePublicKeyBytes`.
@@ -1308,10 +1308,10 @@ Nothing: the key comes from a file, so tokens survive. In development, when no k
 | The gateway's `lb://` routes | [RouteConfig](gateway/src/main/java/dev/surge/gateway/config/RouteConfig.java) |
 | `@LoadBalanced RestClient.Builder` for service-to-service calls | [PaymentClientConfig](booking-service/src/main/java/dev/surge/booking/payment/PaymentClientConfig.java), [ClientsConfig](notification-service/src/main/java/dev/surge/notification/config/ClientsConfig.java) |
 
-**How to see it.** Open http://localhost:8761 and sign in with `EUREKA_USER` / `EUREKA_PASSWORD` from `.env`: every service is listed with its address. Or:
+**How to see it.** Open http://localhost:8761 and sign in with `EUREKA_USER` from `.env` and the password in `docker/secrets/eureka_password`: every service is listed with its address. Or:
 
 ```bash
-curl -s -u "$(env_get EUREKA_USER):$(env_get EUREKA_PASSWORD)" -H "Accept: application/json" \
+curl -s -u "$(env_get EUREKA_USER):$(secret_get eureka_password)" -H "Accept: application/json" \
   localhost:8761/eureka/apps | grep -o '"app":"[A-Z-]*"' | sort -u
 curl -s -o /dev/null -w "%{http_code}\n" localhost:8761/eureka/apps    # 401 without credentials
 ```
@@ -1325,7 +1325,7 @@ Server-side: callers send everything to one load balancer (nginx, a cloud LB), w
 It stops sending heartbeats, and Eureka evicts it after its lease runs out; clients drop it at their next registry fetch. In between, a caller may still pick the dead instance: the call fails fast with a connection error, which booking's retry and circuit breaker handle ([section 5.27](#527-circuit-breaker-retry-timeout-and-bulkhead)). Surge's single registry turns self-preservation off, so dead instances are evicted promptly instead of being kept "just in case".
 
 **Q3. Why does Eureka need a password?**
-An open registry lets anyone register an instance called `payment-service` with their own address, and `lb://` routing would start sending payments there. The security audit found exactly that, so both registering and reading need HTTP Basic, and production refuses the development credentials.
+An open registry lets anyone register an instance called `payment-service` with their own address, and `lb://` routing would start sending payments there. The security audit found exactly that, so both registering and reading need HTTP Basic, and production refuses the development credentials. One limit is accepted: every Spring service shares the one Eureka credential, and Eureka does not restrict which application name an authenticated client may register, so a compromised container on the internal network could register as `PAYMENT-SERVICE` and receive the signed identity tokens (60 s, one audience) sent there. The fix is static Docker DNS names on a single VM, or one Eureka user per service limited to its own name; [accepted-risks.md](docs/security/accepted-risks.md#n2-medium-one-eureka-credential-for-every-service-and-any-client-may-register-under-any-name) has the details.
 
 **Q4. Why do services register an IP address from one particular network?**
 A service on several Docker networks has several addresses (the `app` network, its store networks). If it registered a store network's address, the gateway, which is not on that network, could not reach it. `prefer-ip-address` plus the preferred network `10.30.251.` makes every service register its `app` address.
@@ -1365,7 +1365,7 @@ One place to see and change settings for every service and every environment, un
 `optional:configserver:` lets a service start with its own `application.yml` defaults, which match `config-repo` for booking. In Compose the services still wait for it to be healthy, so normally they get the central values. Settings are read once at start-up; Surge does not refresh them at runtime (that would take `@RefreshScope` and a refresh trigger such as Spring Cloud Bus).
 
 **Q3. Where do the secrets go, then?**
-Not in `config-repo`: it is committed to Git and served to every service, so anything in it is readable by all of them. Secrets come from the environment and secret files, generated per installation ([section 5.31](#531-security)), and a CI job fails if `config-repo/` contains anything that looks like a password, token or key. <!-- S10 -->
+Not in `config-repo`: it is committed to Git and served to every service, so anything in it is readable by all of them. Secrets come from secret files mounted into each container, generated per installation ([section 5.31](#531-security)), and a CI job fails if `config-repo/` contains anything that looks like a password, token or key.
 
 **Q4. Native files or a Git backend?**
 Native is simplest for one Compose stack: the folder is mounted read-only into the server. A Git backend adds history, review and per-environment branches without redeploying the server, which is what you would use with several environments.
@@ -1394,7 +1394,7 @@ How the four ideas fit together in Surge:
 
 - **Partitions and keys.** Both topics are keyed by event id, so all messages about one event land in one partition and are read in order (an `OrderConfirmed` never overtakes the `SalesReset` before it). Three partitions allow up to three consumers per group to share the work.
 - **Consumer groups.** `orders.v1` has two groups, `catalog-orders` and `notification-audit`. Each gets every order; neither slows the other down.
-- **Dead-letter topics.** A record that fails is retried twice, one second apart, then copied to a dead-letter topic and skipped, so one bad record cannot block its partition. A record that cannot be parsed, or makes no sense (a 101-row layout, a sale moved after seats were sold), goes there at once. Each consumer has its own DLT name, so two groups' failures never mix.
+- **Dead-letter topics.** A record that fails is retried twice, one second apart (booking's `catalog.v1` consumer and notification's audit consumer), then copied to a dead-letter topic and skipped, so one bad record cannot block its partition. Catalog's `orders.v1` consumer is more patient: it makes 5 attempts, waiting 1, 2, 4 and 8 s between them (about 15 s), so a slow Elasticsearch or database has time to come back before a sale count is dead-lettered. In all three, a record that cannot be parsed, or makes no sense (a 101-row layout, a sale moved after seats were sold), goes to the dead-letter topic at once. Each consumer has its own DLT name, so two groups' failures never mix.
 - **Idempotent consumers.** Delivery is at least once (the outbox may send twice; a consumer may crash after its work and before committing its offset). So each consumer first inserts the message id into its own `processed_message` table, in the same transaction as its work. A second copy hits the primary key and is skipped: exactly one effect.
 
 **How to see it.** Buy two seats, then watch the two readers of `orders.v1` react:
@@ -1419,7 +1419,7 @@ They use different consumer groups. Kafka tracks an offset per group, so each gr
 Every message arrives, but some may arrive twice: the outbox relay can publish and crash before marking the row, and a consumer can finish its work and crash before committing its offset. Exactly-once delivery is not the goal; exactly-once *effect* is. Each consumer records the message id in `processed_message` in the same database transaction as its work, so a duplicate finds the id already there and does nothing.
 
 **Q4. When does a message go to a dead-letter topic, and why not retry forever?**
-After two retries one second apart, or immediately when the payload cannot be parsed or is invalid. Retrying a message that will never succeed would block every message behind it in that partition (a "poison pill"). The DLT keeps the evidence for a human and lets the partition move on.
+After the retries (two, one second apart; catalog's `orders.v1` consumer makes four, at 1, 2, 4 and 8 s), or immediately when the payload cannot be parsed or is invalid. Retrying a message that will never succeed would block every message behind it in that partition (a "poison pill"). The DLT keeps the evidence for a human and lets the partition move on.
 
 **Q5. Why `acks: all` and idempotence on the producer?**
 `acks: all` means the broker confirms only when the record is safely written (to all in-sync replicas, one in this local setup). Idempotence lets the broker drop duplicates caused by the producer's own retries. Together with the outbox, which waits for that confirmation before marking a row sent, a message is never lost and producer retries do not add copies.
@@ -1445,7 +1445,7 @@ SASL/SCRAM-SHA-512 users per service, and ACLs per topic and group: booking may 
 
 The life of a ticket message: booking's outbox publishes it to `surge.tickets` with routing key `ticket.requested` and waits for the broker's confirm. The broker puts it in `tickets`. notification takes it and runs `TicketWorkflow`. On an exception the listener retries in place (1, 2, 4, then 8 s). After the fifth failure, or at once for a message that can never succeed (bad JSON, an invalid user id), it rejects the message without requeueing, and the broker moves it through `surge.tickets.dlx` into `tickets.dlq`. An admin lists it with the failure reason and replays it once the cause is fixed.
 
-**How to see it.** Open the RabbitMQ UI at http://localhost:15672 (`surge-admin` / `RABBIT_ADMIN_PASSWORD`) and look at the queues `tickets` and `tickets.dlq`. To watch the dead-letter path, take S3 away, buy a ticket, and bring it back:
+**How to see it.** Open the RabbitMQ UI at http://localhost:15672 (`surge-admin`, password in `docker/secrets/rabbit_admin_password`) and look at the queues `tickets` and `tickets.dlq`. To watch the dead-letter path, take S3 away, buy a ticket, and bring it back:
 
 ```bash
 dc stop s3mock                              # the ticket's PDF cannot be stored now
@@ -1537,7 +1537,7 @@ curl -s "localhost:8080/api/catalog/events/search?q=coldply" | grep -o '"title":
 curl -s "localhost:8080/api/catalog/events/search?city=delhi&category=concert&size=5" | grep -o '"title":"[^"]*"'
 curl -s "localhost:8080/api/catalog/events/search?lat=25.2&lon=55.27&radiusKm=50" | grep -o '"city":"[^"]*"' | sort -u   # Dubai only
 curl -s "localhost:8080/api/catalog/events/search?size=500"                                                    # 400 validation-failed
-curl -s -u "elastic:$(env_get ELASTIC_PASSWORD)" "localhost:9200/events/_mapping?pretty" | head -30
+curl -s -u "elastic:$(secret_get elastic_password)" "localhost:9200/events/_mapping?pretty" | head -30
 curl -s -H "Authorization: Bearer $ADMIN" -F "file=@catalog-service/src/main/resources/sample/events.csv" \
   localhost:8080/api/catalog/admin/events/import                                                          # {"imported":10,"errors":[]}
 ```
@@ -1593,7 +1593,7 @@ Large blobs make the database bigger, its backups slower and its buffer pool les
 S3 normally addresses a bucket as a host name (`surge-tickets.s3.amazonaws.com`, "virtual-hosted style"). A local server such as S3Mock has no DNS for that, so the client puts the bucket in the path instead (`s3mock:9090/surge-tickets/...`). `forcePathStyle(true)` makes the same code work with both.
 
 **Q3. How would you switch to real S3?**
-Only configuration changes: leave `S3_ENDPOINT` empty, set the region, bucket and credentials (better: an IAM role on the server instead of keys). The production overlay and [docs/DEPLOY.md](docs/DEPLOY.md) cover this. <!-- S10 -->
+Only configuration changes: leave `S3_ENDPOINT` empty, set the region, bucket and credentials (better: an IAM role on the server instead of keys). The production overlay and [docs/DEPLOY.md](docs/DEPLOY.md) cover this: the bucket is private and created by you, the keys are the files `docker/secrets/s3_access_key` and `s3_secret_key` (written with `docker/set-secret.sh`), and in a public deployment notification refuses the development keys and a plain-HTTP endpoint.
 
 **Q4. Why does the browser download the ticket through notification-service instead of straight from S3?**
 Because the ticket is personal: notification checks that the caller is the buyer (anyone else gets 404) and serves it with `Cache-Control: no-store`. The alternative is a presigned URL: S3 serves the file directly, and the link itself is the permission, valid for a few minutes. That scales better for big files, but whoever gets the link gets the ticket.
@@ -1656,7 +1656,7 @@ Read it back: OpenPDF's `PdfReader` and `PdfTextExtractor` pull out the text, an
 **Interview questions.**
 
 **Q1. Why Mailpit and not a real mail account during development?**
-No credentials to manage, no chance of emailing real people from a test, every email visible at once, and an API that tests can assert on (`TicketWorkflowTest` checks the attachment). Production points `MAIL_*` at a real SMTP server instead, with TLS required ([docs/DEPLOY.md](docs/DEPLOY.md)). <!-- S10 -->
+No credentials to manage, no chance of emailing real people from a test, every email visible at once, and an API that tests can assert on (`TicketWorkflowTest` checks the attachment). Production points `MAIL_*` at a real SMTP provider instead (the user name and `MAIL_FROM` in `.env`, the password in `docker/secrets/mail_password`), and a public deployment refuses to start unless SMTP AUTH and STARTTLS are on and the sender is not `@surge.local` ([docs/DEPLOY.md](docs/DEPLOY.md)).
 
 **Q2. When is the ticket email sent: before or after the database commit?**
 Inside the transaction, after everything else succeeded and just before the commit. A failed send rolls everything back and the retry starts clean. The other order (send after commit) could lose the email if the send failed after the commit. The cost of Surge's order: if the commit itself fails after the send, the retry sends a second, identical email. For a ticket, a duplicate is better than nothing.
@@ -1692,17 +1692,17 @@ Surge uses Resilience4j for all four.
 | `retry(circuitBreaker(call))`, a decline is not a failure, "in doubt" after a read timeout | [HttpPaymentGateway](booking-service/src/main/java/dev/surge/booking/payment/HttpPaymentGateway.java) |
 | `503 payment-unavailable` with `Retry-After`; the hold is kept | [ApiExceptionHandler](booking-service/src/main/java/dev/surge/booking/error/ApiExceptionHandler.java) |
 | Refunding charges whose outcome was never learned | [PaymentReconciler](booking-service/src/main/java/dev/surge/booking/payment/PaymentReconciler.java) |
-| Gateway breakers `booking` and `catalog` (last 20 calls, at least 10, 50%, open 10 s, 3 trial calls; 10 s time limit; bulkhead refusals ignored) | `breakerDefaults` in [RouteConfig](gateway/src/main/java/dev/surge/gateway/config/RouteConfig.java) |
-| Gateway bulkheads: booking 5,000, catalog 300, others 100 calls in flight, never waiting (`SURGE_GATEWAY_BULKHEAD_*`) | [BulkheadConfig](gateway/src/main/java/dev/surge/gateway/config/BulkheadConfig.java) |
-| Fallbacks: `503 service-busy` with `Retry-After: 1` when the bulkhead is full, else `503 service-unavailable` | [FallbackController](gateway/src/main/java/dev/surge/gateway/fallback/FallbackController.java) |
-| Clients that retry `service-busy` | [Buyer](tools/loadtest/src/main/java/dev/surge/loadtest/Buyer.java) (load test), [busyRetry.ts](web/src/api/busyRetry.ts) (web) |
+| Gateway breakers `booking` (holds), `booking-orders` (checkout) and `catalog`, each with its own state (a 10 s time-based window, at least 100 calls in it, 50% failures, open 10 s, 3 trial calls; 10 s time limit; bulkhead refusals ignored) | `breakerDefaults` in [RouteConfig](gateway/src/main/java/dev/surge/gateway/config/RouteConfig.java) |
+| Gateway bulkheads: holds 5,000 (`SURGE_GATEWAY_BULKHEAD_BOOKING`), checkout the same unless `SURGE_GATEWAY_BULKHEAD_ORDERS` is set, catalog 300, others 100 calls in flight, never waiting | [BulkheadConfig](gateway/src/main/java/dev/surge/gateway/config/BulkheadConfig.java) |
+| Fallbacks: `503 service-busy` with `Retry-After: 1` when the bulkhead is full, else `503 service-unavailable`. A denylist or key-set outage is a different answer, `503 auth-unavailable` with `Retry-After: 1`, written before the request is routed ([ProblemErrorHandler](gateway/src/main/java/dev/surge/gateway/error/ProblemErrorHandler.java)) | [FallbackController](gateway/src/main/java/dev/surge/gateway/fallback/FallbackController.java) |
+| Clients that retry `service-busy` and `auth-unavailable` | [Buyer](tools/loadtest/src/main/java/dev/surge/loadtest/Buyer.java) (load test), [busyRetry.ts](web/src/api/busyRetry.ts) (web) |
 | Breaking payment on purpose: decline rate, error rate, latency | [ChaosController](payment-service/src/main/java/dev/surge/payment/ChaosController.java), the Ops page |
 
 **The hidden bulkhead.** This is one of the best stories in the project. With `resilience4j-bulkhead` on the classpath, Spring Cloud CircuitBreaker silently wraps every reactive circuit breaker in a Resilience4j semaphore bulkhead, with the library's default of **25 concurrent calls and no waiting**. Nobody had configured it, and no test sent more than 25 requests at once. In the first live 10,000-buyer run through the gateway, booking's access log showed **29 holds in the whole run**: every other buyer got the breaker's fallback, which said "booking unavailable" although booking was idle. The fixes came in three steps, each found by review or by the next run:
 
 1. A test that sends far more than 25 concurrent holds and expects all of them to reach booking (`CircuitBreakerBulkheadTest.manyMoreThanTwentyFiveConcurrentHoldsAllReachBooking`), then a limit set on purpose. The first choice, 20,000, was as big as booking's whole connection pool, so it protected nothing.
-2. A share per service: booking 5,000, catalog 300, everything else 100. A refused call never waits (the bulkhead takes its permit on a Netty thread; waiting there would stall every request on that thread). And a refusal is not a failure of the service: the breaker ignores `BulkheadFullException`. Otherwise one burst past the bulkhead would open the breaker and turn away every hold for 10 seconds, including the ones there was room for.
-3. A ruling from the code review: **overload is an honest, retryable answer.** A full bulkhead now answers `503 service-busy` with `Retry-After: 1` at once, distinct from `service-unavailable`. The limit is never raised for the load test. Instead the clients behave like good clients: a load-test buyer waits `Retry-After` plus up to a second of random jitter and resends the same step (same seat, same `Idempotency-Key`), at most 30 times; the report counts these as `busyRetries`. The web page retries a busy hold or checkout up to 3 times, showing "Busy, retrying…".
+2. A share per service: holds 5,000 and checkout 5,000 (two breakers, so a slow burst of holds cannot open the breaker for buyers who already hold seats), catalog 300, everything else 100. A refused call never waits (the bulkhead takes its permit on a Netty thread; waiting there would stall every request on that thread). And a refusal is not a failure of the service: the breaker ignores `BulkheadFullException`. Otherwise one burst past the bulkhead would open the breaker and turn away every hold for 10 seconds, including the ones there was room for.
+3. A ruling from the code review: **overload is an honest, retryable answer.** A full bulkhead now answers `503 service-busy` with `Retry-After: 1` at once, distinct from `service-unavailable`. The limit is never raised for the load test. Instead the clients behave like good clients: a load-test buyer waits `Retry-After` plus up to a second of random jitter and resends the same step (same seat, same `Idempotency-Key`), at most 30 times; the report counts these as `busyRetries`. The web page retries a busy hold or checkout up to 3 times, showing "Busy, retrying…". A checkout that fails in a way that may still have succeeded (a timeout or connection failure, `502`, `504`, a `503` that is not `service-busy`, or `409 request-in-progress`) is resent unchanged with the same `Idempotency-Key` up to 3 times within the run's deadline, waiting `Retry-After` or 1 to 2 s; booking replays the order if the first try went through, and a `200` with `Idempotent-Replayed: true` counts as a sale. A hold is never resent blindly; a `409 hold-exists` that carries the hold's id is adopted and checked out.
 
 One consequence is kept on purpose: the gateway's rate limiters run before the breaker, so every retry spends a rate-limit token, and a client that retries too eagerly gets `429`. The limiters protect the bulkhead too.
 
@@ -1722,7 +1722,7 @@ The smoke test's check 6 does exactly this and measures it.
 **Interview questions.**
 
 **Q1. Explain the three states of a circuit breaker.**
-Closed: calls go through and results are recorded in a sliding window (Surge: the last 20 calls). When at least the minimum number of calls has been seen and the failure rate (or the slow-call rate) passes the threshold, the breaker opens. Open: every call fails immediately, without touching the service, for the wait duration (10 s). Half-open: a few trial calls (3) go through; if they succeed the breaker closes, if they fail it opens again. The point is to stop hammering a sick service and to give users a fast answer.
+Closed: calls go through and results are recorded in a sliding window (payment: the last 20 calls; the gateway's breakers: the last 10 seconds, at least 100 calls). When at least the minimum number of calls has been seen and the failure rate (or the slow-call rate) passes the threshold, the breaker opens. Open: every call fails immediately, without touching the service, for the wait duration (10 s). Half-open: a few trial calls (3) go through; if they succeed the breaker closes, if they fail it opens again. The point is to stop hammering a sick service and to give users a fast answer.
 
 **Q2. A card is declined. Does that count as a failure for the breaker?**
 No. A decline is a normal, correct answer (HTTP 200 with `approved: false`). Only I/O errors, timeouts and 5xx count. Otherwise a run of declined cards would open the circuit and block everyone's payments (`HttpPaymentGatewayTest.declineIsNotAFailure`).
@@ -1743,7 +1743,7 @@ Queueing would hide overload as latency for everyone, and in the reactive gatewa
 Outside: `retry(circuitBreaker(call))`. Each attempt is recorded by the breaker, and when the breaker is open the retry gets an immediate "not permitted" and does not keep trying. With the retry inside, the breaker would see one call where the service saw several.
 
 **Q8. How do the timeouts fit together?**
-Inner timeouts are shorter than outer ones, so the layer that knows most decides first. Payment: 1 s to connect, 2 s to read, one retry. The gateway's breaker allows booking 10 s per call. nginx waits up to 35 s for the gateway. If an outer timeout fired first, the client would get a generic error while booking was still finishing the work. Even so, a checkout slower than 10 s can get the gateway's `503` while booking completes it; retrying with the same `Idempotency-Key` returns that order.
+Inner timeouts are shorter than outer ones, so the layer that knows most decides first. From the outside in: nginx waits up to 35 s for the gateway (`proxy_read_timeout`), the gateway waits up to 30 s for a downstream response, the gateway's breaker allows booking 10 s per call, and inside booking every dependency answers faster than that: a Redis command 2 s (connect 1 s), a database connection from the pool 3 s (Hikari's `connection-timeout`), payment about 2 s (1 s to connect, 2 s to read) plus one retry. Lettuce's own default command timeout is 60 s, far outside the 10 s breaker. With these limits a stuck Redis or database becomes booking's own `503 service-unavailable` with `Retry-After: 1` (before, such resource failures answered `500`), which clients may retry. If an outer timeout fired first, the client would get a generic error while booking was still finishing the work. Even so, a checkout slower than 10 s can get the gateway's `503` while booking completes it; retrying with the same `Idempotency-Key` returns that order.
 
 ### 5.28 Rate limiting at the edge vs in the service
 
@@ -1896,7 +1896,7 @@ One complete record per line: appending never rewrites the file, `tail` and `gre
 | Abuse | rate limits ([section 5.28](#528-rate-limiting-at-the-edge-vs-in-the-service)), seat-stream caps, hold caps | gateway, booking |
 | Integrity | ownership checks, price lock, signed QR, guarded `catalog.v1` changes, admin audit trail | booking, notification, [AdminAudit](common/src/main/java/dev/surge/common/security/AdminAudit.java) |
 | Platform | internal networks, per-store isolation, store and broker users and ACLs, hardened containers | [compose.yaml](compose.yaml), [docker/](docker/) |
-| Secrets | generated per install; production refuses defaults | [gen-secrets.sh](docker/gen-secrets.sh), [SurgeEnv](common/src/main/java/dev/surge/common/security/SurgeEnv.java), [StoreCredentials](common/src/main/java/dev/surge/common/security/StoreCredentials.java), [InternalKeys](common/src/main/java/dev/surge/common/security/InternalKeys.java) |
+| Secrets | generated per install, one file each; production refuses defaults | [gen-secrets.sh](docker/gen-secrets.sh), [SecretFiles](common/src/main/java/dev/surge/common/security/SecretFiles.java), [SurgeEnv](common/src/main/java/dev/surge/common/security/SurgeEnv.java), [StoreCredentials](common/src/main/java/dev/surge/common/security/StoreCredentials.java), [InternalKeys](common/src/main/java/dev/surge/common/security/InternalKeys.java) |
 | Supply chain | pinned actions, Dependabot, CodeQL, OSV, npm audit, Trivy | [.github/](.github/) |
 
 **Zero-trust internal identity.** The gateway is the only reader of the user's JWT. For every request it routes, it signs a fresh token in the `X-Surge-Identity` header:
@@ -1907,9 +1907,9 @@ One complete record per line: appending never rewrites the file, `tail` and `gre
 
 Every service verifies it with the shared [InternalTokenVerifier](common/src/main/java/dev/surge/common/security/InternalTokenVerifier.java): ES256 only, no keys carried inside the token, the `kid` must equal `iss` and be on the service's allow-list, the signature must verify with that issuer's public key, the audience must be the service's own name, and the token must be at most 60 s old (5 s of clock skew). Services that call other services sign their own tokens with their own keys: booking as `svc:booking` (to payment), notification as `svc:notification` (to booking, auth and catalog). A service token speaks only for that service: its `sub` must equal its issuer, and it may carry no roles. Each callee names exactly which callers may use which endpoint: payment takes charges only from `svc:booking`; `/internal/orders` on booking and `/internal/users` on auth answer only `svc:notification`. Everything else is denied by default: without a valid token only `/actuator/health` answers, and a path no rule names is refused even with one.
 
-**Accounts.** Passwords are BCrypt-hashed, 8 to 72 bytes, not on a list of common passwords, and must not contain the email's local part. Logins for unknown emails do the same BCrypt work and get the same answer. A per-account throttle locks an email after 5 failures (30 s, doubling up to 15 minutes). New accounts get a 6-digit email code: random, stored as a BCrypt hash, single use, 15 minutes, 5 attempts, checked under a row lock so parallel guesses are counted one by one, and limited resends. Holding seats needs a verified email (`ev`), and a user may hold seats in at most 3 events at once. In production auth refuses to start with a short or default admin password, or with test tokens on; the admin password is re-hashed whenever it changes, so rotation works.
+**Accounts.** Passwords are BCrypt-hashed, 8 to 72 bytes, not on a list of common passwords, and must not contain the email's local part. Logins for unknown emails do the same BCrypt work and get the same answer. A per-account throttle locks an email after 5 failures (30 s, doubling up to 15 minutes). New accounts get a 6-digit email code: random, stored as a BCrypt hash, single use, 15 minutes, 5 attempts, checked under a row lock so parallel guesses are counted one by one, and limited resends. Holding seats needs a verified email (`ev`), and a user may hold seats in at most 3 events at once. Sign-up abuse is limited three ways. The display name is plain words (1 to 60 letters, digits, spaces and `. ' -`, and no dot between two words that would make it look like a web address), because the name is shown in the app and a code email must contain nothing the sender typed ([SignupRequest](auth-service/src/main/java/dev/surge/auth/api/SignupRequest.java)). A verification email goes to one address at most 10 times per 24 hours, counted over sign-ups and resends alike, however many accounts claimed it. And an account that never verifies gives its address up after 24 hours, so a stranger who signs up with your address cannot hold it forever; a verified account is never replaced. In production auth refuses to start with a short or default admin password, or with test tokens on; the admin password is re-hashed whenever it changes, so rotation works. A public deployment also refuses the default `@surge.local` admin email: anyone could sign up as `admin@surge.local` before the owner does and lock the admin out, so `SURGE_ADMIN_EMAIL` must be an address you own. Two limits are accepted and written up in [accepted-risks.md](docs/security/accepted-risks.md): `409 email-taken` lets anyone test whether an address has an account, and the token lives in `sessionStorage`.
 
-**The denylist fails closed.** Logout stores the token's `jti` in the gateway's Redis until the token expires. Every signed-in request checks it; if Redis does not answer within a second, the request gets `503`. A possibly revoked token is never accepted because a dependency is slow. The cost is availability: Redis is on the critical path of every signed-in request, which is why the gateway has its own Redis ([section 9](#9-the-numbers-and-how-to-explain-them)).
+**The denylist fails closed.** Logout stores the token's `jti` in the gateway's Redis until the token expires. Every signed-in request checks it; if Redis does not answer within 3 seconds (the gateway's one Redis command deadline, which `TokenDenylist` shares with the rate limiter), the request gets `503 auth-unavailable` with `Retry-After: 1`, and so does a request whose key set cannot be fetched. A possibly revoked token is never accepted because a dependency is slow, and the web app and the load tester retry that answer like `service-busy`. The cost is availability: Redis is on the critical path of every signed-in request, which is why the gateway has its own Redis ([section 9](#9-the-numbers-and-how-to-explain-them)).
 
 **Containers and networks.**
 
@@ -1917,9 +1917,11 @@ Every service verifies it with the shared [InternalTokenVerifier](common/src/mai
 - **Per-store users.** MySQL: one user per database, granted only its own; root only from inside its container. Redis: the default user is off; booking's ACL user may run exactly the commands, keys and channels booking uses (no `KEYS`, `FLUSHALL`, `CONFIG`, `MONITOR`), and the gateway's user only its rate-limit and denylist keys. Kafka: SASL/SCRAM-SHA-512 users and ACLs per topic and consumer group, no topic auto-creation. RabbitMQ: no guest, vhost `surge`, per-service permissions. Elasticsearch: security on, and the `catalog` user may read and write the `events` index but not delete it or create others. Eureka and the config server need HTTP Basic.
 - **Hardened containers.** Every container drops all Linux capabilities, sets `no-new-privileges`, runs as a non-root user on a read-only root file system (writes go to a small `tmpfs` or a volume), and has pid and memory limits. Base and third-party images are pinned by digest.
 
-**Secrets.** [docker/gen-secrets.sh](docker/gen-secrets.sh) generates every password and key per installation; nothing is committed and nothing has a default. Each key file is mounted read-only into only the container that uses it. With `SURGE_ENV=prod` (set for every service in Compose, except auth under the load-test overlay) a service refuses to start with a development key or credential, or with internal identity checks switched off. Nothing logs passwords, tokens, keys or codes: a check of every container log during the load-test run found none of the generated secrets. How production stores and rotates secrets is in [docs/DEPLOY.md](docs/DEPLOY.md). <!-- S10 -->
+**Secrets.** [docker/gen-secrets.sh](docker/gen-secrets.sh) generates every password and key per installation; nothing is committed and nothing has a default. Each password and key is its own file in `docker/secrets/` (directory mode 700), and `.env` holds only user names and settings. Compose mounts each file read-only into only the containers that use it, at `/run/secrets/env/<VARIABLE>`, and [SecretFiles](common/src/main/java/dev/surge/common/security/SecretFiles.java) turns it into the property of that name at start-up, so no password is an environment variable and `docker inspect` shows none (two stay in their own container's process environment: MySQL's root password and Elasticsearch's `elastic` password, because those images' entrypoints export them). [docker/set-secret.sh](docker/set-secret.sh) writes one secret file from standard input, so a provider's password never appears in `ps` or shell history. With `SURGE_ENV=prod` (set for every service in Compose, except auth under the load-test overlay) a service refuses to start with a development key or credential, or with internal identity checks switched off. Nothing logs passwords, tokens, keys or codes: a check of every container log during the load-test run found none of the generated secrets. Rotation and backups are in [docs/DEPLOY.md](docs/DEPLOY.md).
 
-**Edge.** nginx sends `Content-Security-Policy` (no inline or third-party script; the image build fails if Vite ever emits inline code), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`, a Permissions-Policy and COOP; API answers get `no-store`. Bodies are capped (64 KB, 16 KB on auth, 6 MB only for the CSV import), slow clients are timed out, and per-IP request and connection limits apply. TLS, HSTS and the production server block come with the production overlay ([docs/DEPLOY.md](docs/DEPLOY.md)). <!-- S10 -->
+**Production guards.** `compose.prod.yaml` sets `SURGE_PUBLIC_DEPLOYMENT=true` on every Spring service, and each guard refuses to start rather than run unsafely: the gateway needs `SURGE_TRUSTED_PROXIES` to name nginx's address and nothing wider (otherwise one attacker's failed logins would be counted against everyone behind nginx, or a client could pick its own rate-limit key with `X-Forwarded-For`) and refuses `SURGE_ALLOW_LOADTEST_SUBJECTS=true`; auth and notification refuse mail without SMTP AUTH, without required STARTTLS or with an `@surge.local` sender ([MailSettings](common/src/main/java/dev/surge/common/security/MailSettings.java)); notification refuses the development S3 keys and a plain-HTTP S3 endpoint, and a `PUBLIC_BASE_URL` that is not `https://` ([PublicBaseUrlGuard](notification-service/src/main/java/dev/surge/notification/config/PublicBaseUrlGuard.java)), because the ticket email links to it; and no service starts with `SURGE_ENV=dev`.
+
+**Edge.** nginx sends `Content-Security-Policy` (no inline or third-party script; the image build fails if Vite ever emits inline code), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`, a Permissions-Policy and COOP; API answers get `no-store`. Bodies are capped (64 KB, 16 KB on auth, 6 MB only for the CSV import), slow clients are timed out, and per-IP request and connection limits apply. Responses are never buffered to disk (`proxy_max_temp_file_size 0`), because `/tmp` is a 64 MB `tmpfs` shared by the whole server. With the production overlay nginx runs [web/nginx-tls.conf](web/nginx-tls.conf) instead: TLS 1.2 and 1.3 on 443 with HSTS (one year), and port 80 serves only the Let's Encrypt challenge and redirects everything else to the one configured host name, never to a name the client sent. `docker/gen-selfsigned-cert.sh` makes a throwaway certificate, either for the local try-out (`compose.tls-local.yaml`, HSTS for 5 minutes) or as the placeholder nginx needs before certbot has issued the real one. The steps are in [docs/DEPLOY.md](docs/DEPLOY.md).
 
 **Supply chain.** Every GitHub Action is pinned to a full commit SHA (a tag can be moved; a SHA cannot), workflows have read-only permissions and do not keep the checkout's credentials. Dependabot proposes updates for Maven, npm, Actions, the Dockerfiles' base images and Compose's images. CodeQL analyses the Java and TypeScript. OSV-Scanner and `npm audit` check dependencies; HIGH advisories found so far were fixed by upgrading, and any accepted one must be listed with a reason in [docs/security/accepted-risks.md](docs/security/accepted-risks.md) (today: none). Trivy scans every built image and fails on a fixable HIGH or CRITICAL, scans the repository for secrets, and checks misconfigurations (advisory).
 
@@ -1975,7 +1977,7 @@ The token denylist fails closed: if Redis is slow, signed-in requests get `503`.
 Check whether it is reachable, but do not weaken the gate by default. Surge's nginx case: the fixed nginx version existed, only the convenience image lagged, so switching to the official image and running it unprivileged by hand fixed it the same day. An ignore entry is a last resort, with a reason and an expiry date, listed in [accepted-risks.md](docs/security/accepted-risks.md).
 
 **Q10. What is still not done?**
-Traffic between containers is not encrypted (it stays on internal Docker networks); production TLS ends at nginx. The login throttle and payment store are in memory, so those services stay single-instance. There is no web application firewall or bot detection beyond rate limits, and per-IP limits are weak against large botnets. Production secret handling is described in [docs/DEPLOY.md](docs/DEPLOY.md). <!-- S10 -->
+Traffic between containers is not encrypted (it stays on internal Docker networks); production TLS ends at nginx. The login throttle and payment store are in memory, so those services stay single-instance. There is no web application firewall or bot detection beyond rate limits, and per-IP limits are weak against large botnets. Every Spring service shares one Eureka credential. The accepted risks, each with the reason and the fix, are in [docs/security/accepted-risks.md](docs/security/accepted-risks.md); production secret handling is in [docs/DEPLOY.md](docs/DEPLOY.md).
 
 ---
 
@@ -2094,8 +2096,8 @@ The limits phase 1 stated about itself, and what phase 2 did about each (the one
 
 - **One instance of everything.** One gateway, one of each service, one MySQL server (a database per service), one Kafka broker (replication factor 1), one RabbitMQ node, one Elasticsearch node. payment-service keeps payments in memory and auth keeps its login throttle in memory, so both must stay single-instance until that state moves to Redis.
 - **A stand-in payment provider.** payment-service is fake, with chaos settings for demos.
-- **No encryption inside the stack.** Traffic between containers stays on internal Docker networks but is plain (HTTP, `SASL_PLAINTEXT`). TLS ends at nginx, and only with the production overlay ([docs/DEPLOY.md](docs/DEPLOY.md)). <!-- S10 -->
-- **Retries cost rate-limit tokens.** The gateway's limiters run before its breaker, so a client that retries `503 service-busy` too eagerly gets `429`. A checkout slower than the gateway's 10-second breaker timeout can get `503` while booking completes it; retrying with the same key returns the order.
+- **No encryption inside the stack.** Traffic between containers stays on internal Docker networks but is plain (HTTP, `SASL_PLAINTEXT`). TLS ends at nginx, and only with the production overlay ([docs/DEPLOY.md](docs/DEPLOY.md)).
+- **Retries cost rate-limit tokens.** The gateway's limiters run before its breaker, so a client that retries `503 service-busy` too eagerly gets `429`. A checkout slower than the gateway's 10-second breaker timeout can get `503` while booking completes it; retrying with the same key returns the order (the web app and the load tester do this).
 - **At-least-once side effects.** The ticket email and the audit line can be repeated if a commit fails right after them; never lost.
 - **No observability stack.** Health is open; metrics are refused until phase 3; request ids are propagated but not printed on every log line.
 - **A captured internal token can be replayed** for up to 60 seconds against the one service it names (by design; see [section 5.31](#531-security)).
@@ -2198,7 +2200,7 @@ The admin signs in, mints one 15-minute JWT per synthetic buyer (`lt-<run>-<n>`)
 | Check | Run 1 | Run 2 |
 |---|---|---|
 | Sold / oversold | 500 / 0 | 500 / 0 <!-- LIVE-NUMBER --> |
-| Seats marked SOLD = distinct seats in orders | yes | yes <!-- LIVE-NUMBER --> |
+| Seats marked SOLD match order lines, seat by seat | yes | yes <!-- LIVE-NUMBER --> |
 | Buyers who got a 201 = seats sold | 500 = 500 | 500 = 500 <!-- LIVE-NUMBER --> |
 | Errors / rate limited | 0 / 0 | 0 / 0 <!-- LIVE-NUMBER --> |
 | Requests / conflicts | 96,061 / 95,061 | 96,082 / 95,082 <!-- LIVE-NUMBER --> |
@@ -2210,7 +2212,7 @@ The admin signs in, mints one 15-minute JWT per synthetic buyer (`lt-<run>-<n>`)
 
 **How to read it.** The counts are the result: every seat sold exactly once, the count of `201`s matches the seats sold, no errors. The times are mostly queueing on a saturated laptop: every request now crosses nginx, the gateway (JWT check, denylist, two rate limits, a signed identity token) and booking, all competing for the same CPU as the 10,000 buyers. Compared with phase 1's run (booking alone, below), the run took about twice as long for the same work. <!-- LIVE-NUMBER --> Say "correctness under extreme contention", never "production latency".
 
-**What the report adds in phase 2.** `busyRetries` (how many times buyers got `503 service-busy` and retried; above 0 means booking's bulkhead of 5,000 was really reached) and `rateLimited`, which must be read next to it, because each retry spends a rate-limit token. The run fails if nothing is sold or if errors pass 1% of buyers, as well as on any oversell or inconsistency.
+**What the report adds in phase 2.** `busyRetries` (how many times buyers got `503 service-busy` or `auth-unavailable` and retried; above 0 means a bulkhead was really reached) and `rateLimited`, which must be read next to it, because each retry spends a rate-limit token. A checkout is also resent unchanged, with the same `Idempotency-Key`, up to 3 times within the run's deadline after a timeout or connection failure, a `502`, a `504`, a `503` that is not `service-busy`, or a `409 request-in-progress`; it waits `Retry-After`, else 1 to 2 s, and a `200` with `Idempotent-Replayed: true` counts as a sale. The report counts these as `checkoutRetries`, and `requests` includes them. A hold is never resent blindly; a `409 hold-exists` that carries the hold's id is adopted and checked out. The other new fields: `passed`, `soldInRun` (the seats this run sold), `soldBefore` (the seats SOLD when the buyers were released, read after the reset) and `seatMismatches`. `sold` is the total SOLD at the end, and the run is judged on `soldInRun`, so `--no-reset` on an event with earlier sales does not fail it. The Markdown report has the rows "Checkout retries (same Idempotency-Key)" and "Seat mismatches (SOLD vs order line)". The run fails if nothing is sold or if errors pass 1% of buyers, as well as on any oversell or inconsistency.
 
 ### Debugging the first run through the gateway
 
@@ -2219,7 +2221,7 @@ The first 10,000-buyer run through the gateway **sold nothing**, and the load te
 | # | Symptom | Evidence | Root cause | Fix |
 |---|---|---|---|---|
 | 0 | `PASS` with 0 sold and 10,000 errors | The report itself | The verdict only checked the oversell invariants, which are trivially true when nothing sells | FAIL when nothing is sold or errors pass 1% of buyers ([LoadTestMainTest](tools/loadtest/src/test/java/dev/surge/loadtest/LoadTestMainTest.java)) |
-| 1 | Thousands of `503`s from the gateway | A thread dump caught Lettuce's single I/O thread inside `ECDSASigner.sign`; Redis had used under 0.5 s of CPU in the whole run | The gateway shares one Redis connection, and its one I/O thread was running each request's next steps (signing the identity token, routing). The token denylist's 1-second, fail-closed check then timed out waiting for replies stuck behind that work | Deliver Redis replies on Lettuce's own scheduler ([RedisClientConfig](gateway/src/main/java/dev/surge/gateway/config/RedisClientConfig.java)) |
+| 1 | Thousands of `503`s from the gateway | A thread dump caught Lettuce's single I/O thread inside `ECDSASigner.sign`; Redis had used under 0.5 s of CPU in the whole run | The gateway shares one Redis connection, and its one I/O thread was running each request's next steps (signing the identity token, routing). The token denylist's fail-closed check (a 1-second deadline then, 3 seconds now) timed out waiting for replies stuck behind that work | Deliver Redis replies on Lettuce's own scheduler ([RedisClientConfig](gateway/src/main/java/dev/surge/gateway/config/RedisClientConfig.java)) |
 | 2 | nginx `504`s; booking's breaker opened | The gateway's kernel counted 9,433 `ListenOverflows` | About 10,000 connections arrive in the same instant on every hop; the default accept queue (`somaxconn` 4096) dropped the rest, and the 2 to 3 s connect timeouts failed them | `somaxconn` and `tcp_max_syn_backlog` 16384 on web, gateway and booking; nginx `backlog=16384`; Tomcat `accept-count` to match. Overflows went to 0 |
 | 3 | Still almost nothing sold; booking idle | booking's access log: **29 holds** in the whole run | Spring Cloud CircuitBreaker's hidden Resilience4j bulkhead: 25 concurrent calls, no waiting. Everyone else got the "booking unavailable" fallback | A sized bulkhead per service, refusals ignored by the breaker, later `503 service-busy` ([section 5.27](#527-circuit-breaker-retry-timeout-and-bulkhead)) |
 | 4 | Requests taking up to 40 s | The cgroups' `memory.max` counters: hit 1,603 times (gateway) and 1,150 times (booking); 2,534 major page faults | Heap plus direct (off-heap) buffers filled the containers' memory limits; the kernel evicted the JVM's own code pages and the JVMs thrashed | 2 GB for gateway and booking, with the heap (45 to 50%) and direct memory capped explicitly. `memory.max` events went to 0 |
@@ -2257,7 +2259,7 @@ The recorded run is the second of two runs made back to back with that command (
 | Check | Result |
 |---|---|
 | Oversold (a seat in two order lines) | 0 |
-| Seats marked SOLD = distinct seats in orders | yes |
+| Seats marked SOLD = distinct seats in orders (a count comparison when this run was made) | yes |
 | Buyers who got a 201 = seats sold | 500 = 500 |
 
 | Metric | Value |
@@ -2293,7 +2295,7 @@ The first run of the pair, started about a minute after the service, sold 500 wi
 
 **Run-to-run variation.** The very first recorded run of phase 1, earlier the same day, took 11.2 s (96,002 requests, hold p50 718 ms). The runs above took 28.1 s and 20.6 s. To check whether the price-lock change made holds slower, the code from before this change was rebuilt and run on the same laptop right afterwards: 27.0 s cold and 19.6 s warm, the same as the new code. So the difference comes from the laptop's state at the time, not from the code. This is one more reason to quote the counts, not the times.
 
-**Isn't "oversold" always 0 by construction?** Yes, and it is worth saying so before an interviewer does. `oversold` is `orderItems - distinctSeatsSold`, the number of extra order lines for a seat that already has one. `order_item.seat_id` is `UNIQUE`, so MySQL can never store such a line, and that number cannot be anything but 0. It is still reported, because it proves the constraint exists in the running database. The checks that can actually fail are the other two. `consistent` compares the seats whose status is `SOLD` with the distinct seats in order lines, so it would catch a seat marked sold without an order, or an order line on a seat still marked available. The load tester also counts, on the client side, the buyers who got `201` for their one seat and requires that number to equal the seats sold. This is a count match, not a per-seat proof of who owns which seat: the guarantee that no seat is sold twice comes from the database's unique constraint, and the counts show that what the buyers were told agrees with what the database holds. The run fails (exit code 1) if any of the three checks fails.
+**Isn't "oversold" always 0 by construction?** Yes, and it is worth saying so before an interviewer does. `oversold` is `orderItems - distinctSeatsSold`, the number of extra order lines for a seat that already has one. `order_item.seat_id` is `UNIQUE`, so MySQL can never store such a line, and that number cannot be anything but 0. It is still reported, because it proves the constraint exists in the running database. The checks that can actually fail are the other two. `consistent` is a per-seat check: for every seat of the event, "the seat is marked `SOLD`" must agree with "the seat has an order line". `seatMismatches` counts the seats where the two disagree, and `consistent` means it is 0. It would catch a seat marked sold without an order line and an order line on a seat still marked available (a seat of each kind counts 2, not 0, so the two cannot cancel out). `soldSeats` and `distinctSeatsSold` stay in the report for information only. The load tester also counts, on the client side, the buyers who got a successful checkout (`201`, or a `200` replay of the same `Idempotency-Key`) and requires that number to equal the seats sold in this run; each buyer buys one seat, so every success is a distinct seat. That is a count: it shows that what the buyers were told agrees with what the database holds, not who owns which seat. The guarantee that no seat is sold twice comes from the database's unique constraint; the per-seat check proves the books agree seat by seat. The run fails (exit code 1) if any of the three checks fails.
 
 **Running it again.** Each run creates a fresh run id and sends `Idempotency-Key: <runId>-<userId>`, so a second run within 24 hours never reuses the first run's keys (whose orders the reset deleted). The service also copes if a client does reuse such a key: it treats a key that points at a deleted order as new.
 
@@ -2318,20 +2320,21 @@ Phase 2, with curl through nginx on a freshly started stack: sign-up `201`, the 
 **You need:** Docker Desktop (on Windows, with WSL2; give it at least 8 GB of memory, 12 GB for the load test), Git Bash with `openssl`, and JDK 25 (the secret script runs `./mvnw` to generate keys). For the web tests, Node 24.
 
 ```bash
-docker/gen-secrets.sh    # once: every credential and key, into .env (mode 600) and docker/secrets/
+docker/gen-secrets.sh    # once: user names and settings into .env (mode 600); every password and key into its own file in docker/secrets/
 docker compose -f compose.yaml -f compose.dev.yaml --profile core --profile platform up -d --build
 ```
 
-The first build takes a while (Maven and npm download everything once). Secrets for a real server are handled differently; see [docs/DEPLOY.md](docs/DEPLOY.md). <!-- S10 -->
+The first build takes a while (Maven and npm download everything once). For a real server, the same secret files are written on the server, plus your mail and S3 secrets with `docker/set-secret.sh`; see [docs/DEPLOY.md](docs/DEPLOY.md).
 
 **The helpers this guide uses.** Paste them into your Git Bash session, from the repository root:
 
 ```bash
 dc() { docker compose -f compose.yaml -f compose.dev.yaml --profile core --profile platform "$@"; }
-env_get() { grep "^$1=" .env | cut -d= -f2-; }
+env_get() { grep "^$1=" .env | cut -d= -f2-; }                 # a name or setting from .env
+secret_get() { cat "docker/secrets/$1"; }                       # a password or key: one file each in docker/secrets/
 login() { curl -s -X POST localhost:8080/api/auth/login -H "Content-Type: application/json" \
   -d "{\"email\":\"$1\",\"password\":\"$2\"}" | sed -E 's/.*"token":"([^"]+)".*/\1/'; }
-ADMIN=$(login admin@surge.local "$(env_get SURGE_ADMIN_PASSWORD)")    # the admin's token
+ADMIN=$(login admin@surge.local "$(secret_get surge_admin_password)")    # the admin's token
 ```
 
 For `TOKEN`, a normal user with a verified email, sign up in the browser (or with curl, as below), read the 6-digit code in Mailpit at http://localhost:8025, and verify:
@@ -2353,9 +2356,9 @@ Then:
 | http://localhost:8080 | The app: search, events, seat map, hold, pay, ticket download |
 | http://localhost:8080/ops | Ops page (admin): integrity, event reset, payment chaos, ticket dead-letter queue, latest load-test report |
 | http://localhost:8025 | Mailpit: verification codes and ticket emails |
-| http://localhost:8761 | Eureka (`EUREKA_USER` / `EUREKA_PASSWORD` from `.env`) |
-| http://localhost:15672 | RabbitMQ (`surge-admin` / `RABBIT_ADMIN_PASSWORD`) |
-| http://localhost:9200 | Elasticsearch (`elastic` / `ELASTIC_PASSWORD`) |
+| http://localhost:8761 | Eureka (`EUREKA_USER` from `.env`, password in `docker/secrets/eureka_password`) |
+| http://localhost:15672 | RabbitMQ (`surge-admin`, password in `docker/secrets/rabbit_admin_password`) |
+| http://localhost:9200 | Elasticsearch (`elastic`, password in `docker/secrets/elastic_password`) |
 | http://localhost:8081/actuator/health | booking-service's health, straight from its debug port |
 
 Things to try:
@@ -2428,8 +2431,9 @@ On Windows PowerShell, use `.\mvnw.cmd` instead of `./mvnw`.
 |---|---|---|
 | `Cannot connect to the Docker daemon` / `docker: command not found` | Docker Desktop is not running | Start Docker Desktop and wait until it says the engine is running |
 | Tests fail with "Could not find a valid Docker environment" | Same: Testcontainers needs Docker | Start Docker Desktop, run the tests again |
-| `required variable ... is missing a value: run docker/gen-secrets.sh first` | No `.env` yet | Run `docker/gen-secrets.sh` |
-| `gen-secrets.sh` says `.env already exists` | It never overwrites silently | Keep the existing one, or read the notes at the top of the script and use `--force` (MySQL and Elasticsearch passwords then need `dc down -v`) |
+| `required variable ... is missing a value: run docker/gen-secrets.sh first`, or a `docker/secrets/...` file that does not exist | No `.env` or secret files yet | Run `docker/gen-secrets.sh` |
+| `gen-secrets.sh` writes nothing, or only some files | It never overwrites: without `--force` it writes only what is missing | Keep what exists, or read the notes at the top of the script and use `--force` (it replaces every generated password and key; MySQL and Elasticsearch passwords then need `dc down -v`) |
+| `all predefined address pools have been fully subnetted`, or `Pool overlaps with other one on this address space` | Another Compose project's networks are still there (the development overlay alone uses about 19 networks) | `docker compose down` the old project (run it in that project's folder, with the same `-f` files), or `docker network prune` |
 | `port is already allocated` for 8080, 8025, 8081, 8085, 8761, 3307, 6379, 9090, 9200 or 15672 | Another program (or another stack) uses the port | Find it (`netstat -ano \| findstr :8080` in PowerShell) and stop it, or change the host port in [compose.yaml](compose.yaml) or [compose.dev.yaml](compose.dev.yaml) |
 | Containers exit or restart, builds crawl, the load test errors | Docker does not have enough memory | Give Docker more memory. With WSL2, set `memory=` under `[wsl2]` in `%UserProfile%\.wslconfig`, run `wsl --shutdown`, restart Docker Desktop. The stack idles at about 6.4 GB |
 | First `up --build` is slow | Maven and npm download everything once | Wait; later builds use the cache |
@@ -2442,12 +2446,13 @@ On Windows PowerShell, use `.\mvnw.cmd` instead of `./mvnw`.
 | Hold returns `409 too-many-holds` | You hold seats in 3 events already | Pay for or let go of one of them |
 | `429` with `Retry-After` | A rate limit ([section 5.28](#528-rate-limiting-at-the-edge-vs-in-the-service)) | Wait the `Retry-After` seconds |
 | `503 service-busy` | The gateway's bulkhead for that service is full | Retry after `Retry-After` (1 s); the web app and the load tester do this themselves |
+| `503 auth-unavailable` | The gateway's Redis (the token denylist) did not answer within 3 s, or the key set could not be fetched | Retry after `Retry-After` (1 s); if it persists, check `redis-edge` and auth-service with `dc ps` and `dc logs`. The web app and the load tester retry it themselves |
 | Checkout returns `503 payment-unavailable` | Payment chaos is on, or payment-service is down | Set chaos back to 0 on the Ops page; the hold is kept, pay again after about 10 s |
 | The ticket email never arrives | The ticket job failed and went to the dead-letter queue | Look at the Ops page's dead-letter queue (it shows the reason) and `dc logs notification-service`; replay once fixed |
 | Load test exits with code 2 and a token-minting error | The load-test overlay is off | Start the stack with `compose.loadtest.yaml` (see [section 10](#10-how-to-run-everything)) |
 | The smoke test fails its security check about test tokens | The load-test overlay is still on | `dc up -d` (without the overlay), then run it again |
 | Load test prints `WARN: could not write the report files` | On native Linux the container user cannot write the bind-mounted `reports/` folder | The run is not lost (the report was printed and is on the Ops page). For next time: `export UID` before `docker compose`, or `chmod o+w reports` |
-| The app or a debug port cannot be reached from another device | By design: every port is bound to `127.0.0.1` | Use the machine itself. A real deployment uses the production overlay ([docs/DEPLOY.md](docs/DEPLOY.md)) <!-- S10 --> |
+| The app or a debug port cannot be reached from another device | By design: every port is bound to `127.0.0.1` | Use the machine itself. A real deployment uses the production overlay ([docs/DEPLOY.md](docs/DEPLOY.md)) |
 | Everything is sold after the load test | The load test sells all 500 seats | Reset event 1 (Ops page or the curl command in [section 10](#10-how-to-run-everything)) |
 | Seat map does not update live | The SSE stream is blocked or buffered, or you have 4 streams open from one address | Check `curl -N localhost:8080/api/bookings/events/1/stream` prints `:connected`; close other tabs |
 | Swagger UI gives 404 or 401 | API docs exist only when a service runs with `SURGE_ENV=dev` | Run booking-service by hand in dev ([section 5.5](#55-rest-api-and-openapi)) |

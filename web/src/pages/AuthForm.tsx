@@ -10,6 +10,11 @@ import { GENERIC_ERROR } from '../format'
 export type AuthMode = 'login' | 'signup'
 type Field = 'name' | 'email' | 'password'
 
+/** Same rule as auth-service's SignupRequest: letters, digits, space and . ' - only, no address-shaped dot (evil.com). */
+const NAME_MAX = 60
+const NAME_PATTERN = /^(?!.*[\p{L}\p{N}]\.\p{L}{2})[\p{L}\p{N} .'-]+$/u
+const NAME_ERROR = "Use letters, digits, spaces and . ' - only (up to 60), and no web addresses."
+
 const CLOCK_ERROR = 'Your device clock seems to be wrong — please fix it and try again.'
 
 /** The server's reason a signup password was refused (too common, contains the email), never the password itself. */
@@ -71,6 +76,7 @@ export default function AuthForm({ mode }: { mode: AuthMode }) {
     if (!email.includes('@')) return ['email', 'Enter a valid email address.']
     if (mode === 'signup') {
       if (!name.trim()) return ['name', 'Enter your name.']
+      if (name.trim().length > NAME_MAX || !NAME_PATTERN.test(name.trim())) return ['name', NAME_ERROR]
       if (password.length < 8) return ['password', 'Use at least 8 characters for the password.']
       if (new TextEncoder().encode(password).length > 72) return ['password', 'Use at most 72 bytes for the password.']
     } else if (!password) {
@@ -120,7 +126,7 @@ export default function AuthForm({ mode }: { mode: AuthMode }) {
             Name
             <input
               value={name}
-              maxLength={100}
+              maxLength={NAME_MAX}
               autoComplete="name"
               aria-invalid={invalid.has('name')}
             aria-describedby={error ? 'auth-error' : undefined}

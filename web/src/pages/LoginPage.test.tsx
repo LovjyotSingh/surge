@@ -231,6 +231,46 @@ describe('SignupPage', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it('accepts a name with initials, an apostrophe, a hyphen and accented letters', async () => {
+    const user = userEvent.setup()
+    fetchMock.mockResolvedValueOnce(json(201, { ...tokenResponse, user: { ...tokenResponse.user, emailVerified: false } }))
+    renderAt('/signup')
+    await user.type(screen.getByLabelText('Name'), "J.R. O'Neil-Zoë 2")
+    await fillAndSubmit(user, 'Create account')
+    expect(await screen.findByTestId('where')).toHaveTextContent('/verify')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).displayName).toBe("J.R. O'Neil-Zoë 2")
+  })
+
+  it('refuses a name that looks like a web address without calling the API', async () => {
+    const user = userEvent.setup()
+    renderAt('/signup')
+    await user.type(screen.getByLabelText('Name'), 'evil.com')
+    await fillAndSubmit(user, 'Create account')
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "Use letters, digits, spaces and . ' - only (up to 60), and no web addresses.",
+    )
+    expect(screen.getByLabelText('Name')).toHaveAttribute('aria-invalid', 'true')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('refuses other symbols in the name', async () => {
+    const user = userEvent.setup()
+    renderAt('/signup')
+    await user.type(screen.getByLabelText('Name'), 'Asha <b>')
+    await fillAndSubmit(user, 'Create account')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Use letters, digits, spaces')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('does not let the name grow past 60 characters', async () => {
+    const user = userEvent.setup()
+    renderAt('/signup')
+    const name = screen.getByLabelText('Name')
+    expect(name).toHaveAttribute('maxlength', '60')
+    await user.type(name, 'a'.repeat(70))
+    expect(name).toHaveValue('a'.repeat(60))
+  })
+
   it('shows the Retry-After wait on 429', async () => {
     const user = userEvent.setup()
     fetchMock.mockResolvedValueOnce(json(429, { type: 't', title: 'x', status: 429 }, { 'Retry-After': '2' }))

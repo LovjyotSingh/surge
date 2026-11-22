@@ -20,7 +20,7 @@ A load tester fires 10,000 concurrent buyers at it, through nginx and the gatewa
 | Buyers / seats | 10,000 / 500 | 10,000 / 500 |
 | **Sold** | **500** | **500** <!-- LIVE-NUMBER --> |
 | **Oversold** | **0** | **0** <!-- LIVE-NUMBER --> |
-| **Sold seats = distinct seats in orders** | **yes** | **yes** <!-- LIVE-NUMBER --> |
+| **Seats marked SOLD match order lines, seat by seat** | **yes** | **yes** <!-- LIVE-NUMBER --> |
 | **Buyers who got a 201 = seats sold** | **500 = 500** | **500 = 500** <!-- LIVE-NUMBER --> |
 | **Errors** | **0** | **0** <!-- LIVE-NUMBER --> |
 | Rate limited (429) | 0 | 0 <!-- LIVE-NUMBER --> |
@@ -112,13 +112,13 @@ The price is locked when the hold is made, and checkout charges exactly that quo
 You need **Docker Desktop** (on Windows, with the WSL2 backend; give it at least 8 GB of memory, 12 GB for the load test), **Git Bash** (on Windows) with `openssl`, and **JDK 25** (the secret script runs `./mvnw` to generate keys).
 
 ```bash
-docker/gen-secrets.sh    # once: random credentials and keys, written to .env (mode 600) and docker/secrets/
+docker/gen-secrets.sh    # once: user names and settings go to .env (mode 600); every password and key to its own file in docker/secrets/
 docker compose -f compose.yaml -f compose.dev.yaml --profile core --profile platform up -d --build
 ```
 
-- `docker/gen-secrets.sh` writes a random value for every credential (MySQL users, Redis ACL users, RabbitMQ and Kafka users, Elasticsearch, Eureka, config server, the admin password, the ticket QR key), plus the JWT signing key and the internal identity keys. Nothing has a default: Compose refuses to start until the script has run. It refuses to overwrite an existing `.env` unless you pass `--force` (read the notes at the top of the script first). How a production server stores secrets is in [docs/DEPLOY.md](docs/DEPLOY.md). <!-- S10 -->
+- `docker/gen-secrets.sh` writes a random value for every credential (MySQL users, Redis ACL users, RabbitMQ and Kafka users, Elasticsearch, Eureka, config server, the admin password, the ticket QR key), plus the JWT signing key and the internal identity keys. User names and settings go to `.env` (mode 600); every password and key goes to its own file in `docker/secrets/` (mode 700, one file each). Nothing has a default: Compose refuses to start until the script has run. Compose mounts each file read-only into only the containers that use it, at `/run/secrets/env/<VARIABLE>`, and the services read it there ([SecretFiles](common/src/main/java/dev/surge/common/security/SecretFiles.java)), so no password is an environment variable and `docker inspect` shows none. The script never overwrites what exists: without `--force` it writes only what is missing, and `--force` replaces every generated value but keeps the provider secrets (`mail_password`, `s3_access_key`, `s3_secret_key`) and every `.env` line it does not own (read the notes at the top of the script first). `docker/set-secret.sh <name>` writes one secret file from standard input, for your provider's secrets, so a value never appears in `ps` or your shell history. How a production server stores and rotates secrets is in [docs/DEPLOY.md](docs/DEPLOY.md).
 - `compose.yaml` is the platform: the `core` profile is MySQL, Redis and booking-service; `platform` is everything else (Kafka, RabbitMQ, Elasticsearch, the other services, the gateway and nginx). Every Spring service runs with `SURGE_ENV=prod`, so it refuses to start with a development key or a missing credential (the one exception: auth under the load-test overlay, see below).
-- `compose.dev.yaml` adds **Mailpit** (catches every email) and **S3Mock** (fake S3), and debug ports bound to `127.0.0.1`. Never use it on a server. Without it, set real `MAIL_*` and `S3_*` values in `.env`.
+- `compose.dev.yaml` adds **Mailpit** (catches every email) and **S3Mock** (fake S3), and debug ports bound to `127.0.0.1`. Never use it on a server. Without it, set the `MAIL_*` and `S3_*` settings in `.env` and the secrets with `docker/set-secret.sh`.
 
 The first build downloads Maven and npm dependencies, so it takes a while.
 
@@ -128,23 +128,23 @@ Open **http://localhost:8080**. Everything below is bound to `127.0.0.1` only:
 |---|---|---|
 | http://localhost:8080 | The app and the whole API (nginx, then the gateway) | Your account, or the admin below |
 | http://localhost:8025 | Mailpit: every email (verification codes, tickets) | none |
-| http://localhost:8761 | Eureka dashboard | `EUREKA_USER` / `EUREKA_PASSWORD` from `.env` |
-| http://localhost:15672 | RabbitMQ management | `surge-admin` / `RABBIT_ADMIN_PASSWORD` |
-| http://localhost:9200 | Elasticsearch | `elastic` / `ELASTIC_PASSWORD` |
+| http://localhost:8761 | Eureka dashboard | `EUREKA_USER` from `.env`, password in `docker/secrets/eureka_password` |
+| http://localhost:15672 | RabbitMQ management | `surge-admin`, password in `docker/secrets/rabbit_admin_password` |
+| http://localhost:9200 | Elasticsearch | `elastic`, password in `docker/secrets/elastic_password` |
 | `localhost:8085`, `8081`, `3307`, `6379`, `9090` | gateway, booking-service, MySQL, Redis, S3Mock (debugging) | per service |
 
 Stop everything with `docker compose -f compose.yaml -f compose.dev.yaml --profile core --profile platform down` (add `-v` to also delete the data).
 
 ### Demo accounts
 
-- **Admin.** `admin@surge.local`, with the password from `.env`: `grep '^SURGE_ADMIN_PASSWORD=' .env`. The admin's email counts as verified, it can book like any user, and it sees the **Ops** page (integrity check, event reset, payment chaos, the ticket dead-letter queue, the latest load-test report). To change it, edit `.env` (at least 16 characters) and run `up -d` again: auth re-hashes it at start-up, and the old one stops working.
-- **Your own user.** Click **Sign up** (password: 8 to 72 characters, not a common password, not containing the part of your email before the `@`). The app then asks for a 6-digit code: open Mailpit at http://localhost:8025, read the code from the "verify your email" message and enter it. The code expires after 15 minutes and locks after 5 wrong tries; **Resend** works once a minute. You can browse and search without verifying, but holding seats needs a verified email. With a real mail server, check your Spam folder too (in the Gmail app: ☰ → Spam).
+- **Admin.** `admin@surge.local`, with the password from `cat docker/secrets/surge_admin_password`. The admin's email counts as verified, it can book like any user, and it sees the **Ops** page (integrity check, event reset, payment chaos, the ticket dead-letter queue, the latest load-test report). To change it, replace that file (at least 16 characters, for example `docker/set-secret.sh surge_admin_password`) and run `docker compose -f compose.yaml -f compose.dev.yaml --profile core --profile platform up -d --force-recreate auth-service`: auth re-hashes the password at start-up, and the old one stops working.
+- **Your own user.** Click **Sign up** (name: 1 to 60 letters, digits, spaces and `. ' -`, no web addresses; password: 8 to 72 characters, not a common password, not containing the part of your email before the `@`). The app then asks for a 6-digit code: open Mailpit at http://localhost:8025, read the code from the "verify your email" message and enter it. The code expires after 15 minutes and locks after 5 wrong tries; **Resend** works once a minute. You can browse and search without verifying, but holding seats needs a verified email. At most 10 verification emails go to one address per 24 hours, and an address that never verified is free for a new sign-up after 24 hours. With a real mail server, check your Spam folder too (in the Gmail app: ☰ → Spam).
 
 Then try the flow: search for "coldply" (the typo still finds "Coldplay Tribute Live"), open event 1, select up to 8 seats, **Hold**, **Pay**. Within seconds a ticket email with a PDF arrives in Mailpit, and the event page offers **Download ticket (PDF)**. Open the same event in a second browser (or a private window) signed in as someone else: seats held in one turn "held" in the other straight away.
 
 ## Smoke test and load test
 
-**Smoke test** ([tools/smoke](tools/smoke/)): ten end-to-end checks through nginx, like a browser. It signs up a fresh user and reads the code from Mailpit, searches with a typo, buys two seats, waits for the ticket email and PDF, checks catalog's seats-left and the audit log, drives the payment circuit breaker open with chaos and waits for it to close, hits the hold rate limit, tries forged headers and an anonymous admin call, checks the security headers and logout. It resets event 1 at the start and the end and takes about a minute. Before the checks it waits (up to 120 s) until the gateway routes to booking and catalog, and prints `Waiting for the gateway to route to booking and catalog… ready after N s`; the load test does the same.
+**Smoke test** ([tools/smoke](tools/smoke/)): ten end-to-end checks through nginx, like a browser. It signs up a fresh user and reads the code from Mailpit, searches with a typo, buys two seats, waits for the ticket email and PDF, checks catalog's seats-left and the audit log, drives the payment circuit breaker open with chaos and waits for it to close, hits the hold rate limit, tries forged headers and an anonymous admin call, checks the security headers and logout. It resets event 1 at the start and the end and takes about a minute. **It is destructive** (it turns payment chaos off and wipes the event's bookings), so it refuses a `--base-url` whose host is not local (`localhost`, `127.0.0.1`, `::1`, a single-label Docker name such as `web`, `*.localhost`, `*.test`) unless you pass `--destructive`; never point it at a server with real sales. Before the checks it waits (up to 120 s) until the gateway routes to booking and catalog, and prints `Waiting for the gateway to route to booking and catalog… ready after N s`; the load test does the same.
 
 ```bash
 docker compose -f compose.yaml -f compose.dev.yaml --profile core --profile platform --profile smoke run --rm --build smoke
@@ -160,7 +160,7 @@ docker compose -f compose.yaml -f compose.dev.yaml -f compose.loadtest.yaml --pr
 docker compose -f compose.yaml -f compose.dev.yaml --profile core --profile platform up -d   # afterwards: overlay off again
 ```
 
-It resets event 1, runs, prints the report, shows it on the **Ops** page and writes it to `reports/`. It exits with code 1 unless every check passes: something sold, 0 oversold, sold seats matching order lines, as many `201`s as seats sold, and errors under 1% of buyers. A buyer that gets `503 service-busy` (the gateway's bulkhead for booking is full) waits for `Retry-After` and resends the same step; the report counts these as `busyRetries`. On native Linux, run `export UID` first so the container can write `reports/`. The run leaves event 1 sold out; reset it from the Ops page.
+It resets event 1, runs, prints the report, shows it on the **Ops** page and writes it to `reports/`. It exits with code 1 unless every check passes: something sold, 0 oversold, every seat marked SOLD having an order line and every order line sitting on a SOLD seat (checked seat by seat, `seatMismatches` is 0), as many successful checkouts as seats sold in the run, and errors under 1% of buyers. A buyer that gets `503 service-busy` (the gateway's bulkhead is full) or `503 auth-unavailable` waits for `Retry-After` and resends the same step; the report counts these as `busyRetries`. A checkout that times out, or gets `502`, `504`, another `503` or `409 request-in-progress`, is resent unchanged with the same `Idempotency-Key` (at most 3 times, within the run's deadline), so booking replays the order if the first try went through; the report counts these as `checkoutRetries`. On native Linux, run `export UID` first so the container can write `reports/`. The run leaves event 1 sold out; reset it from the Ops page.
 
 ## API
 
@@ -186,7 +186,7 @@ Everything goes through **http://localhost:8080** (nginx, then the gateway). "Us
 | POST | `/api/bookings/holds` | verified user | `{"eventId":1,"seatIds":[1,2]}`. Holds 1 to 8 seats for 5 minutes and locks their prices | 201 |
 | POST | `/api/bookings/orders` | user, `Idempotency-Key` header | `{"holdId":"..."}`. Pays the hold's locked quote and confirms the order | 201, or 200 with `Idempotent-Replayed: true` |
 | GET | `/api/bookings/orders/{orderId}` | user | Your order | 200 |
-| GET | `/api/bookings/admin/events/{eventId}/integrity` | admin | Sold count and oversell checks (`oversold` must be 0, `consistent` true) | 200 |
+| GET | `/api/bookings/admin/events/{eventId}/integrity` | admin | Sold count and oversell checks (`oversold` must be 0, `seatMismatches` 0 and `consistent` true: seat by seat, a seat is SOLD exactly when it has an order line) | 200 |
 | POST | `/api/bookings/admin/events/{eventId}/reset?opensInSeconds=N` | admin | Reset an event; the sale opens in N seconds | 204 |
 | PUT, GET | `/api/bookings/admin/loadtest-reports/latest` | admin | Store / read the latest load-test report | 204 / 200 |
 | GET | `/api/notifications/tickets/{orderId}.pdf` | user (the buyer) | The ticket PDF, `Cache-Control: no-store`; someone else's ticket is a 404 | 200 |
@@ -197,12 +197,12 @@ Everything goes through **http://localhost:8080** (nginx, then the gateway). "Us
 
 Any other `/api/payments/**` path answers `404` at the gateway: only booking-service calls payment-service, inside the network, signed as `svc:booking`. The internal endpoints (`/internal/orders/{id}` on booking, `/internal/users/{id}` on auth) are never routed and accept only notification-service's signed calls.
 
-Every error, from any service or the gateway, uses the Problem Details JSON format (RFC 9457) with a `type` under `https://surge.dev/problems/` and a `requestId`. The common ones: `400 validation-failed`, `401 unauthorized` / `bad-credentials`, `402 payment-failed`, `403 forbidden` / `email-unverified`, `404 not-found`, `409 seat-taken` / `hold-exists` / `sale-not-open` / `too-many-holds`, `413` too large, `429 rate-limited` (with `Retry-After`), `503 service-busy` (with `Retry-After: 1`), `503 payment-unavailable` (the hold is kept) and `503 service-unavailable`. Idempotency keys: a repeat of a completed checkout returns the same order for 24 hours.
+Every error, from any service or the gateway, uses the Problem Details JSON format (RFC 9457) with a `type` under `https://surge.dev/problems/` and a `requestId`. The common ones: `400 validation-failed`, `401 unauthorized` / `bad-credentials`, `402 payment-failed`, `403 forbidden` / `email-unverified`, `404 not-found`, `409 seat-taken` / `hold-exists` / `sale-not-open` / `too-many-holds`, `413` too large, `429 rate-limited` (with `Retry-After`), `503 service-busy` (a full bulkhead, with `Retry-After: 1`), `503 auth-unavailable` (the gateway could not check the token against its denylist or key set; with `Retry-After: 1`), `503 payment-unavailable` (the hold is kept) and `503 service-unavailable` (a circuit is open, or booking's own Redis or database did not answer in time). Idempotency keys: a repeat of a completed checkout returns the same order for 24 hours.
 
 ## Security in short
 
 - **Zero-trust identity.** Only the gateway reads the user's JWT. For every request it routes, it signs a 60-second ES256 token (`X-Surge-Identity`) for exactly the target service, and every service verifies it and trusts nothing else: a forged `X-User-*` header gets `401`, even from inside the network. Service-to-service calls are signed with the caller's own key, and each service accepts only the callers it needs. Everything is denied by default.
-- **Accounts.** Tokens live 30 minutes; logout revokes a token at once through a Redis denylist that fails closed (`503`) if Redis cannot answer. Email verification codes, a common-password list and a per-account login throttle on top of the gateway's per-IP limits.
+- **Accounts.** Tokens live 30 minutes; logout revokes a token at once through a Redis denylist that fails closed (`503 auth-unavailable`, retryable) if Redis does not answer within 3 seconds. Email verification codes, a common-password list and a per-account login throttle on top of the gateway's per-IP limits.
 - **Edge.** nginx is the only published port: security headers and a strict CSP, body-size limits, timeouts, connection and request limits. The gateway meters every public route in Redis token buckets.
 - **Platform.** Internal networks with one network per store, every store and broker with its own users and least-privilege ACLs, non-root read-only containers with all capabilities dropped, base and third-party images pinned by digest.
 - **Supply chain.** Actions pinned to commit SHAs, Dependabot, CodeQL, OSV and npm audit, Trivy on every image.
@@ -211,18 +211,18 @@ Every error, from any service or the gateway, uses the Problem Details JSON form
 
 ## Deploying
 
-Running Surge on a public server needs TLS and production settings that the local stack does not have. `compose.prod.yaml` is the production overlay, and [docs/DEPLOY.md](docs/DEPLOY.md) is the step-by-step runbook (server, certificates, secrets, backups and post-deploy checks). Never deploy with `compose.dev.yaml` or `compose.loadtest.yaml`. <!-- S10 -->
+Running Surge on a public server needs TLS and production settings that the local stack does not have. `compose.prod.yaml` is the production overlay: nginx serves TLS 1.2 and 1.3 on 443 with HSTS ([web/nginx-tls.conf](web/nginx-tls.conf)) and port 80 only redirects; mail goes through your SMTP provider with AUTH and required STARTTLS, and tickets to a real private S3 bucket; and every Spring service runs with `SURGE_PUBLIC_DEPLOYMENT=true`, so it refuses to start on a development setting (a blank or too-wide trusted-proxy list, mail without AUTH or STARTTLS, development S3 keys or a plain-HTTP S3 endpoint, a non-`https://` `PUBLIC_BASE_URL`, the `@surge.local` admin email, load-test subjects). [docs/DEPLOY.md](docs/DEPLOY.md) is the step-by-step runbook (server, firewall, certificates, secrets, backups, rotation and post-deploy checks). `compose.tls-local.yaml` tries the same TLS edge on your machine with a self-signed certificate (`docker/gen-selfsigned-cert.sh`). Never deploy with `compose.dev.yaml`, `compose.loadtest.yaml` or `compose.tls-local.yaml`.
 
 ## Phase 2 limits, stated plainly
 
 - **One instance of everything.** One gateway, one of each service, one MySQL server (a database per service), one Kafka broker (replication factor 1), one RabbitMQ node, one Elasticsearch node. payment-service keeps payments in memory and auth keeps its login throttle in memory, so both must stay single-instance until that state moves to Redis.
 - **Fake payments.** payment-service is a stand-in provider with chaos settings, not a real payment gateway.
 - **Local numbers.** The load test shows correctness under contention on one laptop, not production capacity. At sale start the laptop's CPU was saturated and p95 latencies were several seconds. <!-- LIVE-NUMBER -->
-- **Retries cost rate-limit tokens.** The gateway's rate limiters run before its circuit breaker, so a client that retries `503 service-busy` too often gets `429`. A checkout that takes longer than the gateway's 10-second breaker timeout can get `503` although booking completes it; retrying with the same `Idempotency-Key` returns the order.
+- **Retries cost rate-limit tokens.** The gateway's rate limiters run before its circuit breaker, so a client that retries `503 service-busy` too often gets `429`. A checkout that takes longer than the gateway's 10-second breaker timeout can get `503` although booking completes it; retrying with the same `Idempotency-Key` returns the order. The timeouts nest inside each other (nginx 35 s, gateway 30 s, breaker 10 s, booking's Redis 2 s and database connection 3 s) so a stuck dependency becomes a fast, retryable `503`.
 - **At-least-once email.** If the notification transaction fails to commit after the email was sent, the retry sends it again (same PDF, same link).
 - **No observability stack yet.** Health is open; `/actuator/prometheus` is refused to every caller until phase 3 adds a scrape identity. Request ids are propagated but not yet printed in every log line.
 - **No cancellations, and a hold is lost on page refresh** (the page keeps it in memory only), as in phase 1.
-- **TLS** comes only with the production overlay ([docs/DEPLOY.md](docs/DEPLOY.md)); the local stack is plain HTTP on `127.0.0.1`, and traffic between containers is not encrypted. <!-- S10 -->
+- **TLS** comes only with the production overlay ([docs/DEPLOY.md](docs/DEPLOY.md)); the local stack is plain HTTP on `127.0.0.1`, and traffic between containers is not encrypted.
 
 ## Run the tests
 
@@ -250,8 +250,9 @@ On Windows PowerShell use `.\mvnw.cmd -B verify`. You need JDK 25 and Node 24 fo
 | [outbox/](outbox/) | The transactional outbox and its Kafka and RabbitMQ publishers, used by booking and catalog |
 | [tools/loadtest/](tools/loadtest/), [tools/smoke/](tools/smoke/) | The 10,000-buyer load tester and the end-to-end smoke test (plain Java) |
 | [web/](web/) | React app and the nginx config that serves it |
-| [docker/](docker/) | The service Dockerfile, `gen-secrets.sh`, and the MySQL, Redis, RabbitMQ, Kafka and Elasticsearch set-up |
-| [compose.yaml](compose.yaml), [compose.dev.yaml](compose.dev.yaml), [compose.loadtest.yaml](compose.loadtest.yaml) | The platform, the local development overlay, the load-test overlay |
+| [docker/](docker/) | The service Dockerfile, `gen-secrets.sh` and `set-secret.sh` (the secret files), `gen-selfsigned-cert.sh`, and the MySQL, Redis, RabbitMQ, Kafka and Elasticsearch set-up |
+| [compose.yaml](compose.yaml), [compose.dev.yaml](compose.dev.yaml), [compose.loadtest.yaml](compose.loadtest.yaml), [compose.prod.yaml](compose.prod.yaml), [compose.tls-local.yaml](compose.tls-local.yaml) | The platform, the local development overlay, the load-test overlay, the production overlay, the local TLS try-out |
+| [docs/DEPLOY.md](docs/DEPLOY.md) | Runbook for one internet-facing VM |
 | [docs/superpowers/specs/2026-11-12-surge-design.md](docs/superpowers/specs/2026-11-12-surge-design.md) | The full design spec for all phases |
 | [LEARN.md](LEARN.md), [SECURITY.md](SECURITY.md) | The learning guide; the security design and reporting |
 
