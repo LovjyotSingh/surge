@@ -13,7 +13,7 @@
     <properties>
         <openpdf.version>3.0.5</openpdf.version>
         <zxing.version>3.5.4</zxing.version>
-        <awssdk.version>2.59.1</awssdk.version>
+        <awssdk.version>2.59.4</awssdk.version>
         <s3mock.version>5.2.3</s3mock.version>
     </properties>
 
