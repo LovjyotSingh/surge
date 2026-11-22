@@ -256,7 +256,9 @@ export default function OpsPage() {
               Sold seats match order lines:{' '}
               {shownIntegrity.consistent
                 ? `yes (${shownIntegrity.distinctSeatsSold}) ✅`
-                : `no (${shownIntegrity.soldSeats} sold, ${shownIntegrity.distinctSeatsSold} in orders) ❌`}
+                : shownIntegrity.seatMismatches !== undefined
+                  ? `no (${shownIntegrity.seatMismatches} ${shownIntegrity.seatMismatches === 1 ? 'mismatch' : 'mismatches'}) ❌`
+                  : `no (${shownIntegrity.soldSeats} sold, ${shownIntegrity.distinctSeatsSold} in orders) ❌`}
             </p>
           </>
         ) : (
