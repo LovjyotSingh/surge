@@ -1087,7 +1087,7 @@ Test counts at the end of phase 2. This table is the one place the counts are ke
 
 **One shared Spring context per service.** Every integration test class in a service carries that service's `@IntegrationTest` meta-annotation (for example booking's [IntegrationTest](booking-service/src/test/java/dev/surge/booking/support/IntegrationTest.java)), which bundles `@SpringBootTest`, the Testcontainers configuration ([booking's TestcontainersConfig](booking-service/src/test/java/dev/surge/booking/support/TestcontainersConfig.java)), type-level Mockito spies and test data helpers. Because every class uses exactly the same configuration, Spring's test-context cache builds the application context **once** and reuses it, with one set of containers for the whole run. `@ServiceConnection` points Spring at the containers automatically. Eureka and the config client are switched off in tests, and identity tokens are signed with committed test keys (`IdentityTokens` in common's test jar). Background jobs (the outbox relay, the sweeper) are slowed down so they never race the tests; tests trigger them themselves.
 
-The tests worth showing an interviewer:
+The tests worth reading first:
 
 | Test | What it proves |
 |---|---|
@@ -1599,7 +1599,7 @@ Only configuration changes: leave `S3_ENDPOINT` empty, set the region, bucket an
 Because the ticket is personal: notification checks that the caller is the buyer (anyone else gets 404) and serves it with `Cache-Control: no-store`. The alternative is a presigned URL: S3 serves the file directly, and the link itself is the permission, valid for a few minutes. That scales better for big files, but whoever gets the link gets the ticket.
 
 **Q5. What if S3 is down?**
-At start-up, notification refuses to start (it cannot do its job). While running, storing a PDF fails, the ticket job is retried three times and then lands in the dead-letter queue, to be replayed when S3 is back ([section 5.21](#521-rabbitmq)). Checkout is not affected: the ticket is made after the order, from a queue.
+At start-up, notification refuses to start (it cannot do its job). While running, storing a PDF fails, the ticket job is retried (five attempts in all) and then lands in the dead-letter queue, to be replayed when S3 is back ([section 5.21](#521-rabbitmq)). Checkout is not affected: the ticket is made after the order, from a queue.
 
 ### 5.25 PDF tickets and QR codes
 
@@ -1983,7 +1983,7 @@ Traffic between containers is not encrypted (it stays on internal Docker network
 
 ## 6. Coming in later phases
 
-None of this is built yet. It is designed in the [spec](docs/superpowers/specs/2026-11-12-surge-design.md), and this guide will grow a section for each piece as it lands.
+None of this is built yet. It is designed in [docs/DESIGN.md](docs/DESIGN.md), and this guide will grow a section for each piece as it lands.
 
 | Technology | Phase | Planned role |
 |---|---|---|
@@ -2224,7 +2224,7 @@ The smoke test passed 10 of 10 on the same stack: the ticket email with its PDF 
 
 ### Debugging the first run through the gateway
 
-The first 10,000-buyer run through the gateway **sold nothing**, and the load tester said PASS. Getting to the result above took five layers of fixes, each found only after the one before it. This is the best interview story in the project: it shows reading evidence instead of guessing.
+The first 10,000-buyer run through the gateway **sold nothing**, and the load tester said PASS. Getting to the result above took five layers of fixes, each found only after the one before it. It is a case study in reading evidence instead of guessing.
 
 | # | Symptom | Evidence | Root cause | Fix |
 |---|---|---|---|---|
@@ -2307,7 +2307,7 @@ The first run of the pair, started about a minute after the service, sold 500 wi
 
 **Running it again.** Each run creates a fresh run id and sends `Idempotency-Key: <runId>-<userId>`, so a second run within 24 hours never reuses the first run's keys (whose orders the reset deleted). The service also copes if a client does reuse such a key: it treats a key that points at a deleted order as new.
 
-**How to say it on a resume or in an interview.** "In a local load test, 10,000 concurrent buyers raced for 500 seats through nginx and the API gateway, each with its own JWT: exactly 500 sold, 0 oversold, 0 seat-by-seat mismatches, 500 successful checkouts for 500 sold seats, and 1 error in 10,000 (96,075 requests in 70 seconds on one Windows machine); 971 backend and 162 web tests." Say "10,000 concurrent buyers", not "10,000 checkouts": only 500 buyers could ever reach checkout. If asked about latency, explain the laptop setup and that the test was about correctness.
+**In one sentence.** "In a local load test, 10,000 concurrent buyers raced for 500 seats through nginx and the API gateway, each with its own JWT: exactly 500 sold, 0 oversold, 0 seat-by-seat mismatches, 500 successful checkouts for 500 sold seats, and 1 error in 10,000 (96,075 requests in 70 seconds on one Windows machine); 971 backend and 162 web tests." Say "10,000 concurrent buyers", not "10,000 checkouts": only 500 buyers could ever reach checkout. If asked about latency, explain the laptop setup and that the test was about correctness.
 
 ### The concurrency test in CI
 

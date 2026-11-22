@@ -191,7 +191,7 @@ Everything goes through **http://localhost:8080** (nginx, then the gateway). "Us
 | POST | `/api/bookings/admin/events/{eventId}/reset?opensInSeconds=N` | admin | Reset an event; the sale opens in N seconds | 204 |
 | PUT, GET | `/api/bookings/admin/loadtest-reports/latest` | admin | Store / read the latest load-test report | 204 / 200 |
 | GET | `/api/notifications/tickets/{orderId}.pdf` | user (the buyer) | The ticket PDF, `Cache-Control: no-store`; someone else's ticket is a 404 | 200 |
-| GET | `/api/notifications/admin/dlq?limit` | admin | Ticket messages that failed three times, with the reason | 200 |
+| GET | `/api/notifications/admin/dlq?limit` | admin | Ticket messages that failed every retry, with the reason | 200 |
 | POST | `/api/notifications/admin/dlq/replay?limit` | admin | Move them back to the ticket queue | 200 |
 | GET | `/api/notifications/admin/audit?date&tail` | admin | The day's `orders.v1` audit log: line count and the last lines | 200 |
 | GET, PUT | `/api/payments/admin/chaos` | admin | Payment chaos: `{"failureRate":0..1,"latencyMs":0..10000,"errorRate":0..1}` | 200 / 204 |
@@ -254,12 +254,12 @@ On Windows PowerShell use `.\mvnw.cmd -B verify`. You need JDK 25 and Node 24 fo
 | [docker/](docker/) | The service Dockerfile, `gen-secrets.sh` and `set-secret.sh` (the secret files), `gen-selfsigned-cert.sh`, and the MySQL, Redis, RabbitMQ, Kafka and Elasticsearch set-up |
 | [compose.yaml](compose.yaml), [compose.dev.yaml](compose.dev.yaml), [compose.loadtest.yaml](compose.loadtest.yaml), [compose.prod.yaml](compose.prod.yaml), [compose.tls-local.yaml](compose.tls-local.yaml) | The platform, the local development overlay, the load-test overlay, the production overlay, the local TLS try-out |
 | [docs/DEPLOY.md](docs/DEPLOY.md) | Runbook for one internet-facing VM |
-| [docs/superpowers/specs/2026-11-12-surge-design.md](docs/superpowers/specs/2026-11-12-surge-design.md) | The full design spec for all phases |
+| [docs/DESIGN.md](docs/DESIGN.md) | The design for all phases: what is built and what is planned |
 | [LEARN.md](LEARN.md), [SECURITY.md](SECURITY.md) | The learning guide; the security design and reporting |
 
 ## Roadmap: planned, not built yet
 
-Phases 1 and 2 are built. The phases below are designed in the [spec](docs/superpowers/specs/2026-11-12-surge-design.md) but **not built yet**.
+Phases 1 and 2 are built. The phases below are designed in [docs/DESIGN.md](docs/DESIGN.md) but **not built yet**.
 
 | Phase | Planned scope |
 |---|---|
