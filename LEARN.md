@@ -97,7 +97,7 @@ What a user does:
 - **Security throughout**: every service verifies the gateway's identity token, every store and broker has its own credentials, containers are hardened, CI scans dependencies and images.
 - **tools/smoke**: an end-to-end test of the whole flow.
 
-The measured result: 10,000 buyers for 500 seats, through nginx and the gateway, **500 sold, 0 oversold, 0 errors**, twice in a row (run on a laptop; see [section 9](#9-the-numbers-and-how-to-explain-them)). <!-- LIVE-NUMBER -->
+The measured result: 10,000 buyers for 500 seats, through nginx and the gateway, **500 sold, 0 oversold, 0 seat-by-seat mismatches, 1 error in 10,000 buyers** (run on one Windows machine; see [section 9](#9-the-numbers-and-how-to-explain-them)).
 
 What Surge does **not** do yet: real payments (payment-service is a stand-in), more than one instance of each service, metrics dashboards and tracing (phase 3). See [section 7.11](#711-known-limits-of-phase-2).
 
@@ -1066,24 +1066,24 @@ They protect different things. nginx's limits are cheap, per IP and coarse: they
 
 **Where it is in the code.**
 
-Test counts at the end of phase 2. This table is the one place the counts are kept; the rest of the repo refers here. They are counted from the test sources (`@Test` methods; Vitest `it`/`test` calls, with each row of an `it.each` table counted once).
+Test counts at the end of phase 2. This table is the one place the counts are kept; the rest of the repo refers here. The backend counts are the totals of the final `./mvnw -B verify` (build success, no failures); the web count is the final `npx vitest run`.
 
 | Module | Tests | What kind |
 |---|---|---|
-| `common` | 120 | Unit: identity token signer and verifier (every rejection rule), key loading, the security auto-configuration, store credentials, request-id filter, Problem Details, message JSON |
+| `common` | 135 | Unit: identity token signer and verifier (every rejection rule), key loading, the security auto-configuration, store credentials, request-id filter, Problem Details, message JSON |
 | `outbox` | 20 | Auto-configuration, destination parsing, Kafka and RabbitMQ senders |
-| `discovery` | 11 | Eureka starts; HTTP Basic required |
-| `config-server` | 11 | Serves `config-repo`; HTTP Basic required |
-| `booking-service` | 189 | Unit (pricing) and integration: MySQL, Redis, Kafka and RabbitMQ via Testcontainers, HTTP via MockMvc, payment-service as a `MockWebServer` |
-| `auth-service` | 108 | Sign-up, login, JWKS, email codes (Mailpit container), login throttle, password policy, start-up guards, test tokens |
-| `catalog-service` | 65 | Elasticsearch search, CSV import, `catalog.v1` publishing, sales from `orders.v1` (MySQL, Kafka, Elasticsearch containers) |
+| `discovery` | 13 | Eureka starts; HTTP Basic required |
+| `config-server` | 13 | Serves `config-repo`; HTTP Basic required |
+| `booking-service` | 193 | Unit (pricing) and integration: MySQL, Redis, Kafka and RabbitMQ via Testcontainers, HTTP via MockMvc, payment-service as a `MockWebServer` |
+| `auth-service` | 121 | Sign-up, login, JWKS, email codes (Mailpit container), login throttle, password policy, start-up guards, test tokens |
+| `catalog-service` | 68 | Elasticsearch search, CSV import, `catalog.v1` publishing, sales from `orders.v1` (MySQL, Kafka, Elasticsearch containers) |
 | `payment-service` | 34 | Charges, refunds, chaos settings, who may call |
-| `notification-service` | 95 | The ticket workflow (MySQL, RabbitMQ, Kafka, S3Mock, Mailpit containers), dead-letter queue, audit log, PDF and QR |
-| `gateway` | 99 | Routing, JWT rules, identity tokens, rate limits, bulkheads, denylist (Redis container, downstreams as `MockWebServer`s) |
-| `tools/loadtest` | 70 | Unit, plus a small stub HTTP server ([StubServer](tools/loadtest/src/test/java/dev/surge/loadtest/StubServer.java)), including the wait for the gateway to route |
-| `tools/smoke` | 61 | Unit, plus a stub server for every check and for the wait for the gateway to route |
-| `web` | 146 | Vitest and Testing Library in jsdom |
-| **Total** | **1,029** | 883 backend (`./mvnw -B verify`, 12 modules) + 146 web (`npx vitest run`) |
+| `notification-service` | 105 | The ticket workflow (MySQL, RabbitMQ, Kafka, S3Mock, Mailpit containers), dead-letter queue, audit log, PDF and QR |
+| `gateway` | 116 | Routing, JWT rules, identity tokens, rate limits, bulkheads, denylist (Redis container, downstreams as `MockWebServer`s) |
+| `tools/loadtest` | 87 | Unit, plus a small stub HTTP server ([StubServer](tools/loadtest/src/test/java/dev/surge/loadtest/StubServer.java)), including the wait for the gateway to route |
+| `tools/smoke` | 66 | Unit, plus a stub server for every check and for the wait for the gateway to route |
+| `web` | 162 | Vitest and Testing Library in jsdom |
+| **Total** | **1,133** | 971 backend (`./mvnw -B verify`, 12 modules) + 162 web (`npx vitest run`) |
 
 **One shared Spring context per service.** Every integration test class in a service carries that service's `@IntegrationTest` meta-annotation (for example booking's [IntegrationTest](booking-service/src/test/java/dev/surge/booking/support/IntegrationTest.java)), which bundles `@SpringBootTest`, the Testcontainers configuration ([booking's TestcontainersConfig](booking-service/src/test/java/dev/surge/booking/support/TestcontainersConfig.java)), type-level Mockito spies and test data helpers. Because every class uses exactly the same configuration, Spring's test-context cache builds the application context **once** and reuses it, with one set of containers for the whole run. `@ServiceConnection` points Spring at the containers automatically. Eureka and the config client are switched off in tests, and identity tokens are signed with committed test keys (`IdentityTokens` in common's test jar). Background jobs (the outbox relay, the sweeper) are slowed down so they never race the tests; tests trigger them themselves.
 
@@ -2101,7 +2101,7 @@ The limits phase 1 stated about itself, and what phase 2 did about each (the one
 - **At-least-once side effects.** The ticket email and the audit line can be repeated if a commit fails right after them; never lost.
 - **No observability stack.** Health is open; metrics are refused until phase 3; request ids are propagated but not printed on every log line.
 - **A captured internal token can be replayed** for up to 60 seconds against the one service it names (by design; see [section 5.31](#531-security)).
-- **Local numbers.** The 10,000-buyer run saturated the laptop's CPU; its latencies are queueing, not service time. <!-- LIVE-NUMBER -->
+- **Local numbers.** The 10,000-buyer run saturated the laptop's CPU; its latencies are queueing, not service time.
 
 ### 7.12 Phase 2 decisions at a glance
 
@@ -2179,7 +2179,7 @@ A first draft for the classic system-design question "Design BookMyShow (or Tick
 - A hold expires mid-checkout: the database decides; the loser gets `409` and a refund **(built)**.
 
 **11. Proof (1 minute).**
-- "I load-tested it: 10,000 concurrent buyers for 500 seats, through nginx and the gateway with a JWT each: 500 sold, 0 oversold, 0 errors, twice in a row, on a laptop. A smaller version, 2,000 buyers for 100 seats, runs in CI on every push." **(built)** <!-- LIVE-NUMBER -->
+- "I load-tested it: 10,000 concurrent buyers for 500 seats, through nginx and the gateway with a JWT each: 500 sold, 0 oversold, 0 seat-by-seat mismatches, 1 error in 10,000, on one machine. A smaller version, 2,000 buyers for 100 seats, runs in CI on every push." **(built)**
 - "Getting that run through the gateway to pass found a hidden 25-call bulkhead, full accept queues, memory limits and a Redis threading problem" ([section 9](#9-the-numbers-and-how-to-explain-them)).
 
 **12. What I would do next.** Metrics dashboards, alerts and tracing (phase 3), several instances of each service with shared state in Redis, then a waiting room for very large sales.
@@ -2195,22 +2195,30 @@ docker compose -f compose.yaml -f compose.dev.yaml -f compose.loadtest.yaml --pr
   run --rm loadtest --users 10000 --event 1
 ```
 
-The admin signs in, mints one 15-minute JWT per synthetic buyer (`lt-<run>-<n>`), and 10,000 buyers race for event 1's 500 seats through nginx and the gateway, exactly like browsers. Two runs back to back on 2026-11-20, made before the final review fixes (per-service bulkheads and `service-busy` retries); both passed every check: <!-- LIVE-NUMBER -->
+The admin signs in, mints one 15-minute JWT per synthetic buyer (`lt-<run>-<n>`), and 10,000 buyers race for event 1's 500 seats through nginx and the gateway, exactly like browsers. The final run, on 2026-11-22 against a freshly installed stack (new Docker volumes; `up --wait` took 53 s and all 17 long-running containers were healthy on the first try), passed every check:
 
-| Check | Run 1 | Run 2 |
-|---|---|---|
-| Sold / oversold | 500 / 0 | 500 / 0 <!-- LIVE-NUMBER --> |
-| Seats marked SOLD match order lines, seat by seat | yes | yes <!-- LIVE-NUMBER --> |
-| Buyers who got a 201 = seats sold | 500 = 500 | 500 = 500 <!-- LIVE-NUMBER --> |
-| Errors / rate limited | 0 / 0 | 0 / 0 <!-- LIVE-NUMBER --> |
-| Requests / conflicts | 96,061 / 95,061 | 96,082 / 95,082 <!-- LIVE-NUMBER --> |
-| Duration | 41.0 s | 37.6 s <!-- LIVE-NUMBER --> |
-| Hold p50 / p95 / p99 (ms) | 3,024 / 9,274 / 16,775 | 3,174 / 6,441 / 9,026 <!-- LIVE-NUMBER --> |
-| Checkout p50 / p95 / p99 (ms) | 4,659 / 15,663 / 16,788 | 2,637 / 5,977 / 8,489 <!-- LIVE-NUMBER --> |
+| Check | Result |
+|---|---|
+| Sold / oversold | 500 / 0 |
+| Seats marked SOLD match order lines, seat by seat (mismatches) | yes (0) |
+| Buyers who got a successful checkout = seats sold in the run | 500 = 500 |
+| Errors / rate limited | 1 / 0 |
+| Busy retries / checkout retries (same `Idempotency-Key`) | 0 / 2 |
+| Requests / conflicts | 96,075 / 95,072 |
+| Duration | 69.7 s |
 
-**Where it ran.** One laptop: Docker Desktop on WSL2 with about 11.5 GB for Docker and 24 CPU threads. The load generator and the stack's 17 running containers shared it. The stack idled at 6.4 GiB and peaked at 9.0 GiB during the run; the CPU was close to saturated (the containers together used about 20 to 22 of the 24 threads, the gateway up to 12.5 cores). <!-- LIVE-NUMBER -->
+| Latency (ms) | p50 | p95 | p99 | max |
+|---|---|---|---|---|
+| Hold | 3,357 | 11,956 | 14,866 | 36,008 |
+| Checkout | 5,211 | 12,859 | 15,049 | 16,432 |
 
-**How to read it.** The counts are the result: every seat sold exactly once, the count of `201`s matches the seats sold, no errors. The times are mostly queueing on a saturated laptop: every request now crosses nginx, the gateway (JWT check, denylist, two rate limits, a signed identity token) and booking, all competing for the same CPU as the 10,000 buyers. Compared with phase 1's run (booking alone, below), the run took about twice as long for the same work. <!-- LIVE-NUMBER --> Say "correctness under extreme contention", never "production latency".
+The smoke test passed 10 of 10 on the same stack: the ticket email with its PDF arrived, payment chaos gave 6 `503 payment-unavailable` and then a fail-fast answer (21 ms) on the 7th call, the breaker recovered 11 s after chaos was switched off, and 4 of 14 simultaneous holds got `429`.
+
+**Where it ran.** One Windows 11 machine with 24 logical CPUs and 24 GB of RAM, Docker Desktop on WSL2. The load generator and the stack's 17 long-running containers shared it. After the run the gateway used 1.27 GiB of its 2 GiB limit, booking 1.24 GiB of 2 GiB and nginx 56 MiB of 512 MiB. The CPU was close to saturated at the sale's start.
+
+**Run it on an idle machine.** On 2026-11-21 the same test failed with 3,806 errors while two Maven and Testcontainers builds ran in parallel (hold p50 6.2 s, p99 43 s). Every gateway error was a Redis command timeout, all in one burst at the peak: the CPU-starved gateway could not service its Redis connection in time. On a quiet machine it passed (499 sold, 1 error), and after the fixes it sold all 500. That episode is why the denylist deadline is now 3 s, and why an auth outage reaches clients as a retryable `503 auth-unavailable` rather than a generic failure.
+
+**How to read it.** The counts are the result: every seat sold exactly once, the count of `201`s matches the seats sold, one error in 10,000 buyers. The times are mostly queueing on a saturated machine: every request now crosses nginx, the gateway (JWT check, denylist, two rate limits, a signed identity token) and booking, all competing for the same CPU as the 10,000 buyers. Compared with phase 1's run (booking alone, below), the run took about three and a half times as long for the same work (69.7 s against 20.6 s), though run-to-run variation on one machine is large (see below). Say "correctness under extreme contention", never "production latency".
 
 **What the report adds in phase 2.** `busyRetries` (how many times buyers got `503 service-busy` or `auth-unavailable` and retried; above 0 means a bulkhead was really reached) and `rateLimited`, which must be read next to it, because each retry spends a rate-limit token. A checkout is also resent unchanged, with the same `Idempotency-Key`, up to 3 times within the run's deadline after a timeout or connection failure, a `502`, a `504`, a `503` that is not `service-busy`, or a `409 request-in-progress`; it waits `Retry-After`, else 1 to 2 s, and a `200` with `Idempotent-Replayed: true` counts as a sale. The report counts these as `checkoutRetries`, and `requests` includes them. A hold is never resent blindly; a `409 hold-exists` that carries the hold's id is adopted and checked out. The other new fields: `passed`, `soldInRun` (the seats this run sold), `soldBefore` (the seats SOLD when the buyers were released, read after the reset) and `seatMismatches`. `sold` is the total SOLD at the end, and the run is judged on `soldInRun`, so `--no-reset` on an event with earlier sales does not fail it. The Markdown report has the rows "Checkout retries (same Idempotency-Key)" and "Seat mismatches (SOLD vs order line)". The run fails if nothing is sold or if errors pass 1% of buyers, as well as on any oversell or inconsistency.
 
@@ -2229,12 +2237,12 @@ The first 10,000-buyer run through the gateway **sold nothing**, and the load te
 
 Ruled out on the way, each with evidence: the per-IP limits (the load tester's address is exempted in nginx and its hold bucket is keyed per buyer; rate-limited was 0), unverified emails (test tokens carry `ev: true`), the 3-event hold cap (never hit), and a stale second booking instance in Eureka (only one was registered).
 
-After the runs above, the code review changed two things: the 20,000-call bulkhead became per-service limits (booking 5,000), and a full bulkhead now answers `503 service-busy`, which the load tester and the web app retry (the review's ruling: never raise the limit for the test). The next run measures that configuration. <!-- LIVE-NUMBER -->
+After the runs above, the code review changed two things: the 20,000-call bulkhead became per-service limits (booking 5,000), and a full bulkhead now answers `503 service-busy`, which the load tester and the web app retry (the review's ruling: never raise the limit for the test). The final run above measures that configuration.
 
 **Interview questions.**
 
 **Q1. Tell me about the hardest bug you fixed.**
-Situation: the first 10,000-buyer run through my new gateway sold nothing, and my own tool said PASS. Task: find out why, without weakening any guarantee. Action: I first fixed the verdict, then worked from evidence each time: a thread dump, kernel counters, the service's access log, cgroup memory events, and a diagnostic build that recorded every failure's exception. Five different causes, each hidden behind the one before. Result: 500 sold, 0 oversold, 0 errors, twice in a row, and tests that pin each fix (for example `CircuitBreakerBulkheadTest`, `DecoderDenylistTest.theRequestContinuesOffTheRedisReplyThread`). <!-- LIVE-NUMBER -->
+Situation: the first 10,000-buyer run through my new gateway sold nothing, and my own tool said PASS. Task: find out why, without weakening any guarantee. Action: I first fixed the verdict, then worked from evidence each time: a thread dump, kernel counters, the service's access log, cgroup memory events, and a diagnostic build that recorded every failure's exception. Five different causes, each hidden behind the one before. Result: 500 sold, 0 oversold, 1 error in 10,000 buyers, and tests that pin each fix (for example `CircuitBreakerBulkheadTest`, `DecoderDenylistTest.theRequestContinuesOffTheRedisReplyThread`).
 
 **Q2. How did you find the hidden bulkhead?**
 By comparing two numbers that should have matched: 10,000 buyers made tens of thousands of hold attempts, but booking's own access log showed 29. So the requests never reached booking; something in the gateway answered for it. The answer was the circuit breaker's fallback, and reading Spring Cloud CircuitBreaker's source showed it wraps each breaker in a Resilience4j bulkhead with a default of 25 concurrent calls when that library is on the classpath. Nobody had set it, and no test had ever sent more than 25 requests at once.
@@ -2299,7 +2307,7 @@ The first run of the pair, started about a minute after the service, sold 500 wi
 
 **Running it again.** Each run creates a fresh run id and sends `Idempotency-Key: <runId>-<userId>`, so a second run within 24 hours never reuses the first run's keys (whose orders the reset deleted). The service also copes if a client does reuse such a key: it treats a key that points at a deleted order as new.
 
-**How to say it on a resume or in an interview.** "In a local load test, 10,000 concurrent buyers raced for 500 seats through the API gateway, each with its own JWT: exactly 500 sold, 0 oversold, 0 errors, and 500 successful checkouts for 500 sold seats." <!-- LIVE-NUMBER --> Say "10,000 concurrent buyers", not "10,000 checkouts": only 500 buyers could ever reach checkout. If asked about latency, explain the laptop setup and that the test was about correctness.
+**How to say it on a resume or in an interview.** "In a local load test, 10,000 concurrent buyers raced for 500 seats through nginx and the API gateway, each with its own JWT: exactly 500 sold, 0 oversold, 0 seat-by-seat mismatches, 500 successful checkouts for 500 sold seats, and 1 error in 10,000 (96,075 requests in 70 seconds on one Windows machine); 971 backend and 162 web tests." Say "10,000 concurrent buyers", not "10,000 checkouts": only 500 buyers could ever reach checkout. If asked about latency, explain the laptop setup and that the test was about correctness.
 
 ### The concurrency test in CI
 
