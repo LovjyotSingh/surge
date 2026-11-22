@@ -174,7 +174,7 @@ services:
   kafka:
     <<: *hardened
     cpu_shares: *cpu-background
-    image: apache/kafka:4.1.2@sha256:5cc2a2fd93fa2687b44015eee04fb2c3edd9e526bd64bf8bec5ff1e268772e0e
+    image: apache/kafka:4.3.1@sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837
     profiles: [platform]
     entrypoint: ["/bin/bash", "/surge/start.sh"]
     environment:
@@ -197,7 +197,7 @@ services:
 
   kafka-init:
     <<: *one-shot
-    image: apache/kafka:4.1.2@sha256:5cc2a2fd93fa2687b44015eee04fb2c3edd9e526bd64bf8bec5ff1e268772e0e
+    image: apache/kafka:4.3.1@sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837
     profiles: [platform]
     entrypoint: ["/bin/bash", "/surge/init.sh"]
     secrets:
@@ -215,7 +215,7 @@ services:
   rabbitmq:
     <<: *hardened
     cpu_shares: *cpu-background
-    image: rabbitmq:4.3.7-management@sha256:8e913a7748f808be4ce117c3df11817935775bcd83934d4de92441a7e93e9899
+    image: rabbitmq:4.4.1-management@sha256:61f90c401a5b5ed2486771973ea92ad66046471eacab9c9149f1a6e091c91677
     profiles: [platform]
     user: "999:999"
     hostname: rabbitmq
@@ -237,7 +237,7 @@ services:
   elasticsearch:
     <<: *hardened
     cpu_shares: *cpu-background
-    image: docker.elastic.co/elasticsearch/elasticsearch:9.2.8@sha256:f6c331bc14f54c32ce956d0f35cf17a2d302214bdf89b7234e5c9ada09602357
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.6@sha256:79b4f1de4c15e6eca824723086a51e5934406d614d410cc11be77748cafac537
     profiles: [platform]
     # The image's entrypoint writes the keystore into the config directory: copy the image's config to a tmpfs
     # (fresh on every start) so the root file system can stay read-only. ELASTIC_PASSWORD (it sets the "elastic"
@@ -284,7 +284,7 @@ services:
 
   es-init:
     <<: *one-shot
-    image: docker.elastic.co/elasticsearch/elasticsearch:9.2.8@sha256:f6c331bc14f54c32ce956d0f35cf17a2d302214bdf89b7234e5c9ada09602357
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.6@sha256:79b4f1de4c15e6eca824723086a51e5934406d614d410cc11be77748cafac537
     profiles: [platform]
     entrypoint: ["/bin/bash", "/surge/init.sh"]
     secrets:
