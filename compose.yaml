@@ -127,7 +127,7 @@ services:
   redis:
     <<: *hardened
     cpu_shares: *cpu-request-path
-    image: redis:7.4.12-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
+    image: redis:8.10.3-alpine@sha256:7958cfbb9d152f87dadfbc89f1b0b15938f0b81ff8982feb327476f4911935c3
     profiles: [core]
     user: "999:1000"
     command: ["redis-server", "--aclfile", "/run/secrets/redis-users.acl"]
@@ -153,7 +153,7 @@ services:
   redis-edge:
     <<: *hardened
     cpu_shares: *cpu-request-path
-    image: redis:7.4.12-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
+    image: redis:8.10.3-alpine@sha256:7958cfbb9d152f87dadfbc89f1b0b15938f0b81ff8982feb327476f4911935c3
     profiles: [platform]
     user: "999:1000"
     command: ["redis-server", "--aclfile", "/run/secrets/redis-edge-users.acl"]
