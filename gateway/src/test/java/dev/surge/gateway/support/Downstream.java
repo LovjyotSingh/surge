@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.net.BindException;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import mockwebserver3.Dispatcher;
@@ -22,16 +23,35 @@ public final class Downstream {
     private MockWebServer server;
     private int port;
 
+    /**
+     * Listens on a free port BELOW the operating system's ephemeral range (Linux 32768-60999, Windows 49152-65535).
+     * {@link #restart()} must get the same port back after {@link #stop()}, because the gateway's routes point at it.
+     * A port the kernel picked itself ("any free port") comes from the ephemeral range, and once freed the kernel can
+     * hand it to one of the gateway's own outgoing connections, which then holds it: on the Linux CI runner the
+     * re-bind failed with "Address already in use" for longer than ten seconds and every later test in the shared
+     * context saw this service down. Ports the kernel never gives to outgoing connections avoid that.
+     */
     public Downstream start() throws IOException {
-        return start(0);
+        for (int attempt = 0; attempt < 100; attempt++) {
+            int candidate = 20_000 + ThreadLocalRandom.current().nextInt(12_000);
+            try {
+                return start(candidate, false);
+            } catch (BindException taken) {
+                // in use, or reserved by the OS (Windows excluded port ranges): try another
+            }
+        }
+        throw new IOException("no free port found in 20000-31999");
+    }
+
+    private Downstream start(int requestedPort) throws IOException {
+        return start(requestedPort, true);
     }
 
     /**
-     * Starts listening, on {@code requestedPort} or (0) any free port. A restart on the old port is retried for up to
-     * 10 s: on Linux the stopped server's socket can still be closing for a moment ("Address already in use", seen in
-     * CI), and a restart that gave up would leave this service down for every later test in the shared context.
+     * Starts listening on {@code requestedPort}. With {@code retry}, a bind refused as "Address already in use" is
+     * retried for up to 10 s (the stopped server's socket can still be closing for a moment).
      */
-    private Downstream start(int requestedPort) throws IOException {
+    private Downstream start(int requestedPort, boolean retry) throws IOException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
         while (true) {
             MockWebServer candidate = new MockWebServer();
@@ -49,7 +69,7 @@ public final class Downstream {
                 return this;
             } catch (BindException e) {
                 candidate.close();
-                if (requestedPort == 0 || System.nanoTime() > deadline) {
+                if (!retry || System.nanoTime() > deadline) {
                     throw e;
                 }
                 try {
