@@ -18,6 +18,10 @@ concurrency:
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
+    # Code scanning (where CodeQL uploads its results) is free only on public repositories; on a private one the
+    # upload fails. The job runs again by itself once the repository is public. Dependabot, OSV and CI's Trivy image
+    # scan run either way.
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:

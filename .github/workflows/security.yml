@@ -50,7 +50,11 @@ jobs:
         shell: bash
         run: |
           rc=0
-          ./osv-scanner scan source --recursive --config osv-scanner.toml             --format json --output-file osv-results.json . || rc=$?
+          # --no-resolve: transitive resolution looks every dependency up in a registry, and this reactor's own
+          # modules (dev.surge:common, ...) are published nowhere, so it failed with exit 127. The full transitive
+          # Maven graph is covered where it ships: CI's Trivy scan of every built image (the exact jars), and Dependabot.
+          ./osv-scanner scan source --recursive --no-resolve --config osv-scanner.toml \
+            --format json --output-file osv-results.json . || rc=$?
           if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
             echo "::error::osv-scanner failed with exit code $rc (127 = error, 128 = no packages found)"
             exit 1
