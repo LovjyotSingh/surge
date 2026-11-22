@@ -16,7 +16,7 @@ RUN npm run build \
 # in /tmp and listens on 8080 (and 8443 with nginx-tls.conf), and the cache directory is handed to uid 101. The slim
 # variant has no curl, xslt or other modules nginx.conf does not use; apk upgrade applies Alpine security fixes
 # released after the base image was built (the images job in CI fails on any fixable HIGH or CRITICAL).
-FROM nginx:1.30.7-alpine-slim@sha256:8c950211a641ec5b23f265450517001f6bcca533666120ebe36cb4cff3d00a55
+FROM nginx:1.31.9-alpine-slim@sha256:5bfced78d24d644270bedb0a9968697042e38d5c03fb6354603df025279c1cbe
 USER root
 # The stock server block (conf.d/default.conf) would answer on port 80 next to ours.
 RUN apk upgrade --no-cache && rm -f /etc/nginx/conf.d/default.conf \
