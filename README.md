@@ -13,23 +13,24 @@ A load tester fires 10,000 concurrent buyers at it, through nginx and the gatewa
 
 ## Result
 
-10,000 simulated buyers racing for the 500 seats of event 1, sent through nginx and the gateway with a JWT each, like real browser traffic. Two runs back to back on 2026-11-20, before the final review fixes (per-service bulkheads and busy retries); both passed every check. <!-- LIVE-NUMBER -->
+10,000 simulated buyers racing for the 500 seats of event 1, sent through nginx and the gateway with a JWT each, like real browser traffic. The final run, on 2026-11-22 against a freshly installed stack, passed every check:
 
-| Metric | Run 1 | Run 2 |
-|---|---|---|
-| Buyers / seats | 10,000 / 500 | 10,000 / 500 |
-| **Sold** | **500** | **500** <!-- LIVE-NUMBER --> |
-| **Oversold** | **0** | **0** <!-- LIVE-NUMBER --> |
-| **Seats marked SOLD match order lines, seat by seat** | **yes** | **yes** <!-- LIVE-NUMBER --> |
-| **Buyers who got a 201 = seats sold** | **500 = 500** | **500 = 500** <!-- LIVE-NUMBER --> |
-| **Errors** | **0** | **0** <!-- LIVE-NUMBER --> |
-| Rate limited (429) | 0 | 0 <!-- LIVE-NUMBER --> |
-| Requests (holds + checkouts) | 96,061 | 96,082 <!-- LIVE-NUMBER --> |
-| Duration | 41.0 s | 37.6 s <!-- LIVE-NUMBER --> |
-| Hold latency p50 / p95 (ms) | 3,024 / 9,274 | 3,174 / 6,441 <!-- LIVE-NUMBER --> |
-| Checkout latency p50 / p95 (ms) | 4,659 / 15,663 | 2,637 / 5,977 <!-- LIVE-NUMBER --> |
+| Metric | Result |
+|---|---|
+| Buyers / seats | 10,000 / 500 |
+| **Sold** | **500** |
+| **Oversold** | **0** |
+| **Seats marked SOLD match order lines, seat by seat (mismatches)** | **yes (0)** |
+| **Buyers who got a successful checkout = seats sold** | **500 = 500** |
+| **Errors** | **1 of 10,000 buyers** |
+| Rate limited (429) | 0 |
+| Busy retries (503) / checkout retries | 0 / 2 |
+| Requests (holds + checkouts) | 96,075 |
+| Duration | 69.7 s |
+| Hold latency p50 / p95 / p99 (ms) | 3,357 / 11,956 / 14,866 |
+| Checkout latency p50 / p95 / p99 (ms) | 5,211 / 12,859 / 15,049 |
 
-This ran on one laptop: Docker Desktop on WSL2 with about 11.5 GB of memory for Docker and 24 CPU threads, shared by the load generator and the stack's 17 running containers (peak memory 9.0 GiB). <!-- LIVE-NUMBER --> It is a correctness test under heavy contention, not a production benchmark: the laptop's CPU was saturated, so the latencies are mostly queueing. Getting the first run through the gateway to pass took several fixes, each found after the one before (a verdict that said PASS for nothing sold, full accept queues, a hidden 25-call bulkhead, memory limits and Redis reply threads); [LEARN.md section 9](LEARN.md#9-the-numbers-and-how-to-explain-them) tells that debugging story and explains what each check proves.
+This ran on one Windows 11 machine with 24 logical CPUs and 24 GB of RAM, using Docker Desktop on WSL2, with the load generator and the stack's 17 long-running containers all on it (after the run the gateway used 1.27 GiB of its 2 GiB limit, booking 1.24 GiB of 2 GiB and nginx 56 MiB). The run was done on an otherwise idle machine; the same test failed once while two Maven builds ran at the same time (see [LEARN.md section 9](LEARN.md#9-the-numbers-and-how-to-explain-them)). It is a correctness test under heavy contention, not a production benchmark: the CPU was saturated, so the latencies are mostly queueing. Getting the first run through the gateway to pass took several fixes, each found after the one before (a verdict that said PASS for nothing sold, full accept queues, a hidden 25-call bulkhead, memory limits and Redis reply threads); [LEARN.md section 9](LEARN.md#9-the-numbers-and-how-to-explain-them) tells that debugging story and explains what each check proves.
 
 The test suite also runs a smaller version on every CI build: [ConcurrentBookingTest](booking-service/src/test/java/dev/surge/booking/order/ConcurrentBookingTest.java) starts 2,000 buyers on virtual threads against 100 seats and checks that exactly 100 are sold.
 
@@ -217,7 +218,7 @@ Running Surge on a public server needs TLS and production settings that the loca
 
 - **One instance of everything.** One gateway, one of each service, one MySQL server (a database per service), one Kafka broker (replication factor 1), one RabbitMQ node, one Elasticsearch node. payment-service keeps payments in memory and auth keeps its login throttle in memory, so both must stay single-instance until that state moves to Redis.
 - **Fake payments.** payment-service is a stand-in provider with chaos settings, not a real payment gateway.
-- **Local numbers.** The load test shows correctness under contention on one laptop, not production capacity. At sale start the laptop's CPU was saturated and p95 latencies were several seconds. <!-- LIVE-NUMBER -->
+- **Local numbers.** The load test shows correctness under contention on one laptop, not production capacity. At sale start the CPU was saturated and p95 latencies were 12 to 13 seconds.
 - **Retries cost rate-limit tokens.** The gateway's rate limiters run before its circuit breaker, so a client that retries `503 service-busy` too often gets `429`. A checkout that takes longer than the gateway's 10-second breaker timeout can get `503` although booking completes it; retrying with the same `Idempotency-Key` returns the order. The timeouts nest inside each other (nginx 35 s, gateway 30 s, breaker 10 s, booking's Redis 2 s and database connection 3 s) so a stuck dependency becomes a fast, retryable `503`.
 - **At-least-once email.** If the notification transaction fails to commit after the email was sent, the retry sends it again (same PDF, same link).
 - **No observability stack yet.** Health is open; `/actuator/prometheus` is refused to every caller until phase 3 adds a scrape identity. Request ids are propagated but not yet printed in every log line.
