@@ -23,3 +23,6 @@ docker/secrets/
 # docker/gen-selfsigned-cert.sh output (compose.tls-local.yaml): a certificate and its private key. Production
 # certificates live outside the checkout (/etc/letsencrypt, /etc/surge/tls).
 docker/tls/
+
+# private planning notes, kept locally
+docs/superpowers/
