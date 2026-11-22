@@ -2128,7 +2128,7 @@ A first draft for the classic system-design question "Design BookMyShow (or Tick
 - Ask about scale: "How many seats per show, and how many people at sale open?" Then use Surge's numbers as the example: 500 seats, 10,000 buyers.
 
 **2. Estimate the load (1 minute).**
-- If 10,000 people each try about 10 seats, that is about 100,000 requests in a few seconds. Surge's recorded load test made 96,045 requests in 20.6 s on a laptop **(built)**.
+- If 10,000 people each try about 10 seats, that is about 100,000 requests in a few seconds. Surge's final load test made 96,075 requests in 69.7 s through nginx and the gateway, on one machine that also ran the whole stack **(built)**; phase 1, straight to booking, did 96,045 in 20.6 s.
 - Almost all of them fail (only 500 can win). So the system must make failing cheap.
 
 **3. API (2 minutes).**
