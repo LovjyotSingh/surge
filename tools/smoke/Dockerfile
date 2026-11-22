@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Build context: repo root. Base images pinned by digest, like docker/service.Dockerfile (Dependabot bumps both).
-FROM eclipse-temurin:25.0.5_8-jdk-noble@sha256:80f67fb3d6f76e2d817d98a4cc2a9cf05f054d4e6adc5e2144bde671d722e63f AS build
+FROM eclipse-temurin:26.0.2.1_1-jdk-noble@sha256:9c0e8eddecccc0d5679b317b0c90fa7103ad25cae33df1c00280675eb681c7f8 AS build
 WORKDIR /src
 ENV MAVEN_USER_HOME=/opt/maven-wrapper
 # unzip: without it the wrapper silently fetches the .tar.gz, which fails the zip SHA-256 pinned in
@@ -16,7 +16,7 @@ RUN --mount=type=cache,id=surge-m2-repository,target=/root/.m2/repository,sharin
         -pl tools/smoke -am package \
     && cp tools/smoke/target/smoke.jar /tmp/smoke.jar
 
-FROM eclipse-temurin:25.0.5_8-jre-noble@sha256:e3b6f7887a50f20d8f07abf279d8a81a5953fb398a9555bd9edd56b9bd15968c
+FROM eclipse-temurin:26.0.2.1_1-jre-noble@sha256:adfd44c114916dc79fa9a24087fbac34252096edb9892d1c2d9d82db3f8947b3
 RUN groupadd --system --gid 10001 surge \
     && useradd --system --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent \
         --shell /usr/sbin/nologin surge
