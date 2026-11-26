@@ -255,16 +255,4 @@ On Windows PowerShell use `.\mvnw.cmd -B verify`. You need JDK 25 and Node 24 fo
 | [compose.yaml](compose.yaml), [compose.dev.yaml](compose.dev.yaml), [compose.loadtest.yaml](compose.loadtest.yaml), [compose.prod.yaml](compose.prod.yaml), [compose.tls-local.yaml](compose.tls-local.yaml) | The platform, the local development overlay, the load-test overlay, the production overlay, the local TLS try-out |
 | [docs/DEPLOY.md](docs/DEPLOY.md) | Runbook for one internet-facing VM |
 | [docs/DESIGN.md](docs/DESIGN.md) | The design for all phases: what is built and what is planned |
-| [LEARN.md](LEARN.md), [SECURITY.md](SECURITY.md) | The learning guide; the security design and reporting |
-
-## Roadmap: planned, not built yet
-
-Phases 1 and 2 are built. The phases below are designed in [docs/DESIGN.md](docs/DESIGN.md) but **not built yet**.
-
-| Phase | Planned scope |
-|---|---|
-| 3. Observability | Prometheus, Alertmanager, Grafana dashboards, Logstash + Elasticsearch + Kibana logs, Zipkin traces |
-| 4. AI | AI customer assistant, AI on-call agent that diagnoses incidents, RAG over runbooks, an MCP server |
-| 5. Delivery | Kubernetes manifests for a local kind cluster, Jenkins pipeline, AWS EC2/S3 deployment guide, recorded demo |
-
-Phase 2 leaves the seams for phase 3: Actuator and Micrometer counters in every service (`payments_total`, `holds_expired_total`, `outbox_backlog`), request ids propagated through nginx and the gateway, and structured events on Kafka.
+| [LEARN.md](LEARN.md), [SECURITY.md](SECURITY.md) | The learning guide: the security design and reporting |
